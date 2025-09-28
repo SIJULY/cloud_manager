@@ -1,5 +1,3 @@
-# 最终文件路径: /opt/cloud_manager/blueprints/oci_panel.py
-
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
@@ -262,6 +260,7 @@ def oci_session_route():
             return jsonify({"success": True})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
+# vvvvvvvvvvvv 这是被修复的部分 vvvvvvvvvvvv
 @oci_bp.route('/api/instances')
 @login_required
 @oci_clients_required
@@ -269,25 +268,72 @@ def get_instances():
     try:
         compute_client, vnet_client, bs_client = g.oci_clients['compute'], g.oci_clients['vnet'], g.oci_clients['bs']
         compartment_id = g.oci_config['tenancy']
+        
+        # 获取所有实例，不过滤状态，以便显示TERMINATED等状态
         instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
+        
         instance_details_list = []
         for instance in instances:
-            data = {"display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state, "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None, "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A", "vnic_id": None, "subnet_id": None}
-            vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
-            if vnic_attachments:
-                vnic_id = vnic_attachments[0].vnic_id
-                data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
-                vnic = vnet_client.get_vnic(vnic_id).data
-                data.update({'public_ip': vnic.public_ip or "无"})
-                ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
-                if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
-            boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-            if boot_vol_attachments:
-                boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-                data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
+            # 基础信息总是安全的
+            data = {
+                "display_name": instance.display_name, 
+                "id": instance.id, 
+                "lifecycle_state": instance.lifecycle_state, 
+                "shape": instance.shape, 
+                "time_created": instance.time_created.isoformat() if instance.time_created else None,
+                "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), 
+                "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'),
+                "public_ip": "无", 
+                "ipv6_address": "无", 
+                "boot_volume_size_gb": "N/A", 
+                "vnic_id": None, 
+                "subnet_id": None
+            }
+
+            # --- 这是新增的错误处理块 ---
+            # 获取网络和磁盘等详细信息可能会因为实例状态（如已终止）而出错
+            # 我们在这里包裹一个 try/except，以防止单个实例的问题破坏整个列表
+            try:
+                # 只为活动状态的实例获取详细信息，避免对已终止的实例进行不必要查询
+                if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
+                    vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
+                    if vnic_attachments:
+                        vnic_id = vnic_attachments[0].vnic_id
+                        data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
+                        
+                        # 这个调用是之前出错的根源
+                        vnic = vnet_client.get_vnic(vnic_id).data
+                        data.update({'public_ip': vnic.public_ip or "无"})
+                        
+                        ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
+                        if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
+
+                    boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
+                    if boot_vol_attachments:
+                        boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
+                        data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
+
+            except ServiceError as se:
+                # 如果遇到 404 错误，说明相关资源（如VNIC）已被删除，这是正常的
+                # 我们只记录一个日志，然后继续处理下一个实例
+                if se.status == 404:
+                    logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
+                    data['public_ip'] = "资源已删除" # 在界面上给一个明确的提示
+                else:
+                    # 如果是其他API错误，也记录下来
+                    logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
+            except Exception as ex:
+                # 捕获其他可能的异常
+                logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
+            # --- 错误处理块结束 ---
+
             instance_details_list.append(data)
+            
         return jsonify(instance_details_list)
-    except Exception as e: return jsonify({"error": f"获取实例列表失败: {e}"}), 500
+    except Exception as e:
+        # 这个最外层的 except 现在只会在获取主列表或发生其他严重错误时触发
+        return jsonify({"error": f"获取实例列表失败: {e}"}), 500
+# ^^^^^^^^^^^^ 这是被修复的部分 ^^^^^^^^^^^^
 
 def _create_task_entry(task_type, task_name):
     db = get_db()
