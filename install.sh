@@ -57,7 +57,6 @@ uninstall_panel() {
 
     print_info "4. 从 Caddyfile 中移除面板配置..."
     if [ -f "/etc/caddy/Caddyfile" ]; then
-        # 使用sed安全地删除配置块
         sed -i "/${CADDY_CONFIG_START}/,/${CADDY_CONFIG_END}/d" /etc/caddy/Caddyfile
         systemctl reload caddy
         print_success "Caddy 配置已移除并重载。"
@@ -171,24 +170,20 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    # vvvvvvvvvvvv 这是被修复的部分 vvvvvvvvvvvv
     cat > /etc/systemd/system/${CELERY_SERVICE_NAME}.service << EOF
 [Unit]
 Description=Celery Worker for the Cloud Manager Panel
 After=network.target redis-server.service
-
 [Service]
 User=caddy
 Group=caddy
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info
+ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info --concurrency=3
 Restart=always
 RestartSec=5
-
 [Install]
 WantedBy=multi-user.target
 EOF
-    # ^^^^^^^^^^^^ 这是被修复的部分 ^^^^^^^^^^^^
 
     print_info "步骤 6: 启动所有服务..."
     systemctl daemon-reload
@@ -200,7 +195,6 @@ EOF
     print_success "Cloud Manager 面板已成功部署！"
     echo "------------------------------------------------------------"
     
-    # 再次获取访问地址用于显示
     if [ -z "$ACCESS_ADDRESS" ] && [ -f "/etc/caddy/Caddyfile" ]; then
         ACCESS_ADDRESS=$(grep -B 1 "reverse_proxy unix//run/gunicorn/cloud_manager.sock" /etc/caddy/Caddyfile | head -n 1 | awk '{print $1}')
     fi
@@ -219,7 +213,6 @@ if [ "$(id -u)" -ne 0 ]; then
    print_error "此脚本必须以root用户身份运行。"
 fi
 
-# Docker 冲突检查
 if command -v docker &> /dev/null && docker ps --format '{{.Names}}' | grep -q "cloud_manager"; then
     print_error "检测到正在运行的 Docker 版 Cloud Manager。两种安装模式不能混用。"
     print_error "请先运行 'docker-compose down -v' 彻底卸载 Docker 版，或选择使用 Docker 方式进行管理。"
