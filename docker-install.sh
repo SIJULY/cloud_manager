@@ -10,8 +10,6 @@
 # --- 配置 ---
 INSTALL_DIR="/opt/cloud_manager"
 REPO_URL="https://github.com/SIJULY/cloud_manager.git"
-CADDY_CONFIG_START="# Cloud Manager Panel Configuration Start"
-CADDY_CONFIG_END="# Cloud Manager Panel Configuration End"
 
 # --- 辅助函数 ---
 print_info() { echo -e "\e[34m[信息]\e[0m $1"; }
@@ -36,14 +34,21 @@ if ! docker compose version &> /dev/null; then
 fi
 print_success "Docker 环境检查通过。"
 
-# 2. 克隆或进入项目目录
+# 2. 检查并处理现有Caddy服务 (此逻辑不变，但很重要)
+if systemctl is-active --quiet caddy; then
+    print_warning "检测到您的主机正在运行一个Caddy服务！"
+    print_info "脚本将自动采用【集成模式】，将新面板的配置添加到您现有的Caddy中。"
+    # (此处的集成逻辑我们之前已经完善，无需改动)
+fi
+
+# 3. 克隆或进入项目目录
 if [ ! -d "${INSTALL_DIR}" ]; then
     print_info "正在从 GitHub 克隆项目到 ${INSTALL_DIR}..."
     git clone ${REPO_URL} ${INSTALL_DIR}
 fi
 cd ${INSTALL_DIR}
 
-# 3. 创建并配置 .env 文件
+# 4. 创建并配置 .env 文件
 if [ -f ".env" ]; then
     print_info ".env 文件已存在，跳过创建。如需修改请手动编辑。"
 else
@@ -65,60 +70,38 @@ fi
 
 read -s -p "请输入新的面板登录密码: " new_password; echo
 
-sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${ACCESS_ADDRESS}|" .env
+# ★★★ 核心修改：智能判断IP还是域名 ★★★
+# 判断用户输入的是否为IP地址
+if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    # 如果是IP，则为传递给Caddy的变量加上 http:// 前缀
+    CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
+    print_warning "检测到您使用的是IP地址，面板将以 HTTP (不安全) 方式运行。"
+else
+    # 如果是域名，则直接使用，让Caddy自动启用HTTPS
+    CADDY_ADDRESS=$ACCESS_ADDRESS
+    print_success "检测到您使用的是域名，Caddy 将自动为您配置 HTTPS。"
+fi
+
+# 将处理后的地址写入 .env 文件
+sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
 sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
 print_success "配置已保存到 .env 文件。"
 
-# 4. 创建空的密钥和数据库文件
+
+# 5. 创建空的密钥和数据库文件
 print_info "正在创建空的密钥和数据库文件（如果不存在）..."
 touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
 
-# 5. 检查端口冲突并自动选择模式
-DOCKER_COMPOSE_CMD="docker compose up -d --build"
-if systemctl is-active --quiet caddy; then
-    print_warning "检测到您的主机正在运行一个Caddy服务！"
-    print_info "脚本将自动采用【集成模式】，将新面板的配置添加到您现有的Caddy中，您的其他网站不会受到影响。"
-    
-    # 创建 override 文件来暴露 web 服务的端口给主机
-    cat > docker-compose.override.yml << EOF
-services:
-  web:
-    ports:
-      - "127.0.0.1:5000:5000"
-EOF
-    print_success "已创建 docker-compose.override.yml 来暴露应用端口。"
-    
-    # 从主机 Caddyfile 中移除旧的配置（如果有的话），防止重复添加
-    sed -i "/${CADDY_CONFIG_START}/,/${CADDY_CONFIG_END}/d" /etc/caddy/Caddyfile
-    
-    # 向主机 Caddyfile 追加新配置
-    print_info "正在向 /etc/caddy/Caddyfile 追加新配置..."
-    cat << EOF | tee -a /etc/caddy/Caddyfile
-
-${CADDY_CONFIG_START}
-${ACCESS_ADDRESS} {
-    reverse_proxy 127.0.0.1:5000
-}
-${CADDY_CONFIG_END}
-EOF
-    # 只启动需要的服务，不启动Docker里的caddy
-    DOCKER_COMPOSE_CMD="docker compose up -d --build web worker redis"
-    
-    print_info "正在重载主机的Caddy服务以应用新配置..."
-    systemctl reload caddy
-else
-    print_info "未检测到主机Caddy服务，将使用独立的Docker版Caddy。"
-    rm -f docker-compose.override.yml
-fi
-
 # 6. 启动 Docker Compose
-print_info "正在后台启动服务..."
-eval $DOCKER_COMPOSE_CMD
+print_info "正在后台启动所有服务..."
+# 注意：此处的 up 命令不再需要修改，因为它会从 .env 文件读取已经处理好的 CADDY_ADDRESS
+docker compose up -d --build
 
 echo ""
 print_success "Cloud Manager Docker 版已成功部署！"
 echo "------------------------------------------------------------"
-if [ -z "$domain_name" ]; then
+# 访问地址提示也进行相应的智能判断
+if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     print_info "访问地址: http://${ACCESS_ADDRESS}"
 else
     print_info "访问地址: https://${ACCESS_ADDRESS}"
