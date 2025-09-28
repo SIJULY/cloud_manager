@@ -11,6 +11,7 @@
 
 # ==============================================================================
 
+
 # --- 配置 ---
 INSTALL_DIR="/opt/cloud_manager"
 REPO_URL="https://github.com/SIJULY/cloud_manager.git"
@@ -90,29 +91,38 @@ install_or_update_panel() {
         systemctl stop ${SERVICE_NAME}.service || true
         systemctl stop ${CELERY_SERVICE_NAME}.service || true
         cd "${INSTALL_DIR}"
+        
         print_info "备份当前密钥和数据库文件..."
         TEMP_BACKUP_DIR=$(mktemp -d)
         find . -maxdepth 1 \( -name "*.json" -o -name "*.txt" -o -name "*.db" \) -exec cp {} "${TEMP_BACKUP_DIR}/" \;
+        
         print_info "正在从 Git 拉取最新代码..."
         git config --global --add safe.directory ${INSTALL_DIR}
         git fetch origin
         git reset --hard origin/main
+
         print_info "恢复密钥和数据库文件..."
-        cp -f "${TEMP_BACKUP_DIR}"/* .
+        if [ -n "$(ls -A ${TEMP_BACKUP_DIR})" ]; then
+            cp -f "${TEMP_BACKUP_DIR}"/* .
+        fi
         rm -rf "${TEMP_BACKUP_DIR}"
     else
         # --- 全新安装流程 ---
         print_info "步骤 3: 未检测到安装，执行全新安装..."
         git clone "${REPO_URL}" "${INSTALL_DIR}"
         cd "${INSTALL_DIR}"
-        touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
         
+        touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+
         print_info "设置登录密码..."
         while true; do
             read -s -p "请输入新密码: " new_password; echo
             read -s -p "请再次输入新密码以确认: " new_password_confirm; echo
-            if [ "$new_password" = "$new_password_confirm" ] && [ -n "$new_password" ]; then break
-            else print_warning "两次输入的密码不匹配或密码为空，请重试。"; fi
+            if [ "$new_password" = "$new_password_confirm" ] && [ -n "$new_password" ]; then
+                break
+            else
+                print_warning "两次输入的密码不匹配或密码为空，请重试。"
+            fi
         done
         sed -i "s|^PASSWORD = \".*\"|PASSWORD = \"${new_password}\"|" "${INSTALL_DIR}/app.py"
         print_success "应用密码已成功设置。"
@@ -129,7 +139,6 @@ install_or_update_panel() {
         fi
         
         print_info "正在向 Caddyfile 追加配置..."
-        # 使用 tee -a 追加配置，并在前后加上标记，便于卸载
         cat << EOF | tee -a /etc/caddy/Caddyfile
 
 ${CADDY_CONFIG_START}
@@ -187,12 +196,34 @@ EOF
     systemctl restart redis-server ${SERVICE_NAME}.service ${CELERY_SERVICE_NAME}.service
     systemctl reload caddy
 
+    echo ""
     print_success "Cloud Manager 面板已成功部署！"
+    echo "------------------------------------------------------------"
+    
+    # 再次获取访问地址用于显示
+    if [ -z "$ACCESS_ADDRESS" ] && [ -f "/etc/caddy/Caddyfile" ]; then
+        ACCESS_ADDRESS=$(grep -B 1 "reverse_proxy unix//run/gunicorn/cloud_manager.sock" /etc/caddy/Caddyfile | head -n 1 | awk '{print $1}')
+    fi
+
+    if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        print_info "访问地址: http://${ACCESS_ADDRESS}"
+    else
+        print_info "访问地址: https://${ACCESS_ADDRESS}"
+    fi
+    print_info "请使用您之前设置(或刚刚设置)的密码登录。"
+    echo "------------------------------------------------------------"
 }
 
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then
    print_error "此脚本必须以root用户身份运行。"
+fi
+
+# Docker 冲突检查
+if command -v docker &> /dev/null && docker ps --format '{{.Names}}' | grep -q "cloud_manager"; then
+    print_error "检测到正在运行的 Docker 版 Cloud Manager。两种安装模式不能混用。"
+    print_error "请先运行 'docker-compose down -v' 彻底卸载 Docker 版，或选择使用 Docker 方式进行管理。"
+    exit 1
 fi
 
 clear
@@ -205,7 +236,6 @@ echo "  3) 退出脚本"
 echo "==============================================="
 read -p "请输入选项数字 [1]: " choice
 
-# 如果用户直接按回车，则默认为1
 choice=${choice:-1}
 
 case $choice in
