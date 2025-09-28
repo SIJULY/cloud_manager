@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:6-alpine
+    restart: always
+    volumes:
+      - redis_data:/data
+  web:
+    build: .
+    restart: always
+    command: gunicorn --workers 4 --bind 0.0.0.0:5000 app:app
+    volumes:
+      - ./azure_keys.json:/app/azure_keys.json
+      - ./oci_profiles.json:/app/oci_profiles.json
+      - ./key.txt:/app/key.txt
+      - ./azure_tasks.db:/app/azure_tasks.db
+      - ./oci_tasks.db:/app/oci_tasks.db
+    environment:
+      - PANEL_PASSWORD=${PANEL_PASSWORD}
+    depends_on:
+      - redis
+  worker:
+    build: .
+    restart: always
+    command: celery -A app.celery worker --loglevel=info
+    volumes:
+      - ./azure_keys.json:/app/azure_keys.json
+      - ./oci_profiles.json:/app/oci_profiles.json
+      - ./key.txt:/app/key.txt
+      - ./azure_tasks.db:/app/azure_tasks.db
+      - ./oci_tasks.db:/app/oci_tasks.db
+    depends_on:
+      - redis
+  caddy:
+    image: caddy:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_OR_IP=${DOMAIN_OR_IP}
+    depends_on:
+      - web
+
+volumes:
+  redis_data:
+  caddy_data:
+  caddy_config:
