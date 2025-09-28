@@ -5,3 +5,9 @@ azure-identity
 azure-mgmt-compute
 azure-mgmt-network
 azure-mgmt-resource
+
+指定一个兼容的版本来解决冲突
+cryptography==44.0.0
+
+添加 Gunicorn 作为 Web 服务器
+gunicorn
