@@ -18,13 +18,18 @@ if [ "$(id -u)" -ne 0 ]; then
    print_error "此脚本必须以root用户身份运行。"
 fi
 
-# 1. 检查 Docker 和 Docker Compose 是否安装
-if ! command -v docker &> /dev/null || ! command -v docker-compose &> /dev/null; then
-    print_error "Docker 或 Docker Compose 未安装。请先安装它们后再运行此脚本。"
-    print_info "Docker 安装教程: https://docs.docker.com/engine/install/"
-    print_info "Docker Compose 安装教程: https://docs.docker.com/compose/install/"
+# 1. 检查 Docker 和 Docker Compose 是否安装 (已修正)
+print_info "正在检查 Docker 环境..."
+if ! command -v docker &> /dev/null; then
+    print_error "Docker 未安装。请先运行 'curl -fsSL https://get.docker.com | bash' 进行安装。"
     exit 1
 fi
+
+if ! docker compose version &> /dev/null; then
+    print_error "Docker Compose (v2 插件) 未安装。请先运行 'apt-get update && apt-get install -y docker-compose-plugin' 进行安装。"
+    exit 1
+fi
+print_success "Docker 环境检查通过。"
 
 # 2. 检查端口冲突
 if systemctl is-active --quiet caddy || lsof -i :80 -i :443 &>/dev/null; then
@@ -37,7 +42,14 @@ if systemctl is-active --quiet caddy || lsof -i :80 -i :443 &>/dev/null; then
     fi
 fi
 
-# 3. 创建并配置 .env 文件
+# 3. 克隆或进入项目目录
+if [ ! -d "/opt/cloud_manager" ]; then
+    print_info "正在从 GitHub 克隆项目到 /opt/cloud_manager..."
+    git clone https://github.com/SIJULY/cloud_manager.git /opt/cloud_manager
+fi
+cd /opt/cloud_manager
+
+# 4. 创建并配置 .env 文件
 if [ -f ".env" ]; then
     print_info ".env 文件已存在，跳过创建。如需修改请手动编辑。"
 else
@@ -45,7 +57,6 @@ else
     cp .env.example .env
 fi
 
-# ★★★ 新增的智能IP检测逻辑 ★★★
 print_info "请为您的面板进行配置..."
 read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
 
@@ -64,16 +75,15 @@ fi
 read -s -p "请输入新的面板登录密码: " new_password
 echo
 
-# 使用 sed 安全地替换 .env 文件中的值
 sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${ACCESS_ADDRESS}|" .env
 sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
 print_success "配置已保存到 .env 文件。"
 
-# 4. 创建空的密钥和数据库文件
-print_info "正在创建空的密钥和数据库文件..."
+# 5. 创建空的密钥和数据库文件
+print_info "正在创建空的密钥和数据库文件（如果不存在）..."
 touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
 
-# 5. 启动 Docker Compose
+# 6. 启动 Docker Compose
 print_info "正在后台启动所有服务... (首次启动需要一些时间来构建镜像)"
 docker-compose up -d --build
 
