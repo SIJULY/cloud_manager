@@ -36,6 +36,10 @@
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/install.sh)
 ```
+DOCKER版本
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/docker-install.sh)
+```
 脚本将会引导您完成以下操作：
 
 1. 自动安装所有系统和 Python 依赖。  
