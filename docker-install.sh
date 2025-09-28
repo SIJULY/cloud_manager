@@ -7,6 +7,12 @@
 # 作者: 小龙女她爸
 # ==============================================================================
 
+# --- 配置 ---
+INSTALL_DIR="/opt/cloud_manager"
+REPO_URL="https://github.com/SIJULY/cloud_manager.git"
+CADDY_CONFIG_START="# Cloud Manager Panel Configuration Start"
+CADDY_CONFIG_END="# Cloud Manager Panel Configuration End"
+
 # --- 辅助函数 ---
 print_info() { echo -e "\e[34m[信息]\e[0m $1"; }
 print_success() { echo -e "\e[32m[成功]\e[0m $1"; }
@@ -18,7 +24,7 @@ if [ "$(id -u)" -ne 0 ]; then
    print_error "此脚本必须以root用户身份运行。"
 fi
 
-# 1. 检查 Docker 和 Docker Compose 是否安装
+# 1. 检查 Docker 和 Docker Compose
 print_info "正在检查 Docker 环境..."
 if ! command -v docker &> /dev/null; then
     print_error "Docker 未安装。请先运行 'curl -fsSL https://get.docker.com | bash' 进行安装。"
@@ -30,25 +36,14 @@ if ! docker compose version &> /dev/null; then
 fi
 print_success "Docker 环境检查通过。"
 
-# 2. 检查端口冲突
-if systemctl is-active --quiet caddy || lsof -i :80 -i :443 &>/dev/null; then
-    print_warning "检测到您的主机可能正在使用80或443端口（例如，已安装了Caddy或Nginx）。"
-    print_warning "Docker版的Caddy也需要使用这些端口。为避免冲突，请先停止您主机上的Web服务器。"
-    read -p "是否需要脚本尝试停止主机的Caddy服务？(y/n): " stop_caddy
-    if [ "$stop_caddy" = "y" ]; then
-        systemctl stop caddy || true
-        print_success "已尝试停止主机的Caddy服务。"
-    fi
+# 2. 克隆或进入项目目录
+if [ ! -d "${INSTALL_DIR}" ]; then
+    print_info "正在从 GitHub 克隆项目到 ${INSTALL_DIR}..."
+    git clone ${REPO_URL} ${INSTALL_DIR}
 fi
+cd ${INSTALL_DIR}
 
-# 3. 克隆或进入项目目录
-if [ ! -d "/opt/cloud_manager" ]; then
-    print_info "正在从 GitHub 克隆项目到 /opt/cloud_manager..."
-    git clone https://github.com/SIJULY/cloud_manager.git /opt/cloud_manager
-fi
-cd /opt/cloud_manager
-
-# 4. 创建并配置 .env 文件
+# 3. 创建并配置 .env 文件
 if [ -f ".env" ]; then
     print_info ".env 文件已存在，跳过创建。如需修改请手动编辑。"
 else
@@ -57,7 +52,7 @@ else
 fi
 
 print_info "请为您的面板进行配置..."
-read -p "请输入您的域名 (留空则自动使用服务器公-网IP): " domain_name
+read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
 
 if [ -z "$domain_name" ]; then
     print_info "未输入域名，正在尝试获取服务器公网IP..."
@@ -74,13 +69,51 @@ sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${ACCESS_ADDRESS}|" .env
 sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
 print_success "配置已保存到 .env 文件。"
 
-# 5. 创建空的密钥和数据库文件
+# 4. 创建空的密钥和数据库文件
 print_info "正在创建空的密钥和数据库文件（如果不存在）..."
 touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
 
-# 6. 启动 Docker Compose (已修正)
-print_info "正在后台启动所有服务... (首次启动需要一些时间来构建镜像)"
-docker compose up -d --build
+# 5. 检查端口冲突并自动选择模式
+DOCKER_COMPOSE_CMD="docker compose up -d --build"
+if systemctl is-active --quiet caddy; then
+    print_warning "检测到您的主机正在运行一个Caddy服务！"
+    print_info "脚本将自动采用【集成模式】，将新面板的配置添加到您现有的Caddy中，您的其他网站不会受到影响。"
+    
+    # 创建 override 文件来暴露 web 服务的端口给主机
+    cat > docker-compose.override.yml << EOF
+services:
+  web:
+    ports:
+      - "127.0.0.1:5000:5000"
+EOF
+    print_success "已创建 docker-compose.override.yml 来暴露应用端口。"
+    
+    # 从主机 Caddyfile 中移除旧的配置（如果有的话），防止重复添加
+    sed -i "/${CADDY_CONFIG_START}/,/${CADDY_CONFIG_END}/d" /etc/caddy/Caddyfile
+    
+    # 向主机 Caddyfile 追加新配置
+    print_info "正在向 /etc/caddy/Caddyfile 追加新配置..."
+    cat << EOF | tee -a /etc/caddy/Caddyfile
+
+${CADDY_CONFIG_START}
+${ACCESS_ADDRESS} {
+    reverse_proxy 127.0.0.1:5000
+}
+${CADDY_CONFIG_END}
+EOF
+    # 只启动需要的服务，不启动Docker里的caddy
+    DOCKER_COMPOSE_CMD="docker compose up -d --build web worker redis"
+    
+    print_info "正在重载主机的Caddy服务以应用新配置..."
+    systemctl reload caddy
+else
+    print_info "未检测到主机Caddy服务，将使用独立的Docker版Caddy。"
+    rm -f docker-compose.override.yml
+fi
+
+# 6. 启动 Docker Compose
+print_info "正在后台启动服务..."
+eval $DOCKER_COMPOSE_CMD
 
 echo ""
 print_success "Cloud Manager Docker 版已成功部署！"
