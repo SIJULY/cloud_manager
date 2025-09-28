@@ -31,7 +31,7 @@
 
 本项目提供了一个自动化安装脚本，适用于一个全新的、基于 **Debian** 或 **Ubuntu** 的服务器。  
 
-请以 `root` 用户身份登录您的服务器，然后执行以下一行命令：
+请以 `root` 用户身份登录您的服务器，然后执行以下一行命令（安装/更新，卸载）：
 
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/install.sh)
