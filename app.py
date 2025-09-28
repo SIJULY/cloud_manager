@@ -7,12 +7,11 @@ from blueprints.aws_panel import aws_bp
 # --- App Configuration ---
 app = Flask(__name__)
 app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
-# 注意：此处的密码会在安装脚本中被用户设置的新密码覆盖
-PASSWORD = "default_password" 
+# 从环境变量读取密码，如果找不到，则使用一个默认值
+PASSWORD = os.getenv("PANEL_PASSWORD", "default_password") 
 
 # --- Celery Configuration (for OCI) ---
 app.config.update(
-    # 使用新版Celery推荐的小写配置项
     broker_url='redis://localhost:6379/0',
     result_backend='redis://localhost:6379/0',
     SEND_FILE_MAX_AGE_DEFAULT = 0,
@@ -45,7 +44,6 @@ def logout():
 def index():
     if 'user_logged_in' not in session:
         return redirect(url_for('login'))
-    # 默认重定向到AWS面板
     return redirect(url_for('aws.aws_index'))
 
 # --- Database Initialization on First Run ---
