@@ -17,6 +17,15 @@
 - **一键安装**: 提供自动化脚本，可在全新的服务器上快速完成所有环境配置和部署。  
 
 ---
+<img width="1918" height="1913" alt="c9d37e04-db60-4765-ad6a-99d3fb981377" src="https://github.com/user-attachments/assets/4b81db74-54b2-4e07-b664-27271a3b8580" />
+
+<img width="1921" height="1916" alt="092697da-9557-4c85-bdab-e1d375c43af1" src="https://github.com/user-attachments/assets/06be02df-48cd-4047-9ee1-b05eff17d55c" />
+
+<img width="1916" height="1616" alt="4d29ef9d-27a1-45ea-a6b2-dcf01addb51b" src="https://github.com/user-attachments/assets/70e70715-1a72-48da-b902-880a8de55a14" />
+
+
+
+
 
 ## 🚀 一键快速安装
 
