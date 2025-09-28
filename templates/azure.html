@@ -1,1 +1,156 @@
+{% extends "layout.html" %}
 
+{% block title %}Azure VM Management Panel{% endblock %}
+
+{% block head_extra %}
+<style>
+    .table-hover tbody tr.table-active { background-color: #dbeafe; }
+    .table-hover tbody tr { cursor: pointer; }
+    .vm-list-table { width: 100%; }
+    .vm-list-table th:nth-child(1) { width: 18%; } .vm-list-table th:nth-child(2) { width: 18%; }
+    .vm-list-table th:nth-child(3) { width: 11%; } .vm-list-table th:nth-child(4) { width: 18%; }
+    .vm-list-table th:nth-child(5) { width: 12%; } .vm-list-table th:nth-child(6) { width: 13%; }
+    .vm-list-table th:nth-child(7) { width: 10%; }
+    .vm-list-table th, .vm-list-table td { text-align: center; vertical-align: middle; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <div><h1 class="display-5 mb-0">Azure VM Management Panel</h1><p class="text-muted mb-0">Powered by 小龙女她爸 & 雨后天霁</p></div>
+    </div>
+    <hr>
+    <div class="row mb-4">
+        <div class="col-lg-5">
+            <div class="card" style="height: 550px;">
+                <div class="card-header">添加 Azure 账户</div>
+                <div class="card-body">
+                    <form id="addAccountForm">
+                        <div class="mb-2"><label class="form-label">账户名称</label><input type="text" id="accountName" class="form-control form-control-sm" required></div>
+                        <div class="mb-2"><label class="form-label">客户端 ID</label><input type="text" id="clientId" class="form-control form-control-sm" required></div>
+                        <div class="mb-2"><label class="form-label">客户端密码</label><input type="password" id="clientSecret" class="form-control form-control-sm" required></div>
+                        <div class="mb-2"><label class="form-label">租户 ID</label><input type="text" id="tenantId" class="form-control form-control-sm" required></div>
+                        <div class="mb-2"><label class="form-label">订阅 ID</label><input type="text" id="subscriptionId" class="form-control form-control-sm" required></div>
+                        <div class="mb-3"><label class="form-label">订阅到期日 (可选)</label><input type="date" id="expirationDate" class="form-control form-control-sm"></div>
+                        <div class="d-grid"><button type="submit" class="btn btn-primary">添加账户</button></div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+             <div class="card d-flex flex-column" style="height: 550px;">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div><span>账户列表</span><small id="currentAccountStatus" class="ms-3 text-muted"></small></div>
+                    <button id="queryAllStatusBtn" class="btn btn-sm btn-primary">一键显示所有到期日</button>
+                </div>
+                <div class="card-body p-0 flex-grow-1" style="overflow-y: auto;">
+                     <div class="table-responsive">
+                        <table class="table table-striped table-hover mb-0">
+                            <thead><tr><th>账户名称</th><th class="text-center">订阅到期状态</th><th class="text-center">操作</th></tr></thead>
+                            <tbody id="accountList"></tbody>
+                        </table>
+                    </div>
+                </div>
+             </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header">操作区域</div>
+        <div class="card-body">
+            <div class="row g-3 align-items-center mb-3">
+                <div class="col-auto"><label class="col-form-label">选择区域:</label></div>
+                <div class="col"><select class="form-select" id="regionSelector" disabled><option>请先选择账户</option></select></div>
+            </div>
+            <h6>创建实例</h6>
+            <div class="d-grid mb-3"><button id="createVmBtn" class="btn btn-success" disabled>创建 Azure 虚拟机</button></div>
+            <h6>开机脚本 (User Data)</h6>
+            <textarea id="userData" class="form-control" rows="10">#!/bin/bash
+# 标记文件路径，确保脚本只运行一次
+FLAG_FILE="/etc/.user-data-executed"
+if [ ! -f "$FLAG_FILE" ]; then
+    echo "--- Running First-Time Initialization ---"
+    echo "root:You22kme#12345" | sudo chpasswd
+    sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+    sudo systemctl restart sshd || sudo service ssh restart
+    sudo touch "$FLAG_FILE"
+fi
+</textarea>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-center align-items-center position-relative">
+            <span class="fw-bold">虚拟机列表</span>
+            <div class="btn-group position-absolute" style="right: 1rem;"><button id="refreshVms" class="btn btn-sm btn-outline-primary" disabled>刷新列表</button></div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0 vm-list-table">
+                    <thead><tr><th>名称</th><th>资源组</th><th>区域</th><th>实例类型</th><th>运行时间</th><th>公网IP</th><th>状态</th></tr></thead>
+                    <tbody id="vmList"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card-footer text-center">
+            <div class="d-flex justify-content-center gap-3" role="group">
+                <button type="button" id="startBtn" class="btn" disabled>启动</button>
+                <button type="button" id="stopBtn" class="btn" disabled>停止</button>
+                <button type="button" id="restartBtn" class="btn" disabled>重启</button>
+                <button type="button" id="changeIpBtn" class="btn" disabled>更换IP</button>
+                <button type="button" id="deleteBtn" class="btn" disabled>删除</button>
+            </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between">日志输出<button id="clearLogBtn" class="btn btn-sm btn-outline-danger">清除日志</button></div>
+        <div class="card-body p-2"><pre id="logOutput" class="form-control mb-0" style="height: 200px;"></pre></div>
+    </div>
+</div>
+<div class="modal fade" id="createVmModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">创建新的虚拟机</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <form id="createVmForm">
+                    <div class="row">
+                        <div class="col-md-6 mb-3"><label class="form-label">已选区域</label><input type="text" id="vmRegionDisplay" class="form-control" readonly></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">实例类型</label><select id="vmSize" class="form-select" required><option value="Standard_B1s">B1s (1 vCPU, 1 GB RAM)</option><option value="Standard_B1ms">B1ms (1 vCPU, 2 GB RAM)</option><option value="Standard_B2s">B2s (2 vCPU, 4 GB RAM)</option><option value="Standard_D2s_v3">D2s v3 (2 vCPU, 8 GB RAM)</option><option value="Standard_F2s_v2">F2s v2 (2 vCPU, 4 GB RAM)</option></select></div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6 mb-3"><label class="form-label">操作系统</label><select id="vmOs" class="form-select" required><option value="debian12" selected>Debian 12</option><option value="debian11">Debian 11</option><option value="ubuntu22">Ubuntu 22.04 LTS</option><option value="ubuntu20">Ubuntu 20.04 LTS</option></select></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">硬盘大小 (GB)</label><select id="vmDiskSize" class="form-select" required><option value="30">30 GB</option><option value="64" selected>64 GB</option><option value="128">128 GB</option></select></div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">公网IP类型</label>
+                        <div>
+                            <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="ipType" id="staticIp" value="Static" checked><label class="form-check-label" for="staticIp">静态IP</label></div>
+                            <div class="form-check form-check-inline"><input class="form-check-input" type="radio" name="ipType" id="dynamicIp" value="Dynamic"><label class="form-check-label" for="dynamicIp">动态IP</label></div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" id="confirmCreateVmBtn" class="btn btn-primary">确认创建</button></div>
+        </div>
+    </div>
+</div>
+<div class="modal fade" id="editAccountModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header"><h5 class="modal-title">修改账户信息</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+            <div class="modal-body">
+                <form id="editAccountForm">
+                    <input type="hidden" id="editOriginalAccountName">
+                    <div class="mb-3"><label class="form-label">账户名称</label><input type="text" class="form-control" id="editAccountName" required></div>
+                    <div class="mb-3"><label class="form-label">订阅到期日</label><input type="date" class="form-control" id="editExpirationDate"></div>
+                </form>
+            </div>
+            <div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" id="confirmEditAccountBtn" class="btn btn-primary">保存更改</button></div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/azure_script.js') }}"></script>
+{% endblock %}
