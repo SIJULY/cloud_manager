@@ -2,13 +2,9 @@
 
 # ==============================================================================
 # Cloud Manager 三合一面板 一键安装脚本 (增强版)
-
 # 该脚本适用于一个全新的、基于 Debian/Ubuntu 的系统。
-
 # 它会自动安装所有依赖、配置并启动服务。
-
 # 作者: 小龙女她爸
-
 # ==============================================================================
 
 
@@ -175,10 +171,12 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+    # vvvvvvvvvvvv 这是被修复的部分 vvvvvvvvvvvv
     cat > /etc/systemd/system/${CELERY_SERVICE_NAME}.service << EOF
 [Unit]
 Description=Celery Worker for the Cloud Manager Panel
 After=network.target redis-server.service
+
 [Service]
 User=caddy
 Group=caddy
@@ -186,9 +184,11 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info
 Restart=always
 RestartSec=5
+
 [Install]
 WantedBy=multi-user.target
 EOF
+    # ^^^^^^^^^^^^ 这是被修复的部分 ^^^^^^^^^^^^
 
     print_info "步骤 6: 启动所有服务..."
     systemctl daemon-reload
