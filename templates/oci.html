@@ -1,1 +1,381 @@
+{% extends "layout.html" %}
+
+{% block title %}OCI 实例管理器 (Web版){% endblock %}
+
+{% block head_extra %}
+<style>
+    body { padding-bottom: 20px; background-color: #f8f9fa; }
+    .table-hover tbody tr { cursor: pointer; }
+    .table-hover tbody tr.table-active { background-color: #ffe5d0 !important; }
+    .form-label { font-weight: 500; }
+    .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+    .status-running { background-color: #198754; }
+    .status-stopped { background-color: #dc3545; }
+    .status-other { background-color: #ffc107; }
+    .action-buttons button { margin: 0 2px; }
+    #logOutput { white-space: pre-wrap; word-break: break-all; }
+    #logOutput pre { margin-bottom: 0; white-space: pre-wrap; }
+    #instanceList td { text-align: center; vertical-align: middle; }
+    #instanceList td:first-child { text-align: left; }
+    .action-group { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 0.5rem; }
+    .action-group .btn { flex-grow: 1; }
+    #viewSnatchTasksModal .list-group-item { cursor: pointer; }
+    .profile-action-btn { width: 85px !important; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <div>
+            <h1 class="display-5 mb-0">OCI 实例管理器</h1>
+            <p class="text-muted mb-0" id="currentProfileStatus">未连接</p>
+        </div>
+    </div>
+    <div class="row mb-4">
+        <div class="col-lg-5">
+            <div class="card h-100">
+                <div class="card-header fw-bold">添加 OCI 账户</div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label for="newProfileAlias" class="form-label">账号名称 (自定义)</label>
+                        <input type="text" class="form-control" id="newProfileAlias" placeholder="例如: oracle-sg-account1">
+                    </div>
+                    <div class="mb-3">
+                        <label for="newProfileConfigText" class="form-label">配置信息</label>
+                        <textarea class="form-control" id="newProfileConfigText" rows="4" placeholder="粘贴 user, fingerprint, tenancy, region 的内容"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="newProfileSshKey" class="form-label">默认SSH公钥</label>
+                        <textarea class="form-control" id="newProfileSshKey" rows="3" placeholder="用于登录实例 (ssh-rsa ...)"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="newProfileKeyFile" class="form-label">上传 PEM 私钥文件</label>
+                        <input class="form-control" type="file" id="newProfileKeyFile" accept=".pem">
+                    </div>
+                    <div class="d-grid">
+                        <button class="btn btn-primary" id="addNewProfileBtn">确认添加</button>
+                    </div>
+                    <small class="text-muted d-block mt-2">提示：必须填写SSH公钥才能使用创建和抢占功能。</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+             <div class="card h-100">
+                <div class="card-header fw-bold">账户列表</div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-hover">
+                            <thead>
+                                <tr>
+                                    <th>账户名称</th>
+                                    <th class="text-end" style="padding-right: 130px;">操作</th>
+                                    </tr>
+                            </thead>
+                            <tbody id="profileList">
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+         <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="fw-bold">操作区域</span>
+            <span class="badge bg-primary d-none" id="actionAreaProfile"></span>
+        </div>
+        <div class="card-body">
+            <div class="action-group">
+                <button id="createInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#createInstanceModal">
+                    <i class="bi bi-plus-circle"></i> 创建实例
+                </button>
+                <button id="snatchInstanceBtn" class="btn btn-primary" disabled data-bs-toggle="modal" data-bs-target="#snatchInstanceModal">
+                    <i class="bi bi-robot"></i> 自动抢占实例
+                </button>
+                <button id="viewSnatchTasksBtn" class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
+                    <i class="bi bi-list-task"></i> 查看抢机任务
+                </button>
+            </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span class="fw-bold">实例列表</span>
+            <button id="refreshInstancesBtn" class="btn btn-sm btn-primary" disabled>
+                <i class="bi bi-arrow-clockwise"></i> 刷新列表
+            </button>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th style="width: 20%; text-align: left; padding-left: 1rem;">显示名称</th>
+                            <th class="text-center" style="width: 10%;">状态</th>
+                            <th class="text-center" style="width: 15%;">IPV4</th>
+                            <th class="text-center" style="width: 25%;">IPV6</th>
+                            <th class="text-center" style="width: 15%;">配置(核/内存/磁盘)</th>
+                            <th class="text-center" style="width: 15%;">创建时间</th>
+                        </tr>
+                    </thead>
+                    <tbody id="instanceList">
+                        <tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card-footer text-center">
+            <div id="instanceActionGroup" class="action-group">
+                <button type="button" id="startBtn" class="btn btn-success" disabled>启动</button>
+                <button type="button" id="stopBtn" class="btn btn-warning" disabled>停止</button>
+                <button type="button" id="restartBtn" class="btn btn-info" disabled>重启</button>
+                <button type="button" id="changeIpBtn" class="btn btn-secondary" disabled>更换公网IP (IPV4)</button>
+                <button type="button" id="assignIpv6Btn" class="btn btn-info" disabled>分配IPV6</button>
+                <button type="button" id="terminateBtn" class="btn btn-danger" disabled>终止</button>
+            </div>
+        </div>
+    </div>
+    <div class="row">
+        <div class="col-12">
+            <div class="card mb-4">
+                <div class="card-header d-flex justify-content-between">
+                    <span>日志输出</span>
+                    <button id="clearLogBtn" class="btn btn-sm btn-outline-secondary">清除日志</button>
+                </div>
+                <div class="card-body p-2">
+                    <div id="logOutput" class="form-control" style="height: 200px; overflow-y: auto;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="createInstanceModal" tabindex="-1" aria-labelledby="createInstanceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createInstanceModalLabel">创建新实例 (单次)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">此模式将自动查找或创建网络，并只尝试创建一次。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
+                <form id="createInstanceForm">
+                    <div class="row">
+                        <div class="col-md-8 mb-3">
+                            <label for="instanceNamePrefix" class="form-label">实例名称前缀</label>
+                            <input type="text" class="form-control" id="instanceNamePrefix" value="instance" required>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="instanceCount" class="form-label">创建数量</label>
+                            <input type="number" class="form-control" id="instanceCount" value="1" min="1" max="10" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="instanceOS" class="form-label">操作系统</label>
+                        <select class="form-select" id="instanceOS">
+                            <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
+                            <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
+                            <option value="Oracle Linux-9">Oracle Linux 9</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="instanceShape" class="form-label">实例规格 (Shape)</label>
+                        <select class="form-select" id="instanceShape">
+                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
+                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
+                        </select>
+                    </div>
+                    <div id="flexShapeConfig" class="row">
+                        <div class="col-md-4 mb-3">
+                            <label for="instanceOcpus" class="form-label">OCPU 数量</label>
+                            <input type="number" class="form-control" id="instanceOcpus" value="4" min="1" max="4">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="instanceMemory" class="form-label">内存 (GB)</label>
+                            <input type="number" class="form-control" id="instanceMemory" value="24" min="1" max="24">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                           <label for="bootVolumeSize" class="form-label">磁盘大小 (GB)</label>
+                           <input type="number" class="form-control" id="bootVolumeSize" value="50" min="50">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="submitCreateInstance">确认创建</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editProfileModal" tabindex="-1" aria-labelledby="editProfileModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editProfileModalLabel">编辑 OCI 账户</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="editProfileForm">
+                    <input type="hidden" id="editProfileOriginalAlias">
+                    <div class="mb-3">
+                        <label for="editProfileAlias" class="form-label">账号名称 (自定义)</label>
+                        <input type="text" class="form-control" id="editProfileAlias">
+                    </div>
+                    <div class="mb-3">
+                        <label for="editProfileConfigText" class="form-label">配置信息</label>
+                        <textarea class="form-control" id="editProfileConfigText" rows="4"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editProfileSshKey" class="form-label">默认SSH公钥</label>
+                        <textarea class="form-control" id="editProfileSshKey" rows="3"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label for="editProfileKeyFile" class="form-label">更新 PEM 私钥文件 (可选)</label>
+                        <input class="form-control" type="file" id="editProfileKeyFile" accept=".pem">
+                        <small class="text-muted">如需更换私钥，请上传新文件。否则请留空。</small>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveProfileChangesBtn">保存更改</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="snatchInstanceModal" tabindex="-1" aria-labelledby="snatchInstanceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="snatchInstanceModalLabel">自动抢占实例 (循环重试)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">此模式将自动查找或创建网络并持续尝试创建，直到成功。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
+                <form id="snatchInstanceForm">
+                    <div class="row">
+                        <div class="col-md-8 mb-3">
+                            <label for="snatchInstanceNamePrefix" class="form-label">实例名称</label>
+                            <input type="text" class="form-control" id="snatchInstanceNamePrefix" value="snatch-instance" required>
+                        </div>
+                         <div class="col-md-4 mb-3">
+                            <label for="snatchAvailabilityDomain" class="form-label">可用性域 (可选)</label>
+                            <input type="text" class="form-control" id="snatchAvailabilityDomain" placeholder="留空则自动选择第一个">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="snatchInstanceOS" class="form-label">操作系统</label>
+                        <select class="form-select" id="snatchInstanceOS">
+                            <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
+                            <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
+                            <option value="Oracle Linux-9">Oracle Linux 9</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="snatchInstanceShape" class="form-label">实例规格 (Shape)</label>
+                        <select class="form-select" id="snatchInstanceShape">
+                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
+                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
+                        </select>
+                    </div>
+                    <div id="snatchFlexShapeConfig" class="row">
+                        <div class="col-md-4 mb-3">
+                            <label for="snatchInstanceOcpus" class="form-label">OCPU 数量</label>
+                            <input type="number" class="form-control" id="snatchInstanceOcpus" value="4" min="1" max="4">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="snatchInstanceMemory" class="form-label">内存 (GB)</label>
+                            <input type="number" class="form-control" id="snatchInstanceMemory" value="24" min="1" max="24">
+                        </div>
+                        <div class="col-md-4 mb-3">
+                           <label for="snatchBootVolumeSize" class="form-label">磁盘大小 (GB)</label>
+                           <input type="number" class="form-control" id="snatchBootVolumeSize" value="50" min="50">
+                        </div>
+                    </div>
+                    <hr>
+                    <div class="row">
+                        <div class="col-6">
+                            <label for="snatchMinDelay" class="form-label">最短重试间隔 (秒)</label>
+                            <input type="number" class="form-control" id="snatchMinDelay" value="30">
+                        </div>
+                        <div class="col-6">
+                            <label for="snatchMaxDelay" class="form-label">最长重试间隔 (秒)</label>
+                            <input type="number" class="form-control" id="snatchMaxDelay" value="90">
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="submitSnatchInstanceBtn">开始抢占</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="viewSnatchTasksModal" tabindex="-1" aria-labelledby="viewSnatchTasksModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="viewSnatchTasksModalLabel">抢占任务管理</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <ul class="nav nav-tabs" id="snatchTaskTabs" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="running-tab" data-bs-toggle="tab" data-bs-target="#running-tab-pane" type="button" role="tab">正在运行</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="completed-tab" data-bs-toggle="tab" data-bs-target="#completed-tab-pane" type="button" role="tab">已完成</button>
+                    </li>
+                </ul>
+                <div class="tab-content" id="snatchTaskTabsContent">
+                    <div class="tab-pane fade show active" id="running-tab-pane" role="tabpanel">
+                        <div class="p-3">
+                            <p class="text-muted small">下方列出了所有正在后台持续尝试创建实例的任务。可选中任务并点击下方按钮停止。</p>
+                            <ul class="list-group" id="runningSnatchTasksList"></ul>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="completed-tab-pane" role="tabpanel">
+                         <div class="p-3">
+                            <p class="text-muted small">下方列出了最近已成功或失败的抢占任务。双击成功的任务可查看密码。</p>
+                            <ul class="list-group" id="completedSnatchTasksList"></ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-danger" id="stopSnatchTaskBtn" disabled>停止选中任务</button>
+                <button type="button" class="btn btn-warning" id="deleteSnatchTaskBtn" disabled>删除选中记录</button>
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="taskResultModal" tabindex="-1" aria-labelledby="taskResultModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="taskResultModalLabel">任务结果详情</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <pre id="taskResultContent" style="white-space: pre-wrap; word-break: break-all;"></pre>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/oci_script.js') }}"></script>
+{% endblock %}
 
