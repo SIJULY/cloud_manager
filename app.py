@@ -1,27 +1,29 @@
 import os
-from flask import Flask, render_template, request, session, redirect, url_for, g
+from flask import Flask, render_template, request, session, redirect, url_for
 from blueprints.azure_panel import azure_bp, init_db as init_azure_db
 from blueprints.oci_panel import oci_bp, init_db as init_oci_db, celery
-from blueprints.aws_panel import aws_bp, init_db as init_aws_db
+from blueprints.aws_panel import aws_bp
 
 # --- App Configuration ---
 app = Flask(__name__)
-app.secret_key = 'a_very_secret_key_for_the_3in1_panel' 
-PASSWORD = "You22kme#12345" 
+app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
+# 注意：此处的密码会在安装脚本中被用户设置的新密码覆盖
+PASSWORD = "default_password" 
 
 # --- Celery Configuration (for OCI) ---
 app.config.update(
-    CELERY_BROKER_URL='redis://localhost:6379/0',
-    CELERY_RESULT_BACKEND='redis://localhost:6379/0',
+    # 使用新版Celery推荐的小写配置项
+    broker_url='redis://localhost:6379/0',
+    result_backend='redis://localhost:6379/0',
     SEND_FILE_MAX_AGE_DEFAULT = 0,
     TEMPLATES_AUTO_RELOAD = True
 )
 celery.conf.update(app.config)
 
 # --- Register Blueprints ---
+app.register_blueprint(aws_bp, url_prefix='/aws')
 app.register_blueprint(azure_bp, url_prefix='/azure')
 app.register_blueprint(oci_bp, url_prefix='/oci')
-app.register_blueprint(aws_bp, url_prefix='/aws')
 
 # --- Shared Routes ---
 @app.route('/login', methods=['GET', 'POST'])
@@ -43,19 +45,17 @@ def logout():
 def index():
     if 'user_logged_in' not in session:
         return redirect(url_for('login'))
-    # 默认重定向到AWS面板 (最新加入的)
+    # 默认重定向到AWS面板
     return redirect(url_for('aws.aws_index'))
 
+# --- Database Initialization on First Run ---
+with app.app_context():
+    if not os.path.exists('azure_tasks.db'):
+        print("Initializing Azure database...")
+        init_azure_db()
+    if not os.path.exists('oci_tasks.db'):
+        print("Initializing OCI database...")
+        init_oci_db()
+
 if __name__ == '__main__':
-    # Initialize databases for all panels on first run
-    with app.app_context():
-        # 确保数据库文件在项目根目录
-        if not os.path.exists('azure_tasks.db'):
-            init_azure_db()
-        if not os.path.exists('oci_tasks.db'):
-            init_oci_db()
-        # 初始化AWS数据库
-        if not os.path.exists('aws_tasks.db'):
-            init_aws_db()
-    
     app.run(host='0.0.0.0', port=5000, debug=True)
