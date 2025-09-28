@@ -63,4 +63,4 @@ bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/inst
 
 ## ❤️ 致谢
 
-- **小龙女她爸**: 原始项目的创意与核心代码贡献者。  
+- **所有拥有功能共享精神的开发者**:
