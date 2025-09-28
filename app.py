@@ -7,8 +7,7 @@ from blueprints.aws_panel import aws_bp, init_db as init_aws_db
 
 # --- App Configuration ---
 app = Flask(__name__)
-app.secret_key = 'a_very_secret_key_for_the_3in1_panel' # 更新密钥
-# 使用统一的密码 (AWS面板原来的密码是"1325"，这里统一为"You22kme#12345")
+app.secret_key = 'a_very_secret_key_for_the_3in1_panel' 
 PASSWORD = "You22kme#12345" 
 
 # --- Celery Configuration (for OCI) ---
