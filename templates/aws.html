@@ -1,0 +1,168 @@
+{% extends "layout.html" %}
+
+{% block title %}AWS Instance Web{% endblock %}
+
+{% block head_extra %}
+<style>
+    .table-hover tbody tr.table-active {
+        background-color: #dbeafe;
+    }
+    .table-hover tbody tr {
+        cursor: pointer;
+    }
+    #createLsBtn:disabled,
+    #createEc2Btn:disabled {
+        background-color: #e9ecef;
+        border-color: #ced4da;
+        color: #6c757d;
+        opacity: 1;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+        <div>
+            <h1 class="display-5 mb-0">AWS Instance Web</h1>
+            <p class="text-muted mb-0">Powered by 小龙女她爸 & 雨后天霁</p>
+        </div>
+    </div>
+    <hr>
+    <div class="row mb-4">
+        <div class="col-lg-5">
+            <div class="card" style="height: 415px;">
+                <div class="card-header">添加新账户</div>
+                <div class="card-body">
+                    <form id="addAccountForm">
+                        <div class="mb-3"><label for="accountName" class="form-label">账户名称</label><input type="text" class="form-control" id="accountName" required></div>
+                        <div class="mb-3"><label for="accessKey" class="form-label">Access Key ID</label><input type="text" class="form-control" id="accessKey" required></div>
+                        <div class="mb-3"><label for="secretKey" class="form-label">Secret Access Key</label><input type="password" class="form-control" id="secretKey" required></div>
+                        <div class="d-grid"><button type="button" id="saveAccountBtn" class="btn btn-primary">保存账户</button></div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-7">
+             <div class="card d-flex flex-column" style="height: 415px;">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <div><span>账户列表</span><small id="currentAccountStatus" class="ms-3 text-muted"></small></div>
+                    <button id="queryAllQuotasBtn" class="btn btn-sm btn-primary">一键查询所有配额</button>
+                </div>
+                <div class="card-body p-0 flex-grow-1" style="overflow-y: auto;">
+                     <div class="table-responsive">
+                        <table class="table table-striped table-hover mb-0">
+                            <thead>
+                                <tr>
+                                    <th>账户名称</th>
+                                    <th class="text-center">vCPU配额</th>
+                                    <th class="text-center">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="accountList">
+                                <tr><td colspan="3" class="text-center text-muted">正在加载...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="card-footer d-flex justify-content-center pt-3 pb-2">
+                    <nav id="pagination-nav"></nav>
+                </div>
+             </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header">操作区域</div>
+        <div class="card-body">
+            <div class="row g-3 align-items-center mb-3">
+                <div class="col-auto"><label for="regionSelector" class="col-form-label">选择区域:</label></div>
+                <div class="col"><select class="form-select" id="regionSelector" disabled><option>请先选择AWS账户</option></select></div>
+                <div class="col-auto"><div class="btn-group"><button id="activateRegionBtn" class="btn btn-sm btn-secondary" disabled>激活此区域</button></div></div>
+            </div>
+            <h6>创建实例</h6>
+            <div class="btn-group w-100 mb-3"><button id="createEc2Btn" class="btn btn-success" disabled>创建 EC2 实例</button><button id="createLsBtn" class="btn btn-info" disabled>创建 Lightsail 实例</button></div>
+            <h6>开机脚本 (User Data)</h6>
+            <textarea id="userData" class="form-control" rows="15">#!/bin/bash
+# 标记文件路径，确保脚本只运行一次
+FLAG_FILE="/etc/.user-data-executed"
+
+# 仅在实例首次启动时运行初始化操作
+if [ ! -f "$FLAG_FILE" ]; then
+    echo "--- Running First-Time Initialization ---"
+
+    # --- 步骤 1: 设置密码并配置 SSH ---
+    echo "root:You22kme#12345" | sudo chpasswd
+    sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+    sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+    sudo systemctl restart sshd || sudo service ssh restart
+
+    # --- 步骤 2: 安装节点脚本 (Xray & gost) ---
+    (wget -qO- https://raw.githubusercontent.com/SIJULY/xray/main/vless.sh | sed 's/\r//' | bash && \
+    wget -qO- https://raw.githubusercontent.com/SIJULY/xray/main/vmess.sh | sed 's/\r//' | bash && \
+    wget -qO- https://raw.githubusercontent.com/SIJULY/xray/main/Shadowsocks.sh | bash && \
+    wget -qO- https://raw.githubusercontent.com/SIJULY/xray/main/ss5.sh | bash) > /root/xray_install.log 2>&1
+
+    # --- 步骤 3: 创建标记文件，防止下次重启时再次执行 ---
+    sudo touch "$FLAG_FILE"
+    echo "--- First-Time Initialization Complete ---"
+fi
+            </textarea>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-center align-items-center position-relative">
+            <span class="fw-bold">实例信息</span>
+            <div class="btn-group position-absolute" style="right: 1rem;">
+                <button id="querySelectedRegionBtn" class="btn btn-sm btn-outline-primary" disabled>查询选中区域</button>
+                <button id="queryAllRegionsBtn" class="btn btn-sm btn-outline-secondary" disabled>查询所有区域</button>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>类型</th>
+                            <th class="text-center">区域</th>
+                            <th class="text-center">名称/ID</th>
+                            <th class="text-center">状态</th>
+                            <th class="text-center">公网IP</th>
+                            <th class="text-center">运行时间</th>
+                        </tr>
+                    </thead>
+                    <tbody id="instanceList">
+                        <tr><td colspan="6" class="text-center text-muted">请先查询实例</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="card-footer text-center">
+            <div class="d-flex justify-content-center gap-5" role="group">
+                <button type="button" id="startBtn" class="btn" disabled>启动实例</button>
+                <button type="button" id="stopBtn" class="btn" disabled>停止实例</button>
+                <button type="button" id="restartBtn" class="btn" disabled>重启实例</button>
+                <button type="button" id="changeIpBtn" class="btn" disabled>更换IP</button>
+                <button type="button" id="deleteBtn" class="btn" disabled>删除实例</button>
+            </div>
+        </div>
+    </div>
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between">
+            日志输出
+            <button id="clearLogBtn" class="btn btn-sm btn-outline-danger">清除日志</button>
+        </div>
+        <div class="card-body p-2"><pre id="logOutput" class="form-control mb-0" style="height: 200px;"></pre></div>
+    </div>
+</div>
+
+<div class="modal fade" id="ec2TypeModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">选择 EC2 实例类型</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="ec2Spinner" class="text-center" style="display: none;"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div><select id="ec2TypeSelector" class="form-select"></select><div class="mt-3"><label for="ec2DiskSize" class="form-label">根卷硬盘大小 (GB)</label><input type="number" class="form-control" id="ec2DiskSize" placeholder="留空则使用AMI默认大小"><div class="form-text">输入整数, 如 30。留空则使用官方默认大小。</div></div></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" id="confirmEc2CreationBtn" class="btn btn-primary">确认开启</button></div></div></div>
+</div>
+<div class="modal fade" id="lightsailTypeModal" tabindex="-1">
+    <div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h5 class="modal-title">选择 Lightsail 实例类型</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div id="lightsailSpinner" class="text-center" style="display: none;"><div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div></div><select id="lightsailTypeSelector" class="form-select"></select></div><div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button><button type="button" id="confirmLightsailCreationBtn" class="btn btn-primary">确认开启</button></div></div></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/aws_script.js') }}"></script>
+{% endblock %}
