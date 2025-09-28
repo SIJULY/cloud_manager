@@ -1,0 +1,12 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Docker
+.env
+
+# User Data (密钥、数据库等)
+*.json
+*.txt
+*.db
