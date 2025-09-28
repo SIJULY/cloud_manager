@@ -5,5 +5,6 @@ azure-identity
 azure-mgmt-compute
 azure-mgmt-network
 azure-mgmt-resource
+boto3
 cryptography==44.0.0
 gunicorn
