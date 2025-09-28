@@ -1,6 +1,5 @@
 import os
 from flask import Flask, render_template, request, session, redirect, url_for, g
-# 导入新的AWS蓝图和数据库初始化函数
 from blueprints.azure_panel import azure_bp, init_db as init_azure_db
 from blueprints.oci_panel import oci_bp, init_db as init_oci_db, celery
 from blueprints.aws_panel import aws_bp, init_db as init_aws_db
@@ -22,7 +21,6 @@ celery.conf.update(app.config)
 # --- Register Blueprints ---
 app.register_blueprint(azure_bp, url_prefix='/azure')
 app.register_blueprint(oci_bp, url_prefix='/oci')
-# 注册新的AWS蓝图
 app.register_blueprint(aws_bp, url_prefix='/aws')
 
 # --- Shared Routes ---
