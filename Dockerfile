@@ -1,6 +1,6 @@
 # 文件名: Dockerfile
 
-# 使用非精简版的基础镜像，它包含了编译工具
+# 使用非精简版的 Debian Buster 基础镜像，它包含了编译工具
 FROM python:3.8-buster
 
 # 设置环境变量，防止 Python 写入 .pyc 文件
