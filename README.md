@@ -2,7 +2,7 @@
 
 一个强大且便捷的网页管理面板，旨在将 **Amazon Web Services (AWS)**、**Microsoft Azure** 和 **Oracle Cloud Infrastructure (OCI)** 的核心虚拟机管理功能整合到一个统一的界面中。  
 
-本项目由 **小龙女她爸** & **Gemini** 共同开发，旨在简化云资源的管理流程。
+本项目由 **小龙女她爸** & **雨后大佬** 共同开发，旨在简化云资源的管理流程。
 
 ---
 
