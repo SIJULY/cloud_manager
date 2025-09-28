@@ -19,12 +19,19 @@ celery = Celery(oci_bp.import_name)
 KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
 
-# --- 数据库核心辅助函数 ---
+# --- 数据库核心辅助函数 (已为并发优化) ---
+def get_db_connection():
+    """创建一个启用WAL模式并设置超时的数据库连接"""
+    conn = sqlite3.connect(DATABASE, timeout=10) # 10秒超时
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;") # 启用WAL模式以提高并发性
+    return conn
+
 def get_db():
+    """获取与Flask请求上下文绑定的数据库连接"""
     db = getattr(g, '_oci_database', None)
     if db is None:
-        db = g._oci_database = sqlite3.connect(DATABASE, check_same_thread=False)
-        db.row_factory = sqlite3.Row
+        db = g._oci_database = get_db_connection()
     return db
 
 @oci_bp.teardown_request
@@ -35,7 +42,7 @@ def close_connection(exception):
 
 def init_db():
     if not os.path.exists(DATABASE):
-        db = sqlite3.connect(DATABASE)
+        db = get_db_connection()
         db.cursor().executescript("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, name TEXT, status TEXT NOT NULL, 
@@ -44,11 +51,10 @@ def init_db():
         """)
         db.commit()
         db.close()
-        logging.info("OCI database has been initialized.")
+        logging.info("OCI database has been initialized with WAL mode.")
 
 def query_db(query, args=(), one=False):
-    db = sqlite3.connect(DATABASE)
-    db.row_factory = sqlite3.Row
+    db = get_db_connection()
     cur = db.execute(query, args)
     rv = cur.fetchall()
     cur.close()
@@ -104,12 +110,12 @@ def _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid):
     vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
     vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid)
     vcn = vnet_client.create_vcn(vcn_details).data
-    oci.waiter.wait_for_resource(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE')
+    oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE')
     
     ig_name = f"ig-autocreated-{alias}-{random.randint(100, 999)}"
     ig_details = CreateInternetGatewayDetails(display_name=ig_name, compartment_id=tenancy_ocid, is_enabled=True, vcn_id=vcn.id)
     ig = vnet_client.create_internet_gateway(ig_details).data
-    oci.waiter.wait_for_resource(vnet_client, vnet_client.get_internet_gateway(ig.id), 'lifecycle_state', 'AVAILABLE')
+    oci.wait_until(vnet_client, vnet_client.get_internet_gateway(ig.id), 'lifecycle_state', 'AVAILABLE')
     
     route_table_id = vcn.default_route_table_id
     rt_rules = vnet_client.get_route_table(route_table_id).data.route_rules
@@ -119,7 +125,7 @@ def _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid):
     subnet_name = f"subnet-autocreated-{alias}-{random.randint(100, 999)}"
     subnet_details = CreateSubnetDetails(compartment_id=tenancy_ocid, vcn_id=vcn.id, cidr_block="10.0.1.0/24", display_name=subnet_name)
     subnet = vnet_client.create_subnet(subnet_details).data
-    oci.waiter.wait_for_resource(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
+    oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
     
     profiles[alias]['default_subnet_ocid'] = subnet.id
     save_profiles(profiles)
@@ -260,7 +266,6 @@ def oci_session_route():
             return jsonify({"success": True})
     except Exception as e: return jsonify({"error": str(e)}), 500
 
-# vvvvvvvvvvvv 这是被修复的部分 vvvvvvvvvvvv
 @oci_bp.route('/api/instances')
 @login_required
 @oci_clients_required
@@ -269,12 +274,10 @@ def get_instances():
         compute_client, vnet_client, bs_client = g.oci_clients['compute'], g.oci_clients['vnet'], g.oci_clients['bs']
         compartment_id = g.oci_config['tenancy']
         
-        # 获取所有实例，不过滤状态，以便显示TERMINATED等状态
         instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
         
         instance_details_list = []
         for instance in instances:
-            # 基础信息总是安全的
             data = {
                 "display_name": instance.display_name, 
                 "id": instance.id, 
@@ -290,18 +293,13 @@ def get_instances():
                 "subnet_id": None
             }
 
-            # --- 这是新增的错误处理块 ---
-            # 获取网络和磁盘等详细信息可能会因为实例状态（如已终止）而出错
-            # 我们在这里包裹一个 try/except，以防止单个实例的问题破坏整个列表
             try:
-                # 只为活动状态的实例获取详细信息，避免对已终止的实例进行不必要查询
                 if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
                     if vnic_attachments:
                         vnic_id = vnic_attachments[0].vnic_id
                         data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
                         
-                        # 这个调用是之前出错的根源
                         vnic = vnet_client.get_vnic(vnic_id).data
                         data.update({'public_ip': vnic.public_ip or "无"})
                         
@@ -314,26 +312,19 @@ def get_instances():
                         data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
 
             except ServiceError as se:
-                # 如果遇到 404 错误，说明相关资源（如VNIC）已被删除，这是正常的
-                # 我们只记录一个日志，然后继续处理下一个实例
                 if se.status == 404:
                     logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
-                    data['public_ip'] = "资源已删除" # 在界面上给一个明确的提示
+                    data['public_ip'] = "资源已删除"
                 else:
-                    # 如果是其他API错误，也记录下来
                     logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
             except Exception as ex:
-                # 捕获其他可能的异常
                 logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
-            # --- 错误处理块结束 ---
 
             instance_details_list.append(data)
             
         return jsonify(instance_details_list)
     except Exception as e:
-        # 这个最外层的 except 现在只会在获取主列表或发生其他严重错误时触发
         return jsonify({"error": f"获取实例列表失败: {e}"}), 500
-# ^^^^^^^^^^^^ 这是被修复的部分 ^^^^^^^^^^^^
 
 def _create_task_entry(task_type, task_name):
     db = get_db()
@@ -391,71 +382,155 @@ def task_status(task_id):
 
 # --- Celery Tasks ---
 def _db_execute_celery(query, params=()):
-    db = sqlite3.connect(DATABASE); db.execute(query, params); db.commit(); db.close()
+    db = get_db_connection()
+    db.execute(query, params)
+    db.commit()
+    db.close()
 
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在执行操作...', task_id))
     try:
-        clients, error = get_oci_clients(profile_config);
+        clients, error = get_oci_clients(profile_config)
         if error: raise Exception(error)
         compute_client, vnet_client = clients['compute'], clients['vnet']
-        action_upper, result_message = action.upper(), ""
-        if action_upper in ["START", "STOP", "SOFTRESET"]:
-            compute_client.instance_action(instance_id=instance_id, action=action_upper); result_message = f"实例 {action_upper} 命令已发送。"
+        
+        action_map = {
+            "START": ("START", "RUNNING"),
+            "STOP": ("STOP", "STOPPED"),
+            "RESTART": ("SOFTRESET", "RUNNING")
+        }
+        
+        action_upper = action.upper()
+        result_message = ""
+
+        if action_upper in action_map:
+            oci_action, target_state = action_map[action_upper]
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'正在发送 {action_upper} 命令...', task_id))
+            compute_client.instance_action(instance_id=instance_id, action=oci_action)
+            
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'等待实例进入 {target_state} 状态...', task_id))
+            oci.wait_until(
+                compute_client,
+                compute_client.get_instance(instance_id),
+                'lifecycle_state',
+                target_state,
+                max_wait_seconds=300
+            )
+            result_message = f"✅ 实例已成功 {action}!"
+
         elif action_upper == "TERMINATE":
-            compute_client.terminate_instance(instance_id, preserve_boot_volume=data.get('preserve_boot_volume', False)); result_message = "实例终止命令已发送。"
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在发送终止命令...', task_id))
+            compute_client.terminate_instance(instance_id, preserve_boot_volume=data.get('preserve_boot_volume', False))
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('等待实例进入 TERMINATED 状态...', task_id))
+            oci.wait_until(
+                compute_client,
+                compute_client.get_instance(instance_id),
+                'lifecycle_state',
+                'TERMINATED',
+                max_wait_seconds=300
+            )
+            result_message = "✅ 实例已成功终止!"
+
         elif action_upper == "CHANGEIP":
             vnic_id = data.get('vnic_id')
+            if not vnic_id: raise Exception("缺少 vnic_id")
+            
             private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
             primary_private_ip = next((p for p in private_ips if p.is_primary), None)
+            if not primary_private_ip: raise Exception("未找到主私有IP")
+
             try:
+                _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在删除旧的公共IP...', task_id))
                 pub_ip_details = oci.core.models.GetPublicIpByPrivateIpIdDetails(private_ip_id=primary_private_ip.id)
                 existing_pub_ip = vnet_client.get_public_ip_by_private_ip_id(pub_ip_details).data
-                if existing_pub_ip.lifetime == "EPHEMERAL": vnet_client.delete_public_ip(existing_pub_ip.id); time.sleep(5)
+                if existing_pub_ip.lifetime == "EPHEMERAL":
+                    vnet_client.delete_public_ip(existing_pub_ip.id)
+                    time.sleep(5)
             except ServiceError as e:
                 if e.status != 404: raise
+            
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在创建新的公共IP...', task_id))
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
-            result_message = f"更换IP请求成功，新IP: {new_pub_ip.ip_address}"
+            result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
+
         elif action_upper == "ASSIGNIPV6":
-            subnet = vnet_client.get_subnet(data.get('subnet_id')).data
-            if not subnet.ipv6_cidr_block: raise Exception("子网未配置IPv6")
-            new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=data.get('vnic_id'))).data
-            result_message = f"已成功请求IPv6地址: {new_ipv6.ip_address}"
+            vnic_id = data.get('vnic_id')
+            if not vnic_id: raise Exception("缺少 vnic_id")
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在请求IPv6地址...', task_id))
+            new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
+            result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
+        
+        else:
+             raise Exception(f"未知的操作: {action}")
+
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
-    except Exception as e: _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"操作失败: {e}", task_id))
+
+    except Exception as e:
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
 @celery.task
 def _create_instance_task(task_id, profile_config, alias, details):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在创建实例...', task_id))
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '任务准备中...', task_id))
+    clients, error = None, None
     try:
-        clients, error = get_oci_clients(profile_config);
+        clients, error = get_oci_clients(profile_config)
         if error: raise Exception(error)
+        
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
-        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在检查网络...', task_id))
+
+        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在检查网络资源...', task_id))
         subnet_id = _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid)
+        
         ad_name = identity_client.list_availability_domains(tenancy_ocid).data[0].name
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
+        
+        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在查找兼容的系统镜像...', task_id))
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
-        if not images: raise Exception(f"未找到兼容的镜像 for {os_name} {os_version}")
+        if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
+        
         root_password = generate_oci_password()
         user_data_encoded = get_user_data(root_password)
-        created_info = []
+        created_instances_info = []
+
         for i in range(details.get('instance_count', 1)):
-            name = f"{details.get('display_name_prefix', 'Instance')}-{i+1}" if details.get('instance_count', 1) > 1 else details.get('display_name_prefix', 'Instance')
-            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'正在创建 {name}...', task_id))
-            launch_details = LaunchInstanceDetails(compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=name, create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']), shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None)
-            compute_client.launch_instance(launch_details)
-            created_info.append(name)
-            if i < details.get('instance_count', 1) - 1: time.sleep(3)
-        msg = f"🎉 {len(created_info)}个实例创建成功!\n- 实例名: {', '.join(created_info)}\n- Root 密码: {root_password}"
+            instance_name = f"{details.get('display_name_prefix', 'Instance')}-{i+1}" if details.get('instance_count', 1) > 1 else details.get('display_name_prefix', 'Instance')
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'正在为 {instance_name} 发送创建请求...', task_id))
+            
+            launch_details = LaunchInstanceDetails(
+                compartment_id=tenancy_ocid, 
+                availability_domain=ad_name, 
+                shape=shape, 
+                display_name=instance_name,
+                create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), 
+                metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, 
+                source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
+                shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
+            )
+            
+            instance = compute_client.launch_instance(launch_details).data
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'实例 {instance_name} 正在置备 (PROVISIONING)... 请耐心等待...', task_id))
+
+            oci.wait_until(
+                compute_client,
+                compute_client.get_instance(instance.id),
+                'lifecycle_state',
+                'RUNNING',
+                max_wait_seconds=600
+            )
+            
+            created_instances_info.append(instance_name)
+            if i < details.get('instance_count', 1) - 1: time.sleep(5)
+
+        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 实例名: {', '.join(created_instances_info)}\n- Root 密码: {root_password}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
+
     except ServiceError as e:
         if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
-             msg = "❌ 实例创建失败! \n- 原因: 资源不足或请求过于频繁，请更换区域或稍后再试。"
+             msg = f"❌ 实例创建失败! \n- 原因: 资源不足或请求过于频繁 ({e.code})，请更换区域或稍后再试。"
         else:
             msg = f"❌ 实例创建失败! \n- OCI API 错误: {e.message}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
@@ -465,43 +540,79 @@ def _create_instance_task(task_id, profile_config, alias, details):
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
+    clients, error = None, None
+    launch_details = None
+    root_password = None
     try:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
-        clients, error = get_oci_clients(profile_config);
+        clients, error = get_oci_clients(profile_config)
         if error: raise Exception(error)
+        
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
+
         subnet_id = _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid)
         ad_name = details.get('availabilityDomain') or identity_client.list_availability_domains(tenancy_ocid).data[0].name
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
+        
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
-        if not images: raise Exception(f"未找到兼容的镜像 for {os_name} {os_version}")
+        if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
+        
         root_password = generate_oci_password()
         user_data_encoded = get_user_data(root_password)
-        launch_details = LaunchInstanceDetails(compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=details.get('display_name_prefix', 'snatch-instance'), create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']), shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None)
+        
+        launch_details = LaunchInstanceDetails(
+            compartment_id=tenancy_ocid, 
+            availability_domain=ad_name, 
+            shape=shape, 
+            display_name=details.get('display_name_prefix', 'snatch-instance'),
+            create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), 
+            metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, 
+            source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
+            shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
+        )
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id)); return
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
+        return
 
     count = 0
     while True:
         count += 1
         delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
-        task = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
-        if not task or task['status'] == 'failure': return
+        
+        task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
+        if not task_record or task_record['status'] == 'failure':
+            logging.info(f"Snatching task {task_id} has been stopped or failed. Exiting loop.")
+            return
+
         try:
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试创建实例...", task_id))
             instance = compute_client.launch_instance(launch_details).data
+            
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试成功！实例 {instance.display_name} 正在置备 (PROVISIONING)...", task_id))
+            
+            oci.wait_until(
+                compute_client,
+                compute_client.get_instance(instance.id),
+                'lifecycle_state',
+                'RUNNING',
+                max_wait_seconds=600
+            )
+            
             msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- Root 密码: {root_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
             return
+
         except ServiceError as e:
             if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
                 msg = f"第 {count} 次尝试失败：资源不足或请求频繁。将在 {delay} 秒后重试..."
             else:
                 msg = f"第 {count} 次尝试失败：API错误 ({e.code})。将在 {delay} 秒后重试..."
-            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id)); time.sleep(delay)
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
+            time.sleep(delay)
         except Exception as e:
-            msg = f"第 {count} 次尝试失败：未知错误。将在 {delay} 秒后重试..."
-            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id)); time.sleep(delay)
+            msg = f"第 {count} 次尝试失败：未知错误({str(e)[:100]}...)。将在 {delay} 秒后重试..."
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
+            time.sleep(delay)
