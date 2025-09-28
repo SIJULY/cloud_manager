@@ -18,13 +18,12 @@ if [ "$(id -u)" -ne 0 ]; then
    print_error "此脚本必须以root用户身份运行。"
 fi
 
-# 1. 检查 Docker 和 Docker Compose 是否安装 (已修正)
+# 1. 检查 Docker 和 Docker Compose 是否安装
 print_info "正在检查 Docker 环境..."
 if ! command -v docker &> /dev/null; then
     print_error "Docker 未安装。请先运行 'curl -fsSL https://get.docker.com | bash' 进行安装。"
     exit 1
 fi
-
 if ! docker compose version &> /dev/null; then
     print_error "Docker Compose (v2 插件) 未安装。请先运行 'apt-get update && apt-get install -y docker-compose-plugin' 进行安装。"
     exit 1
@@ -58,22 +57,18 @@ else
 fi
 
 print_info "请为您的面板进行配置..."
-read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
+read -p "请输入您的域名 (留空则自动使用服务器公-网IP): " domain_name
 
 if [ -z "$domain_name" ]; then
     print_info "未输入域名，正在尝试获取服务器公网IP..."
     ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
-    if [ -z "$ACCESS_ADDRESS" ]; then
-        print_error "无法自动获取公网IP地址，请手动输入。"
-        exit 1
-    fi
+    if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址，请手动输入。"; exit 1; fi
     print_success "成功获取到公网IP: ${ACCESS_ADDRESS}"
 else
     ACCESS_ADDRESS=$domain_name
 fi
 
-read -s -p "请输入新的面板登录密码: " new_password
-echo
+read -s -p "请输入新的面板登录密码: " new_password; echo
 
 sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${ACCESS_ADDRESS}|" .env
 sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
@@ -83,9 +78,9 @@ print_success "配置已保存到 .env 文件。"
 print_info "正在创建空的密钥和数据库文件（如果不存在）..."
 touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
 
-# 6. 启动 Docker Compose
+# 6. 启动 Docker Compose (已修正)
 print_info "正在后台启动所有服务... (首次启动需要一些时间来构建镜像)"
-docker-compose up -d --build
+docker compose up -d --build
 
 echo ""
 print_success "Cloud Manager Docker 版已成功部署！"
