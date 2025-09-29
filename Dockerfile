@@ -1,7 +1,7 @@
 # 文件名: Dockerfile
 
 # 使用非精简版的 Debian Buster 基础镜像
-FROM python:3.8-buster
+FROM python:3.8-bullseye
 
 # 设置环境变量
 ENV PYTHONDONTWRITEBYTECODE 1
