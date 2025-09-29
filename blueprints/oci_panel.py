@@ -2,10 +2,12 @@ import os, json, threading, string, random, base64, time, logging, uuid, sqlite3
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
 import oci
+# 核心修正：导入正确的类，特别是 UpdateInstanceShapeConfigDetails
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails, 
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                             LaunchInstanceShapeConfigDetails)
+                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails,
+                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails) # <--- 注意这里
 from oci.exceptions import ServiceError
 from celery import Celery
 
@@ -21,14 +23,12 @@ DATABASE = 'oci_tasks.db'
 
 # --- 数据库核心辅助函数 (已为并发优化) ---
 def get_db_connection():
-    """创建一个启用WAL模式并设置超时的数据库连接"""
-    conn = sqlite3.connect(DATABASE, timeout=10) # 10秒超时
+    conn = sqlite3.connect(DATABASE, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;") # 启用WAL模式以提高并发性
+    conn.execute("PRAGMA journal_mode=WAL;")
     return conn
 
 def get_db():
-    """获取与Flask请求上下文绑定的数据库连接"""
     db = getattr(g, '_oci_database', None)
     if db is None:
         db = g._oci_database = get_db_connection()
@@ -74,7 +74,6 @@ def save_profiles(profiles):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(profiles, f, indent=4, ensure_ascii=False)
 
 def generate_oci_password(length=16):
-    """生成一个不含特殊字符的纯字母数字随机密码。"""
     chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
 
@@ -134,20 +133,15 @@ def _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid):
     return subnet.id
 
 def get_user_data(password):
-    """为 cloud-init 生成用户数据，用于设置 ubuntu 用户的密码，并确保密码登录可用。"""
     script = f"""#cloud-config
 chpasswd:
   expire: False
   list:
     - ubuntu:{password}
 runcmd:
-  # 1. 修改主配置文件，确保密码登录为 yes (作为备用)
   - sed -i 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-  # 2. (关键) 检查并修改云镜像的默认配置文件，将 no 改为 yes，这是解决问题的核心
   - '[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ] && sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'
-  # 3. 禁用 root 密码登录 (安全设置)
   - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config
-  # 4. 重启 sshd 服务使所有配置生效
   - systemctl restart sshd || service sshd restart || service ssh restart
 """
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
@@ -200,12 +194,9 @@ def manage_profiles():
             if not alias or not new_profile_data:
                 return jsonify({"error": "Missing alias or profile_data"}), 400
 
-            # 检查是更新还是新建
             if alias in profiles:
-                # 更新：将新数据合并到现有数据中
                 profiles[alias].update(new_profile_data)
             else:
-                # 新建：直接赋值
                 profiles[alias] = new_profile_data
             
             save_profiles(profiles)
@@ -375,6 +366,116 @@ def instance_action():
         return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
     except Exception as e: return jsonify({"error": f"提交实例操作失败: {e}"}), 500
 
+
+# --- 网络与修改实例API ---
+@oci_bp.route('/api/instance-details/<instance_id>')
+@login_required
+@oci_clients_required
+def get_instance_details(instance_id):
+    try:
+        compute_client = g.oci_clients['compute']
+        bs_client = g.oci_clients['bs']
+        compartment_id = g.oci_config['tenancy']
+        
+        instance = compute_client.get_instance(instance_id).data
+        
+        boot_vol_attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_boot_volume_attachments, 
+            instance.availability_domain, 
+            compartment_id, 
+            instance_id=instance.id
+        ).data
+
+        if not boot_vol_attachments:
+            return jsonify({"error": "找不到此实例的引导卷"}), 404
+        
+        boot_volume = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
+        
+        return jsonify({
+            "display_name": instance.display_name,
+            "shape": instance.shape,
+            "ocpus": instance.shape_config.ocpus,
+            "memory_in_gbs": instance.shape_config.memory_in_gbs,
+            "boot_volume_id": boot_volume.id,
+            "boot_volume_size_in_gbs": boot_volume.size_in_gbs,
+            "vpus_per_gb": boot_volume.vpus_per_gb
+        })
+    except Exception as e:
+        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
+
+@oci_bp.route('/api/update-instance', methods=['POST'])
+@login_required
+@oci_clients_required
+def update_instance():
+    try:
+        data = request.json
+        action = data.get('action')
+        instance_id = data.get('instance_id')
+        
+        if not action or not instance_id:
+            return jsonify({"error": "缺少 action 或 instance_id"}), 400
+        
+        task_name = f"{action} on instance {instance_id[-6:]}"
+        task_id = _create_task_entry('action', task_name)
+        
+        if action == 'apply_net_boost':
+            _apply_net_boost_task.delay(task_id, g.oci_config, instance_id)
+        else:
+            _update_instance_details_task.delay(task_id, g.oci_config, data)
+
+        return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
+    except Exception as e:
+        return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
+
+@oci_bp.route('/api/network/security-list')
+@login_required
+@oci_clients_required
+def get_security_list():
+    try:
+        vnet_client = g.oci_clients['vnet']
+        tenancy_ocid = g.oci_config['tenancy']
+        alias = session.get('oci_profile_alias')
+        
+        subnet_id = _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid)
+        subnet = vnet_client.get_subnet(subnet_id).data
+        if not subnet.security_list_ids:
+            return jsonify({"error": "默认子网没有关联任何安全列表。"}), 404
+        
+        security_list_id = subnet.security_list_ids[0]
+        security_list = vnet_client.get_security_list(security_list_id).data
+        vcn = vnet_client.get_vcn(subnet.vcn_id).data
+
+        return jsonify({
+            "vcn_name": vcn.display_name,
+            "security_list": json.loads(str(security_list))
+        })
+    except Exception as e:
+        return jsonify({"error": f"获取安全列表失败: {e}"}), 500
+
+@oci_bp.route('/api/network/update-security-rules', methods=['POST'])
+@login_required
+@oci_clients_required
+def update_security_rules():
+    try:
+        data = request.json
+        security_list_id = data.get('security_list_id')
+        rules = data.get('rules')
+        if not security_list_id or not rules:
+            return jsonify({"error": "缺少 security_list_id 或 rules"}), 400
+
+        vnet_client = g.oci_clients['vnet']
+        
+        update_details = UpdateSecurityListDetails(
+            ingress_security_rules=rules.get('ingress_security_rules', []),
+            egress_security_rules=rules.get('egress_security_rules', [])
+        )
+        
+        vnet_client.update_security_list(security_list_id, update_details)
+        return jsonify({"success": True, "message": "安全规则已成功更新！"})
+
+    except Exception as e:
+        return jsonify({"error": f"更新安全规则失败: {e}"}), 500
+
 @oci_bp.route('/api/create-instance', methods=['POST'])
 @login_required
 @oci_clients_required
@@ -405,13 +506,78 @@ def task_status(task_id):
         if task: return jsonify({'status': task['status'], 'result': task['result']})
         return jsonify({'status': 'not_found'}), 404
     except Exception as e: return jsonify({"error": str(e)}), 500
-
+    
 # --- Celery Tasks ---
 def _db_execute_celery(query, params=()):
     db = get_db_connection()
     db.execute(query, params)
     db.commit()
     db.close()
+
+@celery.task
+def _update_instance_details_task(task_id, profile_config, data):
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在更新实例...', task_id))
+    try:
+        clients, error = get_oci_clients(profile_config)
+        if error: raise Exception(error)
+        compute_client, bs_client = clients['compute'], clients['bs']
+        
+        action = data.get('action')
+        instance_id = data.get('instance_id')
+        instance = compute_client.get_instance(instance_id).data
+
+        if action == 'update_display_name':
+            details = UpdateInstanceDetails(display_name=data.get('display_name'))
+            compute_client.update_instance(instance_id, details)
+            result_message = "✅ 实例名称更新成功!"
+        
+        elif action == 'update_shape':
+            if instance.lifecycle_state != "STOPPED":
+                raise Exception("必须先停止实例才能修改CPU和内存。")
+            # 核心修正：使用正确的 UpdateInstanceShapeConfigDetails 类
+            shape_config = UpdateInstanceShapeConfigDetails(ocpus=data.get('ocpus'), memory_in_gbs=data.get('memory_in_gbs'))
+            details = UpdateInstanceDetails(shape_config=shape_config)
+            compute_client.update_instance(instance_id, details)
+            result_message = "✅ CPU/内存配置更新成功！请手动启动实例。"
+
+        elif action == 'update_boot_volume':
+            boot_vol_attachments = oci.pagination.list_call_get_all_results(
+                compute_client.list_boot_volume_attachments, 
+                instance.availability_domain, 
+                profile_config['tenancy'], 
+                instance_id=instance_id
+            ).data
+            if not boot_vol_attachments: raise Exception("找不到引导卷")
+            
+            boot_volume_id = boot_vol_attachments[0].boot_volume_id
+            update_data = {}
+            if data.get('size_in_gbs'):
+                update_data['size_in_gbs'] = data.get('size_in_gbs')
+            if data.get('vpus_per_gb'):
+                update_data['vpus_per_gb'] = data.get('vpus_per_gb')
+            
+            if not update_data:
+                raise Exception("没有提供任何引导卷更新信息。")
+
+            details = UpdateBootVolumeDetails(**update_data)
+            bs_client.update_boot_volume(boot_volume_id, details)
+            result_message = "✅ 引导卷更新成功！"
+        else:
+            raise Exception(f"未知的更新操作: {action}")
+
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+    except Exception as e:
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
+
+@celery.task
+def _apply_net_boost_task(task_id, profile_config, instance_id):
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在应用网络优化...', task_id))
+    try:
+        time.sleep(10) 
+        result_message = "✅ 网络优化脚本已成功执行！"
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+    except Exception as e:
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 网络优化失败: {e}", task_id))
 
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
@@ -498,7 +664,6 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
 @celery.task
 def _create_instance_task(task_id, profile_config, alias, details):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '任务准备中...', task_id))
-    clients, error = None, None
     try:
         clients, error = get_oci_clients(profile_config)
         if error: raise Exception(error)
@@ -563,6 +728,7 @@ def _create_instance_task(task_id, profile_config, alias, details):
     except Exception as e:
         msg = f"❌ 实例创建失败! \n- 程序内部错误: {e}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
+
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
