@@ -21,12 +21,15 @@
     .action-group .btn { flex-grow: 1; }
     #viewSnatchTasksModal .list-group-item { cursor: pointer; }
     .profile-action-btn { width: 85px !important; }
-
-    /* --- 新增的CSS代码 --- */
-    .status-cell {
-        display: flex;
-        align-items: center;
-        justify-content: center;
+    .status-cell { display: flex; align-items: center; justify-content: center; }
+    .rule-row input { font-size: 0.9rem; }
+    .rule-row .btn-sm { padding: 0.2rem 0.5rem; }
+    #networkSettingsModal th, #networkSettingsModal td {
+        text-align: center;
+        vertical-align: middle;
+    }
+    #networkSettingsModal th {
+        white-space: nowrap;
     }
 </style>
 {% endblock %}
@@ -103,6 +106,9 @@
                 <button id="viewSnatchTasksBtn" class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
                     <i class="bi bi-list-task"></i> 查看抢机任务
                 </button>
+                <button id="networkSettingsBtn" class="btn btn-warning ms-auto" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
+                    <i class="bi bi-shield-gear"></i> 网络设置
+                </button>
             </div>
         </div>
     </div>
@@ -137,6 +143,7 @@
                 <button type="button" id="startBtn" class="btn btn-success" disabled>启动</button>
                 <button type="button" id="stopBtn" class="btn btn-warning" disabled>停止</button>
                 <button type="button" id="restartBtn" class="btn btn-info" disabled>重启</button>
+                <button type="button" id="editInstanceBtn" class="btn btn-primary" disabled data-bs-toggle="modal" data-bs-target="#editInstanceModal">修改实例</button>
                 <button type="button" id="changeIpBtn" class="btn btn-secondary" disabled>更换公网IP (IPV4)</button>
                 <button type="button" id="assignIpv6Btn" class="btn btn-info" disabled>分配IPV6</button>
                 <button type="button" id="terminateBtn" class="btn btn-danger" disabled>终止</button>
@@ -153,6 +160,142 @@
                 <div class="card-body p-2">
                     <div id="logOutput" class="form-control" style="height: 200px; overflow-y: auto;"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="editInstanceModal" tabindex="-1" aria-labelledby="editInstanceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="editInstanceModalLabel">修改实例配置</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="editDisplayName" class="form-label">实例显示名称</label>
+                    <div class="input-group">
+                        <input type="text" class="form-control" id="editDisplayName">
+                        <button class="btn btn-outline-primary" type="button" id="saveDisplayNameBtn">保存名称</button>
+                    </div>
+                </div>
+                <hr>
+                <div id="editFlexInstanceConfig" class="d-none">
+                    <label class="form-label">CPU与内存 (仅限ARM机型)</label>
+                    <div class="row">
+                        <div class="col-md-5">
+                             <div class="input-group">
+                                <span class="input-group-text">OCPU</span>
+                                <input type="number" class="form-control" id="editOcpus" min="1" max="4">
+                            </div>
+                        </div>
+                        <div class="col-md-5">
+                            <div class="input-group">
+                                <span class="input-group-text">内存(GB)</span>
+                                <input type="number" class="form-control" id="editMemory" min="1" max="24">
+                            </div>
+                        </div>
+                        <div class="col-md-2 d-grid">
+                            <button class="btn btn-outline-primary" id="saveFlexConfigBtn">保存</button>
+                        </div>
+                    </div>
+                    <small class="form-text text-muted">修改此配置需要先停止实例。</small>
+                    <hr>
+                </div>
+                <div class="row align-items-end">
+                    <div class="col-md-6">
+                        <label for="editBootVolumeSize" class="form-label">引导卷大小 (GB)</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="editBootVolumeSize" min="50">
+                            <button class="btn btn-outline-primary" id="saveBootVolumeSizeBtn">保存大小</button>
+                        </div>
+                    </div>
+                     <div class="col-md-6">
+                        <label for="editVpus" class="form-label">引导卷性能 (VPU)</label>
+                        <div class="input-group">
+                            <input type="number" class="form-control" id="editVpus" min="10" max="120" step="10">
+                            <button class="btn btn-outline-primary" id="saveVpusBtn">保存性能</button>
+                        </div>
+                    </div>
+                </div>
+                 <hr>
+                 <div>
+                    <label class="form-label">网络优化</label>
+                    <div class="d-grid">
+                        <button class="btn btn-danger" id="applyNetBoostBtn">一键开启 500Mbps 网络</button>
+                    </div>
+                    <small class="form-text text-muted">此操作将通过SSH连接到实例并执行提速脚本，需要实例处于运行状态。</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+<div class="modal fade" id="networkSettingsModal" tabindex="-1" aria-labelledby="networkSettingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="networkSettingsModalLabel">网络安全规则管理</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info d-flex align-items-center">
+                    <i class="bi bi-info-circle flex-shrink-0 me-2"></i>
+                    <div>
+                        管理与默认子网关联的第一个安全列表的规则。当前VCN: <strong id="currentVcnName">加载中...</strong> | 安全列表: <strong id="currentSlName">加载中...</strong>
+                    </div>
+                </div>
+                
+                <ul class="nav nav-tabs" id="pills-tab" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="pills-ingress-tab" data-bs-toggle="pill" data-bs-target="#pills-ingress" type="button" role="tab">入站规则</button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="pills-egress-tab" data-bs-toggle="pill" data-bs-target="#pills-egress" type="button" role="tab">出站规则</button>
+                    </li>
+                </ul>
+                <div class="tab-content" id="pills-tabContent">
+                    <div class="tab-pane fade show active" id="pills-ingress" role="tabpanel">
+                        <div class="table-responsive pt-3">
+                            <table class="table table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>状态</th><th>源地址</th><th>协议</th><th>源端口</th><th>目标端口</th><th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ingressRulesTable">
+                                </tbody>
+                            </table>
+                            <button class="btn btn-sm btn-outline-primary" id="addIngressRuleBtn"><i class="bi bi-plus"></i> 添加入站规则</button>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="pills-egress" role="tabpanel">
+                        <div class="table-responsive pt-3">
+                             <table class="table table-bordered">
+                                <thead>
+                                    <tr>
+                                        <th>状态</th><th>目标地址</th><th>协议</th><th>源端口</th><th>目标端口</th><th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="egressRulesTable">
+                                </tbody>
+                            </table>
+                            <button class="btn btn-sm btn-outline-primary" id="addEgressRuleBtn"><i class="bi bi-plus"></i> 添加出站规则</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="saveNetworkRulesBtn">
+                    <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                    保存更改
+                </button>
             </div>
         </div>
     </div>
