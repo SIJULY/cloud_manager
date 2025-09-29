@@ -7,7 +7,6 @@
 # 作者: 小龙女她爸 
 # ==============================================================================
 
-
 # --- 配置 ---
 INSTALL_DIR="/opt/cloud_manager"
 REPO_URL="https://github.com/SIJULY/cloud_manager.git"
@@ -134,6 +133,11 @@ install_or_update_panel() {
         fi
         
         print_info "正在向 Caddyfile 追加配置..."
+        # 移除旧配置（如果有的话），避免重复添加
+        if [ -f "/etc/caddy/Caddyfile" ]; then
+            sed -i "/${CADDY_CONFIG_START}/,/${CADDY_CONFIG_END}/d" /etc/caddy/Caddyfile
+        fi
+        
         cat << EOF | tee -a /etc/caddy/Caddyfile
 
 ${CADDY_CONFIG_START}
@@ -149,9 +153,11 @@ EOF
     python3 -m venv venv
     source venv/bin/activate
     pip install --upgrade pip
+    
+    # 【核心】直接使用项目自带的、已经修正过的 requirements.txt 文件安装所有依赖
     pip install -r requirements.txt
     
-    # 【关键修正】强制安装已知可用的 gevent 稳定版本，避免编译错误
+    # 强制安装已知可用的 gevent 稳定版本，避免在 ARM 服务器上编译错误
     # 这一步必须在 install -r ... 之后，以确保正确覆盖 Celery 的默认依赖
     pip install "gevent==21.12.0"
 
@@ -163,6 +169,7 @@ EOF
 [Unit]
 Description=Gunicorn instance to serve Cloud Manager
 After=network.target
+
 [Service]
 User=caddy
 Group=caddy
@@ -171,6 +178,7 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/gunicorn --workers 3 --bind unix:/run/gunicorn/cloud_manager.sock -m 007 app:app
 Restart=always
 RestartSec=5
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -179,6 +187,7 @@ EOF
 [Unit]
 Description=Celery Worker for the Cloud Manager Panel
 After=network.target redis-server.service
+
 [Service]
 User=caddy
 Group=caddy
@@ -186,6 +195,7 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info --concurrency=5
 Restart=always
 RestartSec=5
+
 [Install]
 WantedBy=multi-user.target
 EOF
