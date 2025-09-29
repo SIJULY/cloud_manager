@@ -6,7 +6,9 @@
 # 新增特性：
 # - 启动菜单，提供安装/更新、卸载选项
 # - 自动检测现有安装，智能选择全新安装或更新流程
-# 作者: 小龙女她爸
+# - 自动修复过时的 Docker 基础镜像 (Buster -> Bullseye)
+# - 自动为数据文件设置正确的写入权限
+# 作者: 小龙女她爸 
 # ==============================================================================
 
 # --- 配置 ---
@@ -68,6 +70,11 @@ install_or_update_docker_panel() {
         git config --global --add safe.directory ${INSTALL_DIR}
         git pull
         
+        # --- 优化点: 自动修复 Dockerfile ---
+        print_info "正在检查并修复 Dockerfile..."
+        sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
+        print_success "Dockerfile 已更新为 Bullseye 基础镜像。"
+
         print_info "正在重新构建镜像并启动服务 (这可能需要一些时间)..."
         docker compose up -d --build
 
@@ -123,6 +130,16 @@ install_or_update_docker_panel() {
 
         print_info "步骤 4: 创建空的密钥和数据库文件..."
         touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+
+        # --- 优化点: 自动为数据文件设置正确的写入权限 ---
+        print_info "为数据文件设置写入权限..."
+        chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+        print_success "权限设置完成。"
+        
+        # --- 优化点: 自动修复 Dockerfile ---
+        print_info "正在修复 Dockerfile 以使用更新的基础镜像..."
+        sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
+        print_success "Dockerfile 已更新。"
 
         print_info "步骤 5: 启动所有服务 (首次启动需要构建镜像，可能需要几分钟)..."
         docker compose up -d --build
