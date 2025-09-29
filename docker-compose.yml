@@ -18,6 +18,7 @@ services:
       - ./oci_tasks.db:/app/oci_tasks.db
     environment:
       - PANEL_PASSWORD=${PANEL_PASSWORD}
+      - REDIS_URL=redis://redis:6379/0  # <--- 新增此行
     depends_on:
       - redis
   worker:
@@ -30,6 +31,8 @@ services:
       - ./key.txt:/app/key.txt
       - ./azure_tasks.db:/app/azure_tasks.db
       - ./oci_tasks.db:/app/oci_tasks.db
+    environment:
+      - REDIS_URL=redis://redis:6379/0  # <--- 新增此行
     depends_on:
       - redis
   caddy:
