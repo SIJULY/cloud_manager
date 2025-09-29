@@ -11,9 +11,11 @@ app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
 PASSWORD = os.getenv("PANEL_PASSWORD", "default_password") 
 
 # --- Celery Configuration (for OCI) ---
+# 【核心修正】优先从环境变量读取REDIS_URL，如果找不到，则使用默认的localhost，以兼容非Docker环境
+redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 app.config.update(
-    broker_url='redis://localhost:6379/0',
-    result_backend='redis://localhost:6379/0',
+    broker_url=redis_url,
+    result_backend=redis_url,
     SEND_FILE_MAX_AGE_DEFAULT = 0,
     TEMPLATES_AUTO_RELOAD = True
 )
