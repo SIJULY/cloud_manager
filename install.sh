@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager 三合一面板 一键安装脚本 (增强版)
+# Cloud Manager 三合一面板 一键安装脚本 (最终修正版)
 # 该脚本适用于一个全新的、基于 Debian/Ubuntu 的系统。
 # 它会自动安装所有依赖、配置并启动服务。
-# 作者: 小龙女她爸
+# 作者: 小龙女她爸 
 # ==============================================================================
 
 
@@ -69,9 +69,9 @@ uninstall_panel() {
 }
 
 install_or_update_panel() {
-    print_info "步骤 1: 安装通用依赖..."
+    print_info "步骤 1: 安装通用依赖及编译环境..."
     apt-get update
-    apt-get install -y git python3-venv python3-pip redis-server curl gpg
+    apt-get install -y git python3-venv python3-pip redis-server curl gpg python3-dev gcc
 
     print_info "步骤 2: 安装/更新 Caddy..."
     apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
@@ -150,6 +150,11 @@ EOF
     source venv/bin/activate
     pip install --upgrade pip
     pip install -r requirements.txt
+    
+    # 【关键修正】强制安装已知可用的 gevent 稳定版本，避免编译错误
+    # 这一步必须在 install -r ... 之后，以确保正确覆盖 Celery 的默认依赖
+    pip install "gevent==21.12.0"
+
     deactivate
     chown -R caddy:caddy "${INSTALL_DIR}"
 
@@ -178,7 +183,7 @@ After=network.target redis-server.service
 User=caddy
 Group=caddy
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info --concurrency=3
+ExecStart=${INSTALL_DIR}/venv/bin/celery -A app.celery worker --loglevel=info --concurrency=5
 Restart=always
 RestartSec=5
 [Install]
