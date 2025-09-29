@@ -74,7 +74,8 @@ def save_profiles(profiles):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(profiles, f, indent=4, ensure_ascii=False)
 
 def generate_oci_password(length=16):
-    chars = string.ascii_letters + string.digits + "!@#$%^&*()_+=-`~[]{};:,.<>?"
+    """生成一个不含特殊字符的纯字母数字随机密码。"""
+    chars = string.ascii_letters + string.digits
     return ''.join(random.choice(chars) for _ in range(length))
 
 def get_oci_clients(profile_config):
@@ -132,14 +133,21 @@ def _ensure_subnet_in_profile(alias, vnet_client, tenancy_ocid):
     logging.info(f"New subnet {subnet.id} created and saved for {alias}")
     return subnet.id
 
-def get_user_data(root_password):
+def get_user_data(password):
+    """为 cloud-init 生成用户数据，用于设置 ubuntu 用户的密码，并确保密码登录可用。"""
     script = f"""#cloud-config
-chpasswd: {{ list: |
-    root:{root_password}
-  expire: False }}
+chpasswd:
+  expire: False
+  list:
+    - ubuntu:{password}
 runcmd:
-  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin yes/g' /etc/ssh/sshd_config
+  # 1. 修改主配置文件，确保密码登录为 yes (作为备用)
   - sed -i 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+  # 2. (关键) 检查并修改云镜像的默认配置文件，将 no 改为 yes，这是解决问题的核心
+  - '[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ] && sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'
+  # 3. 禁用 root 密码登录 (安全设置)
+  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config
+  # 4. 重启 sshd 服务使所有配置生效
   - systemctl restart sshd || service sshd restart || service ssh restart
 """
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
@@ -181,12 +189,30 @@ def oci_index():
 def manage_profiles():
     try:
         profiles = load_profiles()
-        if request.method == "GET": return jsonify(list(profiles.keys()))
-        data = request.json
-        profiles[data['alias']] = data['profile_data']
-        save_profiles(profiles)
-        return jsonify({"success": True, "alias": data['alias']})
-    except Exception as e: return jsonify({"error": str(e)}), 500
+        if request.method == "GET": 
+            return jsonify(list(profiles.keys()))
+        
+        if request.method == "POST":
+            data = request.json
+            alias = data.get('alias')
+            new_profile_data = data.get('profile_data', {})
+
+            if not alias or not new_profile_data:
+                return jsonify({"error": "Missing alias or profile_data"}), 400
+
+            # 检查是更新还是新建
+            if alias in profiles:
+                # 更新：将新数据合并到现有数据中
+                profiles[alias].update(new_profile_data)
+            else:
+                # 新建：直接赋值
+                profiles[alias] = new_profile_data
+            
+            save_profiles(profiles)
+            return jsonify({"success": True, "alias": alias})
+
+    except Exception as e: 
+        return jsonify({"error": str(e)}), 500
 
 @oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
 @login_required
@@ -492,8 +518,8 @@ def _create_instance_task(task_id, profile_config, alias, details):
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
-        root_password = generate_oci_password()
-        user_data_encoded = get_user_data(root_password)
+        instance_password = generate_oci_password()
+        user_data_encoded = get_user_data(instance_password)
         created_instances_info = []
 
         for i in range(details.get('instance_count', 1)):
@@ -525,7 +551,7 @@ def _create_instance_task(task_id, profile_config, alias, details):
             created_instances_info.append(instance_name)
             if i < details.get('instance_count', 1) - 1: time.sleep(5)
 
-        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 实例名: {', '.join(created_instances_info)}\n- Root 密码: {root_password}"
+        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 实例名: {', '.join(created_instances_info)}\n- 登陆用户名：ubuntu 密码：{instance_password}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
 
     except ServiceError as e:
@@ -542,7 +568,7 @@ def _create_instance_task(task_id, profile_config, alias, details):
 def _snatch_instance_task(task_id, profile_config, alias, details):
     clients, error = None, None
     launch_details = None
-    root_password = None
+    instance_password = None
     try:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
         clients, error = get_oci_clients(profile_config)
@@ -560,8 +586,8 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
-        root_password = generate_oci_password()
-        user_data_encoded = get_user_data(root_password)
+        instance_password = generate_oci_password()
+        user_data_encoded = get_user_data(instance_password)
         
         launch_details = LaunchInstanceDetails(
             compartment_id=tenancy_ocid, 
@@ -601,7 +627,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
                 max_wait_seconds=600
             )
             
-            msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- Root 密码: {root_password}"
+            msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- 登陆用户名：ubuntu 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
             return
 
