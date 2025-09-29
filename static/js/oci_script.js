@@ -25,6 +25,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
     const actionAreaProfile = document.getElementById('actionAreaProfile');
     
+    // 通用确认模态框的元素
+    const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
+    const confirmActionModalLabel = document.getElementById('confirmActionModalLabel');
+    const confirmActionModalBody = document.getElementById('confirmActionModalBody');
+    const confirmActionModalTerminateOptions = document.getElementById('confirmActionModalTerminateOptions');
+    const confirmDeleteVolumeCheck = document.getElementById('confirmDeleteVolumeCheck');
+    const confirmActionModalConfirmBtn = document.getElementById('confirmActionModalConfirmBtn');
+
     // 实例操作按钮
     const instanceActionButtons = {
         start: document.getElementById('startBtn'),
@@ -167,13 +175,25 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         if (button.classList.contains('delete-btn')) {
-            if (!confirm(`确定要删除账号 "${alias}" 吗?`)) return;
-            addLog(`正在删除账号: ${alias}...`);
-            try {
-                await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
-                addLog('删除成功!', 'success');
-                loadProfiles();
-            } catch (error) {}
+            // 使用新的确认模态框
+            confirmActionModalLabel.textContent = '确认删除账号';
+            confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
+            confirmActionModalTerminateOptions.classList.add('d-none'); // 隐藏终止选项
+            
+            // 为确认按钮设置一次性点击事件
+            const confirmDelete = async () => {
+                confirmActionModal.hide();
+                addLog(`正在删除账号: ${alias}...`);
+                try {
+                    await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
+                    addLog('删除成功!', 'success');
+                    loadProfiles();
+                } catch (error) {}
+                confirmActionModalConfirmBtn.removeEventListener('click', confirmDelete);
+            };
+            confirmActionModalConfirmBtn.addEventListener('click', confirmDelete, { once: true });
+
+            confirmActionModal.show();
         }
     });
 
@@ -202,12 +222,8 @@ document.addEventListener('DOMContentLoaded', function() {
             
             const saveChanges = async (finalProfileData) => {
                 if (originalAlias !== newAlias) {
-                    if(confirm(`账号名称将从 "${originalAlias}" 更改为 "${newAlias}", 确定吗?`)){
-                        await apiRequest(`/oci/api/profiles/${originalAlias}`, { method: 'DELETE' });
-                        addLog(`旧账号名称 ${originalAlias} 已删除。`);
-                    } else {
-                        return;
-                    }
+                    await apiRequest(`/oci/api/profiles/${originalAlias}`, { method: 'DELETE' });
+                    addLog(`旧账号名称 ${originalAlias} 已删除。`);
                 }
                 const payload = { alias: newAlias, profile_data: finalProfileData };
                 await apiRequest('/oci/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -300,7 +316,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (state === 'RUNNING') dotClass = 'status-running';
                     if (state === 'STOPPED') dotClass = 'status-stopped';
                     
-                    // vvvvvvvvvvvv 这是被修复的部分 vvvvvvvvvvvv
                     tr.innerHTML = `
                         <td style="text-align: left; padding-left: 1rem;">${inst.display_name}</td>
                         <td>
@@ -314,8 +329,6 @@ document.addEventListener('DOMContentLoaded', function() {
                         <td>${inst.ocpus}c / ${inst.memory_in_gbs}g / ${inst.boot_volume_size_gb}</td>
                         <td>${new Date(inst.time_created).toLocaleString()}</td>
                     `;
-                    // ^^^^^^^^^^^^ 这是被修复的部分 ^^^^^^^^^^^^
-
                     instanceList.appendChild(tr);
                 });
             }
@@ -354,20 +367,44 @@ document.addEventListener('DOMContentLoaded', function() {
             return;
         }
         
-        let confirmMessage = `确定要对实例 "${selectedInstance.display_name}" 执行 "${action}" 操作吗?`;
+        let message = `确定要对实例 "${selectedInstance.display_name}" 执行 "${action}" 操作吗?`;
+        let title = `请确认: ${action}`;
+        
+        // 为特定操作自定义标题和消息
         if (action === 'terminate') {
-            if (!confirm(`!!! 警告: 终止实例 "${selectedInstance.display_name}" 操作无法撤销 !!!\n\n确定要继续吗？`)) return;
-        } else if (action === 'changeip') {
-            confirmMessage = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
-            if (!confirm(confirmMessage)) return;
-        } else if (action === 'assignipv6') {
-            confirmMessage = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
-            if (!confirm(confirmMessage)) return;
+            title = `!!! 警告: 终止实例 !!!`;
+            message = `此操作无法撤销，确定要终止实例 "${selectedInstance.display_name}" 吗?`;
+            confirmActionModalTerminateOptions.classList.remove('d-none');
+            confirmDeleteVolumeCheck.checked = false; // 默认不勾选删除
+        } else {
+            confirmActionModalTerminateOptions.classList.add('d-none');
         }
-        else {
-             if (!confirm(confirmMessage)) return;
+        if (action === 'changeip') {
+             message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
+        }
+        if (action === 'assignipv6') {
+             message = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
         }
        
+        // 设置并显示模态框
+        confirmActionModalLabel.textContent = title;
+        confirmActionModalBody.textContent = message;
+        confirmActionModalConfirmBtn.dataset.action = action; // 将 action 存到按钮上
+        confirmActionModal.show();
+    }
+    
+    // 为所有实例操作按钮添加事件监听器
+    Object.entries(instanceActionButtons).forEach(([action, button]) => {
+        button.addEventListener('click', () => performInstanceAction(action.toLowerCase()));
+    });
+
+    // 为通用确认模态框的确认按钮设置一个事件监听器
+    confirmActionModalConfirmBtn.addEventListener('click', async () => {
+        const action = confirmActionModalConfirmBtn.dataset.action;
+        if (!action || !selectedInstance) return;
+
+        confirmActionModal.hide(); // 立即隐藏模态框
+
         const payload = {
             action: action,
             instance_id: selectedInstance.id,
@@ -377,7 +414,9 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         if (action === 'terminate') {
-             payload.preserve_boot_volume = confirm("终止实例时是否保留其引导卷？");
+            // 如果复选框被勾选，则删除卷 (preserve=false)
+            // 如果未勾选，则保留卷 (preserve=true)
+            payload.preserve_boot_volume = !confirmDeleteVolumeCheck.checked;
         }
 
         addLog(`正在为实例 ${selectedInstance.display_name} 提交 ${action} 请求...`);
@@ -388,10 +427,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 pollTaskStatus(response.task_id);
             }
         } catch(e) {}
-    }
-
-    Object.entries(instanceActionButtons).forEach(([action, button]) => {
-        button.addEventListener('click', () => performInstanceAction(action.toLowerCase()));
     });
 
     // --- 任务管理 ---
@@ -497,14 +532,24 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!selectedLi) return addLog('请先选择一个要停止的任务', 'warning');
         
         const taskId = selectedLi.dataset.taskId;
-        if (!confirm(`确定要停止任务 "${taskId}" 吗？`)) return;
-
-        addLog(`正在发送停止任务 ${taskId} 的请求...`);
-        try {
-            await apiRequest(`/oci/api/tasks/${taskId}/stop`, { method: 'POST' });
-            addLog(`已成功发送停止请求。`, 'success');
-            setTimeout(loadSnatchTasks, 2000);
-        } catch(e) {}
+        
+        confirmActionModalLabel.textContent = '确认停止任务';
+        confirmActionModalBody.textContent = `确定要停止任务 "${taskId}" 吗？`;
+        confirmActionModalTerminateOptions.classList.add('d-none');
+        
+        const confirmStop = async () => {
+            confirmActionModal.hide();
+            addLog(`正在发送停止任务 ${taskId} 的请求...`);
+            try {
+                await apiRequest(`/oci/api/tasks/${taskId}/stop`, { method: 'POST' });
+                addLog(`已成功发送停止请求。`, 'success');
+                setTimeout(loadSnatchTasks, 2000);
+            } catch(e) {}
+            confirmActionModalConfirmBtn.removeEventListener('click', confirmStop);
+        };
+        confirmActionModalConfirmBtn.addEventListener('click', confirmStop, { once: true });
+        
+        confirmActionModal.show();
     });
 
     deleteSnatchTaskBtn.addEventListener('click', async () => {
@@ -512,14 +557,24 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!selectedLi) return addLog('请先选择一个要删除的任务记录', 'warning');
 
         const taskId = selectedLi.dataset.taskId;
-        if (!confirm(`确定要删除这条任务记录吗？此操作不可逆。`)) return;
 
-        addLog(`正在删除任务记录 ${taskId}...`);
-        try {
-            await apiRequest(`/oci/api/tasks/${taskId}`, { method: 'DELETE' });
-            addLog('任务记录已删除。', 'success');
-            loadSnatchTasks();
-        } catch(e) {}
+        confirmActionModalLabel.textContent = '确认删除记录';
+        confirmActionModalBody.textContent = `确定要删除这条任务记录吗？此操作不可逆。`;
+        confirmActionModalTerminateOptions.classList.add('d-none');
+        
+        const confirmDelete = async () => {
+            confirmActionModal.hide();
+            addLog(`正在删除任务记录 ${taskId}...`);
+            try {
+                await apiRequest(`/oci/api/tasks/${taskId}`, { method: 'DELETE' });
+                addLog('任务记录已删除。', 'success');
+                loadSnatchTasks();
+            } catch(e) {}
+            confirmActionModalConfirmBtn.removeEventListener('click', confirmDelete);
+        };
+        confirmActionModalConfirmBtn.addEventListener('click', confirmDelete, { once: true });
+
+        confirmActionModal.show();
     });
 
     // --- 任务状态轮询 ---
