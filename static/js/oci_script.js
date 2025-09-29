@@ -9,13 +9,13 @@ document.addEventListener('DOMContentLoaded', function() {
     const newProfileKeyFile = document.getElementById('newProfileKeyFile');
     const refreshInstancesBtn = document.getElementById('refreshInstancesBtn');
     const createInstanceBtn = document.getElementById('createInstanceBtn');
+    const snatchInstanceBtn = document.getElementById('snatchInstanceBtn');
+    const networkSettingsBtn = document.getElementById('networkSettingsBtn');
     const instanceList = document.getElementById('instanceList');
     const logOutput = document.getElementById('logOutput');
     const clearLogBtn = document.getElementById('clearLogBtn');
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
     const createInstanceModal = new bootstrap.Modal(document.getElementById('createInstanceModal'));
-    const snatchInstanceBtn = document.getElementById('snatchInstanceBtn');
-    const viewSnatchTasksBtn = document.getElementById('viewSnatchTasksBtn');
     const snatchInstanceModal = new bootstrap.Modal(document.getElementById('snatchInstanceModal'));
     const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
     const taskResultModal = new bootstrap.Modal(document.getElementById('taskResultModal'));
@@ -24,6 +24,29 @@ document.addEventListener('DOMContentLoaded', function() {
     const runningSnatchTasksList = document.getElementById('runningSnatchTasksList');
     const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
     const actionAreaProfile = document.getElementById('actionAreaProfile');
+    
+    // 网络设置模态框元素
+    const networkSettingsModal = new bootstrap.Modal(document.getElementById('networkSettingsModal'));
+    const ingressRulesTable = document.getElementById('ingressRulesTable');
+    const egressRulesTable = document.getElementById('egressRulesTable');
+    const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
+    const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
+    const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
+
+    // 修改实例模态框元素
+    const editInstanceModal = new bootstrap.Modal(document.getElementById('editInstanceModal'));
+    const editDisplayName = document.getElementById('editDisplayName');
+    const saveDisplayNameBtn = document.getElementById('saveDisplayNameBtn');
+    const editFlexInstanceConfig = document.getElementById('editFlexInstanceConfig');
+    const editOcpus = document.getElementById('editOcpus');
+    const editMemory = document.getElementById('editMemory');
+    const saveFlexConfigBtn = document.getElementById('saveFlexConfigBtn');
+    const editBootVolumeSize = document.getElementById('editBootVolumeSize');
+    const saveBootVolumeSizeBtn = document.getElementById('saveBootVolumeSizeBtn');
+    const editVpus = document.getElementById('editVpus');
+    const saveVpusBtn = document.getElementById('saveVpusBtn');
+    const applyNetBoostBtn = document.getElementById('applyNetBoostBtn');
+
     
     // 通用确认模态框的元素
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
@@ -38,6 +61,7 @@ document.addEventListener('DOMContentLoaded', function() {
         start: document.getElementById('startBtn'),
         stop: document.getElementById('stopBtn'),
         restart: document.getElementById('restartBtn'),
+        editInstance: document.getElementById('editInstanceBtn'),
         changeIp: document.getElementById('changeIpBtn'),
         assignIpv6: document.getElementById('assignIpv6Btn'),
         terminate: document.getElementById('terminateBtn'),
@@ -46,6 +70,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let selectedInstance = null;
     let runningTasksData = [];
     let completedTasksData = [];
+    let currentSecurityList = null;
 
     // --- 通用辅助函数 ---
     function addLog(message, type = 'info') {
@@ -175,12 +200,10 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         if (button.classList.contains('delete-btn')) {
-            // 使用新的确认模态框
             confirmActionModalLabel.textContent = '确认删除账号';
             confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
-            confirmActionModalTerminateOptions.classList.add('d-none'); // 隐藏终止选项
+            confirmActionModalTerminateOptions.classList.add('d-none');
             
-            // 为确认按钮设置一次性点击事件
             const confirmDelete = async () => {
                 confirmActionModal.hide();
                 addLog(`正在删除账号: ${alias}...`);
@@ -288,6 +311,7 @@ document.addEventListener('DOMContentLoaded', function() {
         refreshInstancesBtn.disabled = !enabled;
         createInstanceBtn.disabled = !canCreate;
         snatchInstanceBtn.disabled = !canSnatch;
+        networkSettingsBtn.disabled = !enabled;
         
         if (!enabled) {
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
@@ -370,12 +394,11 @@ document.addEventListener('DOMContentLoaded', function() {
         let message = `确定要对实例 "${selectedInstance.display_name}" 执行 "${action}" 操作吗?`;
         let title = `请确认: ${action}`;
         
-        // 为特定操作自定义标题和消息
         if (action === 'terminate') {
             title = `!!! 警告: 终止实例 !!!`;
             message = `此操作无法撤销，确定要终止实例 "${selectedInstance.display_name}" 吗?`;
             confirmActionModalTerminateOptions.classList.remove('d-none');
-            confirmDeleteVolumeCheck.checked = false; // 默认不勾选删除
+            confirmDeleteVolumeCheck.checked = false; 
         } else {
             confirmActionModalTerminateOptions.classList.add('d-none');
         }
@@ -386,24 +409,23 @@ document.addEventListener('DOMContentLoaded', function() {
              message = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
         }
        
-        // 设置并显示模态框
         confirmActionModalLabel.textContent = title;
         confirmActionModalBody.textContent = message;
-        confirmActionModalConfirmBtn.dataset.action = action; // 将 action 存到按钮上
+        confirmActionModalConfirmBtn.dataset.action = action; 
         confirmActionModal.show();
     }
     
-    // 为所有实例操作按钮添加事件监听器
-    Object.entries(instanceActionButtons).forEach(([action, button]) => {
-        button.addEventListener('click', () => performInstanceAction(action.toLowerCase()));
+    Object.entries(instanceActionButtons).forEach(([key, button]) => {
+        if (key !== 'editInstance') { // Exclude the edit button from this generic handler
+            button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
+        }
     });
 
-    // 为通用确认模态框的确认按钮设置一个事件监听器
     confirmActionModalConfirmBtn.addEventListener('click', async () => {
         const action = confirmActionModalConfirmBtn.dataset.action;
         if (!action || !selectedInstance) return;
 
-        confirmActionModal.hide(); // 立即隐藏模态框
+        confirmActionModal.hide(); 
 
         const payload = {
             action: action,
@@ -414,8 +436,6 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         if (action === 'terminate') {
-            // 如果复选框被勾选，则删除卷 (preserve=false)
-            // 如果未勾选，则保留卷 (preserve=true)
             payload.preserve_boot_volume = !confirmDeleteVolumeCheck.checked;
         }
 
@@ -576,7 +596,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         confirmActionModal.show();
     });
-
+    
     // --- 任务状态轮询 ---
     function pollTaskStatus(taskId) {
         addLog(`正在监控任务 ${taskId}...`);
@@ -688,6 +708,257 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.task_id) { pollTaskStatus(response.task_id); }
         } catch (error) {}
     });
+
+    // --- 网络设置 ---
+    networkSettingsBtn.addEventListener('click', async () => {
+        try {
+            addLog("正在获取网络安全规则...");
+            const data = await apiRequest('/oci/api/network/security-list');
+            currentSecurityList = data.security_list;
+            document.getElementById('currentVcnName').textContent = data.vcn_name || 'N/A';
+            document.getElementById('currentSlName').textContent = currentSecurityList.display_name || 'N/A';
+            
+            renderRules('ingress', currentSecurityList.ingress_security_rules);
+            renderRules('egress', currentSecurityList.egress_security_rules);
+
+        } catch (error) {
+            addLog(`获取网络规则失败: ${error.message}`, 'error');
+            document.getElementById('currentVcnName').textContent = '获取失败';
+            document.getElementById('currentSlName').textContent = '获取失败';
+        }
+    });
+
+    function renderRules(type, rules) {
+        const tableBody = type === 'ingress' ? ingressRulesTable : egressRulesTable;
+        tableBody.innerHTML = '';
+        if (!rules || rules.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="6" class="text-center text-muted">没有规则</td></tr>`;
+            return;
+        }
+        rules.forEach(rule => {
+            const row = createRuleRow(type, rule);
+            tableBody.appendChild(row);
+        });
+    }
+
+    function createRuleRow(type, rule = {}) {
+        const tr = document.createElement('tr');
+        tr.className = 'rule-row';
+        const isStateless = rule.is_stateless || false;
+        const sourceOrDest = type === 'ingress' ? (rule.source || '0.0.0.0/0') : (rule.destination || '0.0.0.0/0');
+        const protocol = rule.protocol || '6'; // Default to TCP
+        
+        const protocolOptions = {
+            'all': '所有协议', '1': 'ICMP', '6': 'TCP', '17': 'UDP'
+        };
+        const protocolSelect = `<select class="form-select form-select-sm" data-key="protocol">
+            ${Object.entries(protocolOptions).map(([key, value]) => `<option value="${key}" ${protocol == key ? 'selected' : ''}>${value}</option>`).join('')}
+        </select>`;
+
+        const portRange = (options) => {
+            if (!options) return { min: '', max: '' };
+            return { min: options.min || '', max: options.max || '' };
+        };
+
+        const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
+        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
+        
+        tr.innerHTML = `
+            <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${isStateless ? 'checked' : ''}></td>
+            <td><input type="text" class="form-control form-control-sm" data-key="${type === 'ingress' ? 'source' : 'destination'}" value="${sourceOrDest}"></td>
+            <td>${protocolSelect}</td>
+            <td>
+                <div class="input-group input-group-sm">
+                    <input type="number" class="form-control" placeholder="Min" data-key="src_port_min" value="${srcPorts.min}">
+                    <input type="number" class="form-control" placeholder="Max" data-key="src_port_max" value="${srcPorts.max}">
+                </div>
+            </td>
+            <td>
+                <div class="input-group input-group-sm">
+                    <input type="number" class="form-control" placeholder="Min" data-key="dest_port_min" value="${destPorts.min}">
+                    <input type="number" class="form-control" placeholder="Max" data-key="dest_port_max" value="${destPorts.max}">
+                </div>
+            </td>
+            <td><button class="btn btn-sm btn-danger remove-rule-btn"><i class="bi bi-trash"></i></button></td>
+        `;
+        tr.querySelector('.remove-rule-btn').addEventListener('click', () => tr.remove());
+        return tr;
+    }
+    
+    addIngressRuleBtn.addEventListener('click', () => {
+        const placeholderRow = ingressRulesTable.querySelector('td[colspan="6"]');
+        if (placeholderRow) placeholderRow.parentElement.remove();
+        ingressRulesTable.appendChild(createRuleRow('ingress'));
+    });
+
+    addEgressRuleBtn.addEventListener('click', () => {
+        const placeholderRow = egressRulesTable.querySelector('td[colspan="6"]');
+        if (placeholderRow) placeholderRow.parentElement.remove();
+        egressRulesTable.appendChild(createRuleRow('egress'));
+    });
+
+    saveNetworkRulesBtn.addEventListener('click', async () => {
+        const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
+        saveNetworkRulesBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        
+        try {
+            const ingress_security_rules = collectRulesFromTable(ingressRulesTable, 'ingress');
+            const egress_security_rules = collectRulesFromTable(egressRulesTable, 'egress');
+
+            const payload = {
+                security_list_id: currentSecurityList.id,
+                rules: {
+                    ingress_security_rules,
+                    egress_security_rules
+                }
+            };
+
+            addLog("正在保存网络规则...");
+            const response = await apiRequest('/oci/api/network/update-security-rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            addLog(response.message, 'success');
+            networkSettingsModal.hide();
+
+        } catch (error) {
+            addLog(`保存网络规则失败: ${error.message}`, 'error');
+        } finally {
+            saveNetworkRulesBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
+
+    function collectRulesFromTable(tableBody, type) {
+        const rules = [];
+        tableBody.querySelectorAll('.rule-row').forEach(tr => {
+            const rule = {
+                is_stateless: tr.querySelector('[data-key="is_stateless"]').checked,
+                protocol: tr.querySelector('[data-key="protocol"]').value
+            };
+            
+            if (type === 'ingress') {
+                rule.source = tr.querySelector('[data-key="source"]').value;
+                rule.source_type = 'CIDR_BLOCK';
+            } else {
+                rule.destination = tr.querySelector('[data-key="destination"]').value;
+                rule.destination_type = 'CIDR_BLOCK';
+            }
+
+            if (rule.protocol === '6' || rule.protocol === '17') { // TCP or UDP
+                const options = {};
+                const dest_min = parseInt(tr.querySelector('[data-key="dest_port_min"]').value, 10);
+                const dest_max = parseInt(tr.querySelector('[data-key="dest_port_max"]').value, 10);
+                const src_min = parseInt(tr.querySelector('[data-key="src_port_min"]').value, 10);
+                const src_max = parseInt(tr.querySelector('[data-key="src_port_max"]').value, 10);
+
+                if (!isNaN(dest_min) && !isNaN(dest_max)) {
+                    options.destination_port_range = { min: dest_min, max: dest_max };
+                }
+                if (!isNaN(src_min) && !isNaN(src_max)) {
+                    options.source_port_range = { min: src_min, max: src_max };
+                }
+                
+                if (rule.protocol === '6') {
+                    rule.tcp_options = options;
+                } else {
+                    rule.udp_options = options;
+                }
+            }
+            rules.push(rule);
+        });
+        return rules;
+    }
+
+    // --- 修改实例 ---
+    instanceActionButtons.editInstance.addEventListener('click', async () => {
+        if (!selectedInstance) {
+            addLog('请先选择一个实例', 'warning');
+            return;
+        }
+        
+        try {
+            addLog(`正在获取实例 ${selectedInstance.display_name} 的详细信息...`);
+            const details = await apiRequest(`/oci/api/instance-details/${selectedInstance.id}`);
+            
+            editDisplayName.value = details.display_name;
+            editBootVolumeSize.value = details.boot_volume_size_in_gbs;
+            editVpus.value = details.vpus_per_gb;
+            
+            if (details.shape.toLowerCase().includes('flex')) {
+                editOcpus.value = details.ocpus;
+                editMemory.value = details.memory_in_gbs;
+                editFlexInstanceConfig.classList.remove('d-none');
+            } else {
+                editFlexInstanceConfig.classList.add('d-none');
+            }
+
+            editInstanceModal.show();
+        } catch(error) {
+            addLog(`获取实例详情失败: ${error.message}`, 'error');
+        }
+    });
+    
+    async function handleInstanceUpdateRequest(action, payload) {
+        addLog(`正在提交 ${action} 请求...`);
+        try {
+            const response = await apiRequest('/oci/api/update-instance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            addLog(response.message, 'success');
+            if (response.task_id) {
+                pollTaskStatus(response.task_id);
+            }
+            editInstanceModal.hide(); // 操作提交后关闭模态框
+            setTimeout(refreshInstances, 3000); // 稍后刷新列表
+        } catch(e) {}
+    }
+
+    saveDisplayNameBtn.addEventListener('click', () => {
+        handleInstanceUpdateRequest('修改名称', {
+            action: 'update_display_name',
+            instance_id: selectedInstance.id,
+            display_name: editDisplayName.value
+        });
+    });
+
+    saveFlexConfigBtn.addEventListener('click', () => {
+         handleInstanceUpdateRequest('修改CPU/内存', {
+            action: 'update_shape',
+            instance_id: selectedInstance.id,
+            ocpus: parseInt(editOcpus.value, 10),
+            memory_in_gbs: parseInt(editMemory.value, 10)
+        });
+    });
+
+    saveBootVolumeSizeBtn.addEventListener('click', () => {
+         handleInstanceUpdateRequest('修改引导卷大小', {
+            action: 'update_boot_volume',
+            instance_id: selectedInstance.id,
+            size_in_gbs: parseInt(editBootVolumeSize.value, 10)
+        });
+    });
+
+    saveVpusBtn.addEventListener('click', () => {
+         handleInstanceUpdateRequest('修改引导卷性能', {
+            action: 'update_boot_volume',
+            instance_id: selectedInstance.id,
+            vpus_per_gb: parseInt(editVpus.value, 10)
+        });
+    });
+    
+    applyNetBoostBtn.addEventListener('click', () => {
+        handleInstanceUpdateRequest('网络提速', {
+            action: 'apply_net_boost',
+            instance_id: selectedInstance.id
+        });
+    });
+
 
     // 初始化页面
     loadProfiles();
