@@ -263,22 +263,51 @@ def _change_ip_task(app, task_id, credential_dict, subscription_id, rg_name, vm_
             
             if old_pip_id:
                 old_pip_name = old_pip_id.split('/')[-1]
-                db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在解绑旧IP...', task_id)); db.commit()
+                db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在解绑旧IP...', task_id)); db.commit()
                 ip_config.public_ip_address = None
                 network_client.network_interfaces.begin_create_or_update(rg_name, nic_name, nic).result()
-                db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在删除旧IP...', task_id)); db.commit()
+                db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在删除旧IP...', task_id)); db.commit()
                 network_client.public_ip_addresses.begin_delete(rg_name, old_pip_name).result()
 
             new_pip_name = f"pip-{vm_name}-{int(time.time())}"
             pip_params = {"location": vm.location, "sku": {"name": "Standard"}, "public_ip_allocation_method": "Static"}
-            db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在创建新IP...', task_id)); db.commit()
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建新IP...', task_id)); db.commit()
             new_pip = network_client.public_ip_addresses.begin_create_or_update(rg_name, new_pip_name, pip_params).result()
             
-            db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在绑定新IP...', task_id)); db.commit()
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在绑定新IP...', task_id)); db.commit()
             ip_config.public_ip_address = new_pip
             network_client.network_interfaces.begin_create_or_update(rg_name, nic_name, nic).result()
+            
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在检查网络安全组(NSG)...', task_id)); db.commit()
+            if nic.network_security_group:
+                nsg_id = nic.network_security_group.id
+                nsg_name = nsg_id.split('/')[-1]
+                nsg = network_client.network_security_groups.get(rg_name, nsg_name)
+                
+                ssh_rule_exists = any(
+                    rule.destination_port_range == '22' and rule.protocol.lower() == 'tcp' and rule.access.lower() == 'allow' and rule.direction.lower() == 'inbound'
+                    for rule in nsg.security_rules
+                )
 
-            result_message = f"✅ IP更换成功！\n    - 虚拟机: {vm_name}\n    - 新IP地址: {new_pip.ip_address}"
+                if not ssh_rule_exists:
+                    db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('未找到SSH规则，正在创建...', task_id)); db.commit()
+                    highest_priority = max([rule.priority for rule in nsg.security_rules] + [999])
+                    
+                    rule_params = {
+                        'name': 'AllowSSH_Auto_Panel', 'protocol': 'Tcp',
+                        'source_address_prefix': 'Internet', 'source_port_range': '*',
+                        'destination_address_prefix': '*', 'destination_port_range': '22',
+                        'access': 'Allow', 'direction': 'Inbound', 'priority': highest_priority + 10
+                    }
+                    nsg.security_rules.append(rule_params)
+                    network_client.network_security_groups.begin_create_or_update(rg_name, nsg_name, nsg).result()
+                    db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('SSH规则创建成功！', task_id)); db.commit()
+                else:
+                    db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('检测到已存在SSH规则。', task_id)); db.commit()
+            else:
+                 logging.warning(f"网卡 {nic_name} 未关联任何NSG，无法自动添加SSH规则。")
+
+            result_message = f"✅ IP更换成功！\n- 虚拟机: {vm_name}\n- 新IP地址: {new_pip.ip_address}\n- SSH(22)端口已确保开放。"
             db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id)); db.commit()
         except Exception as e:
             error_message = f"❌ 更换IP失败 for {vm_name}: {str(e)}"
@@ -326,15 +355,60 @@ def _create_vm_task(app, task_id, credential_dict, subscription_id, vm_name, rg_
                 "location": location, "sku": ip_sku, "public_ip_allocation_method": ip_type
             })
             public_ip_id = pip_poller.result().id
-
-            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建网络接口...', task_id)); db.commit()
+            
+            # --- 核心修改：创建并配置包含所有规则的NSG ---
+            nsg_name = f"nsg-{vm_name}"
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建并配置网络安全组(NSG)...', task_id)); db.commit()
+            nsg_params = {
+                'location': location,
+                'security_rules': [
+                    {
+                        'name': 'AllowSSH_Default',
+                        'protocol': 'Tcp',
+                        'source_address_prefix': 'Internet',
+                        'source_port_range': '*',
+                        'destination_address_prefix': '*',
+                        'destination_port_range': '22',
+                        'access': 'Allow',
+                        'direction': 'Inbound',
+                        'priority': 1000
+                    },
+                    {
+                        'name': 'AllowAll_Inbound_DANGEROUS',
+                        'protocol': '*',
+                        'source_address_prefix': '*',
+                        'source_port_range': '*',
+                        'destination_address_prefix': '*',
+                        'destination_port_range': '*',
+                        'access': 'Allow',
+                        'direction': 'Inbound',
+                        'priority': 1010
+                    },
+                     {
+                        'name': 'AllowAll_Outbound',
+                        'protocol': '*',
+                        'source_address_prefix': '*',
+                        'source_port_range': '*',
+                        'destination_address_prefix': '*',
+                        'destination_port_range': '*',
+                        'access': 'Allow',
+                        'direction': 'Outbound',
+                        'priority': 1000
+                    }
+                ]
+            }
+            nsg_poller = network_client.network_security_groups.begin_create_or_update(rg_name, nsg_name, nsg_params)
+            nsg_id = nsg_poller.result().id
+            
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建网络接口并关联NSG...', task_id)); db.commit()
             nic_poller = network_client.network_interfaces.begin_create_or_update(rg_name, f"nic-{vm_name}", {
                 "location": location,
                 "ip_configurations": [{
                     "name": "ipconfig1",
                     "subnet": {"id": subnet_id},
                     "public_ip_address": {"id": public_ip_id}
-                }]
+                }],
+                "network_security_group": {"id": nsg_id}
             })
             nic_id = nic_poller.result().id
             
@@ -362,7 +436,7 @@ def _create_vm_task(app, task_id, credential_dict, subscription_id, vm_name, rg_
             vm_poller.result()
 
             final_pip = network_client.public_ip_addresses.get(rg_name, f"pip-{vm_name}")
-            success_message = f"🎉 虚拟机 {vm_name} 创建成功! \n    - 公网 IP: {final_pip.ip_address}\n    - 用户名: {admin_username}\n    - 密  码: {admin_password}"
+            success_message = f"🎉 虚拟机 {vm_name} 创建成功! \n- 公网 IP: {final_pip.ip_address}\n- 用户名: {admin_username}\n- 密  码: {admin_password}\n- 所有网络端口已自动开放"
             db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', success_message, task_id)); db.commit()
             logging.info(f"后台任务({task_id})成功")
         except Exception as e:
@@ -381,7 +455,6 @@ def _create_vm_task(app, task_id, credential_dict, subscription_id, vm_name, rg_
                  logging.error(f"清理资源组 {rg_name} 失败: {cleanup_e}")
         finally:
             db.close()
-
 
 @azure_bp.route('/api/create-vm', methods=['POST'])
 @login_required
