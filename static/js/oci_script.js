@@ -761,7 +761,7 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
-        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
+        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.tcp_options.destination_port_range : null));
         
         tr.innerHTML = `
             <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${isStateless ? 'checked' : ''}></td>
