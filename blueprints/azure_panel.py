@@ -1,5 +1,5 @@
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3
-from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
+from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for, current_app
 from functools import wraps
 from azure.identity import ClientSecretCredential
 from azure.mgmt.compute import ComputeManagementClient
@@ -12,7 +12,7 @@ azure_bp = Blueprint('azure', __name__, template_folder='../templates', static_f
 
 # --- Configuration ---
 KEYS_FILE = "azure_keys.json"
-DATABASE = 'azure_tasks.db' # Renamed to avoid conflict
+DATABASE = 'azure_tasks.db'
 
 # --- Helpers & DB ---
 def get_db():
@@ -22,12 +22,15 @@ def get_db():
         db.row_factory = sqlite3.Row
     return db
 
+@azure_bp.teardown_request
 def close_connection(exception):
     db = getattr(g, '_azure_database', None)
     if db is not None:
         db.close()
 
 def init_db():
+    if os.path.exists(DATABASE):
+        return
     db = sqlite3.connect(DATABASE)
     schema_sql = "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL, result TEXT);"
     db.cursor().executescript(schema_sql)
@@ -40,22 +43,27 @@ def query_db(query, args=(), one=False):
     rv = cur.fetchall()
     cur.close()
     return (rv[0] if rv else None) if one else rv
+
 def load_keys():
     if not os.path.exists(KEYS_FILE): return []
     try:
         with open(KEYS_FILE, 'r') as f: content = f.read(); return json.loads(content) if content else []
     except json.JSONDecodeError: return []
+
 def save_keys(keys):
     with open(KEYS_FILE, 'w') as f: json.dump(keys, f, indent=4)
+
 def generate_password(length=12):
     characters = string.ascii_letters + string.digits + "!@#$%^&*()"
     return ''.join(random.choice(characters) for i in range(length))
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if "user_logged_in" not in session: return jsonify({"error": "用户未登录"}), 401
         return f(*args, **kwargs)
     return decorated_function
+
 def azure_credentials_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -154,80 +162,135 @@ def get_regions():
         return jsonify(region_list)
     except Exception as e: return jsonify({"error": f"获取区域列表失败: {str(e)}"}), 500
 
-def _long_running_task(target_func, **kwargs):
-    target_func(**kwargs)
+def _run_background_task(target_func, **kwargs):
+    app = current_app._get_current_object()
+    threading.Thread(target=target_func, args=(app,), kwargs=kwargs).start()
 
 @azure_bp.route('/api/vm-action', methods=['POST'])
 @login_required
 @azure_credentials_required
 def vm_action():
     data = request.json
+    action = data.get('action')
+    vm_name = data.get('vm_name')
+    
+    task_id = str(uuid.uuid4())
+    db = get_db()
+    db.execute('INSERT INTO tasks (id, status, result) VALUES (?, ?, ?)', (task_id, 'pending', f"任务已提交: {action} on {vm_name}"))
+    db.commit()
+
     task_kwargs = {
+        'task_id': task_id,
         'credential_dict': {k: g.azure_creds[k] for k in ['tenant_id', 'client_id', 'client_secret']},
         'subscription_id': g.azure_creds['subscription_id'],
-        'action': data.get('action'),
+        'action': action,
         'resource_group': data.get('resource_group'),
-        'vm_name': data.get('vm_name')
+        'vm_name': vm_name
     }
-    threading.Thread(target=_long_running_task, args=(_vm_action_task,), kwargs=task_kwargs).start()
-    return jsonify({"message": f"操作已提交，将在后台执行..."})
+    
+    _run_background_task(_vm_action_task, **task_kwargs)
+    return jsonify({"message": f"操作已提交，将在后台执行...", "task_id": task_id})
 
-def _vm_action_task(credential_dict, subscription_id, action, resource_group, vm_name):
-    try:
-        credential = ClientSecretCredential(**credential_dict)
-        compute_client = ComputeManagementClient(credential, subscription_id)
-        resource_client = ResourceManagementClient(credential, subscription_id)
-        if action == 'start': poller = compute_client.virtual_machines.begin_start(resource_group, vm_name)
-        elif action == 'stop': poller = compute_client.virtual_machines.begin_deallocate(resource_group, vm_name)
-        elif action == 'restart': poller = compute_client.virtual_machines.begin_restart(resource_group, vm_name)
-        elif action == 'delete': poller = resource_client.resource_groups.begin_delete(resource_group)
-        else: return
-        poller.result()
-    except Exception as e: logging.error(f"后台任务 '{action}' 失败: {e}")
+def _vm_action_task(app, task_id, credential_dict, subscription_id, action, resource_group, vm_name):
+    with app.app_context():
+        db = sqlite3.connect(DATABASE)
+        db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', f'正在对 {vm_name} 执行 {action} 操作...', task_id)); db.commit()
+        try:
+            credential = ClientSecretCredential(**credential_dict)
+            compute_client = ComputeManagementClient(credential, subscription_id)
+            
+            if action == 'start': 
+                poller = compute_client.virtual_machines.begin_start(resource_group, vm_name)
+                result_message = f"✅ 虚拟机 {vm_name} 启动成功！"
+            elif action == 'stop': 
+                poller = compute_client.virtual_machines.begin_deallocate(resource_group, vm_name)
+                result_message = f"✅ 虚拟机 {vm_name} 停止成功！"
+            elif action == 'restart': 
+                poller = compute_client.virtual_machines.begin_restart(resource_group, vm_name)
+                result_message = f"✅ 虚拟机 {vm_name} 重启成功！"
+            elif action == 'delete':
+                resource_client = ResourceManagementClient(credential, subscription_id)
+                poller = resource_client.resource_groups.begin_delete(resource_group)
+                result_message = f"✅ 资源组 {resource_group} 及内部资源删除成功！"
+            else: 
+                raise ValueError("未知的操作")
+            
+            poller.result()
+            db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id)); db.commit()
+        except Exception as e:
+            error_message = f"❌ 对 {vm_name} 执行 {action} 失败: {str(e)}"
+            db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id)); db.commit()
+            logging.error(f"后台任务 '{action}' 失败: {e}")
+        finally:
+            db.close()
     
 @azure_bp.route('/api/vm-change-ip', methods=['POST'])
 @login_required
 @azure_credentials_required
 def change_vm_ip():
     data = request.json
+    vm_name = data.get('vm_name')
+
+    task_id = str(uuid.uuid4())
+    db = get_db()
+    db.execute('INSERT INTO tasks (id, status, result) VALUES (?, ?, ?)', (task_id, 'pending', f"任务已提交: change IP on {vm_name}"))
+    db.commit()
+
     task_kwargs = {
+        'task_id': task_id,
         'credential_dict': {k: g.azure_creds[k] for k in ['tenant_id', 'client_id', 'client_secret']},
         'subscription_id': g.azure_creds['subscription_id'],
         'rg_name': data.get('resource_group'),
-        'vm_name': data.get('vm_name')
+        'vm_name': vm_name
     }
-    threading.Thread(target=_long_running_task, args=(_change_ip_task,), kwargs=task_kwargs).start()
-    return jsonify({"message": f"正在为虚拟机 {data.get('vm_name')} 申请新的IP地址，请稍后刷新列表。"})
+    _run_background_task(_change_ip_task, **task_kwargs)
+    return jsonify({"message": f"正在为虚拟机 {vm_name} 申请新的IP地址...", "task_id": task_id})
     
-def _change_ip_task(credential_dict, subscription_id, rg_name, vm_name):
-    try:
-        credential = ClientSecretCredential(**credential_dict)
-        compute_client = ComputeManagementClient(credential, subscription_id)
-        network_client = NetworkManagementClient(credential, subscription_id)
-        vm = compute_client.virtual_machines.get(rg_name, vm_name)
-        nic_id = vm.network_profile.network_interfaces[0].id
-        nic_name = nic_id.split('/')[-1]
-        nic = network_client.network_interfaces.get(rg_name, nic_name)
-        ip_config = nic.ip_configurations[0]
-        old_pip_id = ip_config.public_ip_address.id if ip_config.public_ip_address else None
-        
-        if old_pip_id:
-            old_pip_name = old_pip_id.split('/')[-1]
-            ip_config.public_ip_address = None
+def _change_ip_task(app, task_id, credential_dict, subscription_id, rg_name, vm_name):
+    with app.app_context():
+        db = sqlite3.connect(DATABASE)
+        db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', f'正在为 {vm_name} 更换IP...', task_id)); db.commit()
+        try:
+            credential = ClientSecretCredential(**credential_dict)
+            compute_client = ComputeManagementClient(credential, subscription_id)
+            network_client = NetworkManagementClient(credential, subscription_id)
+            vm = compute_client.virtual_machines.get(rg_name, vm_name)
+            nic_id = vm.network_profile.network_interfaces[0].id
+            nic_name = nic_id.split('/')[-1]
+            nic = network_client.network_interfaces.get(rg_name, nic_name)
+            ip_config = nic.ip_configurations[0]
+            old_pip_id = ip_config.public_ip_address.id if ip_config.public_ip_address else None
+            
+            if old_pip_id:
+                old_pip_name = old_pip_id.split('/')[-1]
+                db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在解绑旧IP...', task_id)); db.commit()
+                ip_config.public_ip_address = None
+                network_client.network_interfaces.begin_create_or_update(rg_name, nic_name, nic).result()
+                db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在删除旧IP...', task_id)); db.commit()
+                network_client.public_ip_addresses.begin_delete(rg_name, old_pip_name).result()
+
+            new_pip_name = f"pip-{vm_name}-{int(time.time())}"
+            pip_params = {"location": vm.location, "sku": {"name": "Standard"}, "public_ip_allocation_method": "Static"}
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在创建新IP...', task_id)); db.commit()
+            new_pip = network_client.public_ip_addresses.begin_create_or_update(rg_name, new_pip_name, pip_params).result()
+            
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', (f'正在绑定新IP...', task_id)); db.commit()
+            ip_config.public_ip_address = new_pip
             network_client.network_interfaces.begin_create_or_update(rg_name, nic_name, nic).result()
-            network_client.public_ip_addresses.begin_delete(rg_name, old_pip_name).result()
 
-        new_pip_name = f"pip-{vm_name}-{int(time.time())}"
-        pip_params = {"location": vm.location, "sku": {"name": "Standard"}, "public_ip_allocation_method": "Static"}
-        new_pip = network_client.public_ip_addresses.begin_create_or_update(rg_name, new_pip_name, pip_params).result()
-        ip_config.public_ip_address = new_pip
-        network_client.network_interfaces.begin_create_or_update(rg_name, nic_name, nic).result()
-    except Exception as e: logging.error(f"更换IP失败 for {vm_name}: {e}")
+            result_message = f"✅ IP更换成功！\n    - 虚拟机: {vm_name}\n    - 新IP地址: {new_pip.ip_address}"
+            db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id)); db.commit()
+        except Exception as e:
+            error_message = f"❌ 更换IP失败 for {vm_name}: {str(e)}"
+            db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id)); db.commit()
+            logging.error(error_message)
+        finally:
+            db.close()
 
-def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name, admin_password, data):
-    with azure_bp.app.app_context(): # Use blueprint's app context
-        db = get_db()
-        db.execute('UPDATE tasks SET status = ? WHERE id = ?', ('running', task_id))
+def _create_vm_task(app, task_id, credential_dict, subscription_id, vm_name, rg_name, admin_password, data):
+    with app.app_context():
+        db = sqlite3.connect(DATABASE)
+        db.execute('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在创建资源组...', task_id))
         db.commit()
         try:
             logging.info(f"后台任务({task_id})开始：为 {rg_name} 创建VM...")
@@ -249,6 +312,7 @@ def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name,
 
             resource_client.resource_groups.create_or_update(rg_name, {"location": location})
             
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建虚拟网络...', task_id)); db.commit()
             vnet_poller = network_client.virtual_networks.begin_create_or_update(rg_name, f"vnet-{vm_name}", {
                 "location": location,
                 "address_space": {"address_prefixes": ["10.0.0.0/16"]},
@@ -256,12 +320,14 @@ def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name,
             })
             subnet_id = vnet_poller.result().subnets[0].id
 
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建公网IP...', task_id)); db.commit()
             ip_sku = {"name": "Basic"} if ip_type == "Dynamic" else {"name": "Standard"}
             pip_poller = network_client.public_ip_addresses.begin_create_or_update(rg_name, f"pip-{vm_name}", {
                 "location": location, "sku": ip_sku, "public_ip_allocation_method": ip_type
             })
             public_ip_id = pip_poller.result().id
 
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建网络接口...', task_id)); db.commit()
             nic_poller = network_client.network_interfaces.begin_create_or_update(rg_name, f"nic-{vm_name}", {
                 "location": location,
                 "ip_configurations": [{
@@ -290,7 +356,8 @@ def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name,
             user_data_b64 = data.get('user_data')
             if user_data_b64:
                 azure_params["os_profile"]["custom_data"] = user_data_b64
-
+            
+            db.execute('UPDATE tasks SET result = ? WHERE id = ?', ('正在创建虚拟机，此过程可能需要几分钟...', task_id)); db.commit()
             vm_poller = compute_client.virtual_machines.begin_create_or_update(rg_name, vm_name, azure_params)
             vm_poller.result()
 
@@ -309,7 +376,12 @@ def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name,
             try:
                 resource_client = ResourceManagementClient(ClientSecretCredential(**credential_dict), subscription_id)
                 resource_client.resource_groups.begin_delete(rg_name).wait()
-            except: pass
+                logging.info(f"已清理失败任务的资源组: {rg_name}")
+            except Exception as cleanup_e:
+                 logging.error(f"清理资源组 {rg_name} 失败: {cleanup_e}")
+        finally:
+            db.close()
+
 
 @azure_bp.route('/api/create-vm', methods=['POST'])
 @login_required
@@ -317,7 +389,7 @@ def _create_vm_task(task_id, credential_dict, subscription_id, vm_name, rg_name,
 def create_vm():
     task_id = str(uuid.uuid4())
     db = get_db()
-    db.execute('INSERT INTO tasks (id, status) VALUES (?, ?)', (task_id, 'pending'))
+    db.execute('INSERT INTO tasks (id, status, result) VALUES (?, ?, ?)', (task_id, 'pending', '任务已加入队列...'))
     db.commit()
     data = request.json
     task_kwargs = {
@@ -329,7 +401,7 @@ def create_vm():
         'admin_password': generate_password(),
         'data': data
     }
-    threading.Thread(target=_long_running_task, args=(_create_vm_task,), kwargs=task_kwargs).start()
+    _run_background_task(_create_vm_task, **task_kwargs)
     return jsonify({ "message": f"创建请求已提交...", "task_id": task_id })
 
 @azure_bp.route('/api/task_status/<task_id>')
