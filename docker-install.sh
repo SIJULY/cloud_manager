@@ -3,12 +3,7 @@
 # ==============================================================================
 # Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 功能增强版
 # 该脚本适用于一个全新的、基于 Debian/Ubuntu 的系统。
-# 新增特性：
-# - 启动菜单，提供安装/更新、卸载选项
-# - 自动检测现有安装，智能选择全新安装或更新流程
-# - 自动修复过时的 Docker 基础镜像 (Buster -> Bullseye)
-# - 自动为数据文件设置正确的写入权限
-# 作者: 小龙女她爸 
+# 作者: 小龙女她爸
 # ==============================================================================
 
 # --- 配置 ---
@@ -54,10 +49,17 @@ uninstall_docker_panel() {
 install_or_update_docker_panel() {
     print_info "步骤 1: 检查并安装 Docker 环境..."
     if ! command -v docker &> /dev/null; then
-        print_error "Docker 未安装。请先运行 'curl -fsSL https://get.docker.com | bash' 进行安装。"
+        print_warning "未检测到 Docker，正在尝试自动安装..."
+        curl -fsSL https://get.docker.com | bash
+        systemctl start docker
+        systemctl enable docker
+        print_success "Docker 已成功安装并启动。"
     fi
     if ! docker compose version &> /dev/null; then
-        print_error "Docker Compose (v2 插件) 未安装。请先运行 'apt-get update && apt-get install -y docker-compose-plugin' 进行安装。"
+        print_warning "未检测到 Docker Compose 插件，正在尝试自动安装..."
+        apt-get update
+        apt-get install -y docker-compose-plugin
+        print_success "Docker Compose 插件已成功安装。"
     fi
     print_success "Docker 环境检查通过。"
 
@@ -68,12 +70,16 @@ install_or_update_docker_panel() {
         
         print_info "正在从 Git 拉取最新代码..."
         git config --global --add safe.directory ${INSTALL_DIR}
-        git pull
+        git pull origin main
         
         # --- 优化点: 自动修复 Dockerfile ---
         print_info "正在检查并修复 Dockerfile..."
-        sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
-        print_success "Dockerfile 已更新为 Bullseye 基础镜像。"
+        if [ -f "Dockerfile" ]; then
+            sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
+            print_success "Dockerfile 已更新为 Bullseye 基础镜像。"
+        else
+            print_warning "未找到 Dockerfile，跳过修复。"
+        fi
 
         print_info "正在重新构建镜像并启动服务 (这可能需要一些时间)..."
         docker compose up -d --build
@@ -128,13 +134,14 @@ install_or_update_docker_panel() {
         sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
 
-        print_info "步骤 4: 创建空的密钥和数据库文件..."
-        touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
-
+        print_info "步骤 4: 创建并设置数据文件权限..."
+        # 【核心修正】我们不再需要手动创建数据库文件，因为程序首次启动时会自己初始化。
+        # 但我们仍然需要创建密钥文件，并为将来程序创建的数据库文件所在的目录设置好权限。
+        touch azure_keys.json oci_profiles.json key.txt
+        
         # --- 优化点: 自动为数据文件设置正确的写入权限 ---
-        print_info "为数据文件设置写入权限..."
-        chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
-        print_success "权限设置完成。"
+        chmod 666 azure_keys.json oci_profiles.json key.txt
+        print_success "配置文件权限设置完成。"
         
         # --- 优化点: 自动修复 Dockerfile ---
         print_info "正在修复 Dockerfile 以使用更新的基础镜像..."
@@ -143,6 +150,15 @@ install_or_update_docker_panel() {
 
         print_info "步骤 5: 启动所有服务 (首次启动需要构建镜像，可能需要几分钟)..."
         docker compose up -d --build
+
+        # --- 优化点: 延迟一小段时间，等待数据库文件被程序创建 ---
+        print_info "等待应用初始化数据库文件..."
+        sleep 5 
+
+        # --- 优化点: 为程序自动创建的数据库文件设置权限 ---
+        print_info "为新创建的数据库文件设置写入权限..."
+        chmod 666 *.db &> /dev/null || true
+        print_success "数据库文件权限设置完成。"
 
         echo ""
         print_success "Cloud Manager Docker 版已成功部署！"
