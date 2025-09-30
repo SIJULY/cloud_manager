@@ -613,14 +613,23 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
 
         elif action_upper == "TERMINATE":
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在发送终止命令...', task_id))
-            compute_client.terminate_instance(instance_id, preserve_boot_volume=data.get('preserve_boot_volume', False))
+            
+            # **** START OF THE FIX for TERMINATE ****
+            # Correctly use the 'preserve_boot_volume' key sent from the frontend.
+            # Default to True (preserve) for safety if the key is missing.
+            preserve_volume = data.get('preserve_boot_volume', True)
+            compute_client.terminate_instance(instance_id, preserve_boot_volume=preserve_volume)
+            # **** END OF THE FIX for TERMINATE ****
+            
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('等待实例进入 TERMINATED 状态...', task_id))
+            
             oci.wait_until(
                 compute_client,
                 compute_client.get_instance(instance_id),
                 'lifecycle_state',
                 'TERMINATED',
-                max_wait_seconds=300
+                max_wait_seconds=300,
+                succeed_on_not_found=True
             )
             result_message = "✅ 实例已成功终止!"
 
@@ -659,7 +668,12 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
 
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
+        error_message = f"❌ 操作失败: {e}"
+        try:
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
+        except Exception as db_e:
+            logging.error(f"CRITICAL: Failed to write final failure status to DB for task {task_id}. DB Error: {db_e}. Original Error: {e}")
+
 
 @celery.task
 def _create_instance_task(task_id, profile_config, alias, details):
