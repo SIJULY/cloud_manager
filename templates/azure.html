@@ -13,14 +13,15 @@
     .vm-list-table th:nth-child(7) { width: 10%; }
     .vm-list-table th, .vm-list-table td { text-align: center; vertical-align: middle; }
 
-    /* --- 按钮容器样式 (居中, 不拉伸) --- */
-    .button-container {
+    /* --- 为按钮添加的样式 --- */
+    .action-group {
         display: flex;
-        justify-content: center;
+        justify-content: space-around;
         flex-wrap: wrap;
         gap: 0.5rem;
-        margin-top: 1rem; 
-        margin-bottom: 1rem;
+    }
+    .action-group .btn {
+        flex-grow: 1;
     }
 </style>
 {% endblock %}
@@ -103,7 +104,7 @@ fi
             </div>
         </div>
         <div class="card-footer text-center">
-            <div class="button-container">
+            <div class="action-group">
                 <button type="button" id="startBtn" class="btn" disabled>启动</button>
                 <button type="button" id="stopBtn" class="btn" disabled>停止</button>
                 <button type="button" id="restartBtn" class="btn" disabled>重启</button>
@@ -125,14 +126,7 @@ fi
                 <form id="createVmForm">
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">已选区域</label><input type="text" id="vmRegionDisplay" class="form-control" readonly></div>
-                        <div class="col-md-6 mb-3">
-                            <label class="form-label">实例类型</label>
-                            <select id="vmSize" class="form-select" required>
-                                <option value="Standard_B1s">B1s (1 vCPU, 1 GB RAM)</option>
-                                <option value="Standard_B2ats_v2">B2ats v2 (2 vCPU, 4 GB RAM, AMD)</option>
-                                <option value="Standard_B2pts_v2">B2pts v2 (2 vCPU, 4 GB RAM, ARM)</option>
-                            </select>
-                        </div>
+                        <div class="col-md-6 mb-3"><label class="form-label">实例类型</label><select id="vmSize" class="form-select" required><option value="Standard_B1s">B1s (1 vCPU, 1 GB RAM)<option value="Standard_B2pts_v2">B2pts v2 (2 vCPU, 4 GB RAM, ARM)</option><option value="Standard_B2ats_v2">B2ats v2 (2 vCPU, 4 GB RAM, AMD)</option></select></div>
                     </div>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">操作系统</label><select id="vmOs" class="form-select" required><option value="debian12" selected>Debian 12</option><option value="debian11">Debian 11</option><option value="ubuntu22">Ubuntu 22.04 LTS</option><option value="ubuntu20">Ubuntu 20.04 LTS</option></select></div>
