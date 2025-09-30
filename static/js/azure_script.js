@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const log = (message, type = 'info') => {
         const now = new Date().toLocaleTimeString();
         const colorClass = type === 'error' ? 'text-danger' : (type === 'success' ? 'text-success' : '');
-        UI.logOutput.innerHTML += `<div class="${colorClass}">[${now}] ${message.replace(/\n/g, '<br>')}</div>`;
+        UI.logOutput.innerHTML += `<div>[${now}] ${message.replace(/\n/g, '<br>')}</div>`;
         UI.logOutput.scrollTop = UI.logOutput.scrollHeight;
     };
 
@@ -117,11 +117,11 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             const session = await apiCall('/azure/api/session');
             if (session.logged_in) {
-                UI.currentAccountStatus.textContent = `(当前: ${session.name})`;
+                UI.currentAccountStatus.textContent = ` (当前: ${session.name})`;
                 [UI.refreshBtn, UI.regionSelector, UI.createVmBtn].forEach(el => el.disabled = false);
                 await handleAccountSelected();
             } else {
-                UI.currentAccountStatus.textContent = '(未选择)';
+                UI.currentAccountStatus.textContent = '';
                 [UI.refreshBtn, UI.regionSelector, UI.createVmBtn].forEach(el => el.disabled = true);
                 UI.regionSelector.innerHTML = '<option>请先选择账户</option>';
             }
@@ -159,15 +159,26 @@ document.addEventListener('DOMContentLoaded', function() {
             button.disabled = !isEnabled;
             button.className = isEnabled ? `btn ${activeClass}` : 'btn btn-secondary';
         };
-        if (!selectedInstance) {[UI.startBtn, UI.stopBtn, UI.restartBtn, UI.changeIpBtn, UI.deleteBtn].forEach(btn => setButtonState(btn, '', false)); return; }
+
+        if (!selectedInstance) {
+            [UI.startBtn, UI.stopBtn, UI.restartBtn, UI.changeIpBtn, UI.deleteBtn].forEach(btn => {
+                btn.disabled = true;
+                btn.className = 'btn btn-secondary';
+            });
+            return;
+        }
+
         const status = selectedInstance.dataset.status.toLowerCase();
-        const isRunning = status.includes('running'), isStopped = status.includes('deallocated');
+        const isRunning = status.includes('running');
+        const isStopped = status.includes('deallocated');
+
         setButtonState(UI.startBtn, 'btn-success', isStopped);
         setButtonState(UI.stopBtn, 'btn-warning', isRunning);
-        setButtonState(UI.restartBtn, 'btn-success', isRunning);
-        setButtonState(UI.changeIpBtn, 'btn-info', isRunning || isStopped);
+        setButtonState(UI.restartBtn, 'btn-info', isRunning);
+        setButtonState(UI.changeIpBtn, 'btn-secondary', isRunning || isStopped);
         setButtonState(UI.deleteBtn, 'btn-danger', true);
     };
+
     const handleVmAction = async (action) => {
         if (!selectedInstance) return;
         const vmName = selectedInstance.dataset.name, rgName = selectedInstance.dataset.group;
@@ -176,10 +187,13 @@ document.addEventListener('DOMContentLoaded', function() {
         log(`正在对 ${vmName} 执行 ${action} 操作...`);
         try {
             const result = await apiCall('/azure/api/vm-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, vm_name: vmName, resource_group: rgName }) });
-            log(result.message, 'success');
-            setTimeout(loadVms, 20000);
-        } catch (e) { setTimeout(loadVms, 3000); }
+            log(result.message, 'info');
+            if (result.task_id) {
+                pollTaskStatus(result.task_id);
+            }
+        } catch (e) {}
     };
+
     const handleChangeIpAction = async () => {
         if (!selectedInstance) return;
         const vmName = selectedInstance.dataset.name, rgName = selectedInstance.dataset.group;
@@ -187,15 +201,19 @@ document.addEventListener('DOMContentLoaded', function() {
         log(`正在为虚拟机 ${vmName} 更换IP...`);
         try {
             const result = await apiCall('/azure/api/vm-change-ip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ vm_name: vmName, resource_group: rgName }) });
-            log(result.message, 'success');
-            setTimeout(loadVms, 30000);
-        } catch (e) { setTimeout(loadVms, 3000); }
+            log(result.message, 'info');
+            if (result.task_id) {
+                pollTaskStatus(result.task_id);
+            }
+        } catch (e) {}
     };
+
     UI.addAccountForm.addEventListener('submit', async (event) => {
         event.preventDefault();
         const payload = { name: document.getElementById('accountName').value, client_id: document.getElementById('clientId').value, client_secret: document.getElementById('clientSecret').value, tenant_id: document.getElementById('tenantId').value, subscription_id: document.getElementById('subscriptionId').value, expiration_date: document.getElementById('expirationDate').value };
         try { await apiCall('/azure/api/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); log('账户添加成功', 'success'); UI.addAccountForm.reset(); loadAccounts(); } catch (e) {}
     });
+
     UI.accountList.addEventListener('click', async (event) => {
         const button = event.target.closest('button[data-action]');
         if (!button) return;
@@ -212,14 +230,17 @@ document.addEventListener('DOMContentLoaded', function() {
         } else if (action === 'delete') { if (confirm(`确定要删除账户 ${accountName} 吗？`)) { try { await apiCall(`/azure/api/accounts/${accountName}`, { method: 'DELETE' }); log(`账户 ${accountName} 已删除`, 'success'); loadAccounts(); } catch (e) {} }
         } else if (action === 'query-status') { displaySubscriptionStatus(row); }
     });
+
     UI.confirmEditAccountBtn.addEventListener('click', async () => {
         const payload = { original_name: UI.editOriginalAccountName.value, new_name: UI.editAccountName.value, expiration_date: UI.editExpirationDate.value };
         try { await apiCall('/azure/api/accounts/edit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); log(`账户 ${payload.original_name} 已更新`, 'success'); editAccountModalInstance.hide(); loadAccounts(); } catch(e) {}
     });
+
     UI.queryAllStatusBtn.addEventListener('click', () => {
         log(`正在为所有账户显示到期状态...`);
         UI.accountList.querySelectorAll('tr[data-account-name]').forEach(row => { displaySubscriptionStatus(row); });
     });
+
     UI.createVmBtn.addEventListener('click', () => {
         const selectedRegionName = UI.regionSelector.options[UI.regionSelector.selectedIndex].text;
         UI.vmRegionDisplay.value = selectedRegionName;
@@ -229,6 +250,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     const pollTaskStatus = (taskId) => {
         let notFoundCount = 0;
+        let lastLoggedStatus = '';
         const interval = setInterval(async () => {
             try {
                 const status = await apiCall(`/azure/api/task_status/${taskId}`);
@@ -236,7 +258,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     clearInterval(interval);
                     log(status.result, status.status === 'success' ? 'success' : 'error');
                     if (status.status === 'success') {
-                        setTimeout(loadVms, 1000); 
+                        setTimeout(loadVms, 5000); 
+                    }
+                } else if (status.status === 'running') {
+                    if(status.result && status.result !== lastLoggedStatus) {
+                        log(status.result, 'info');
+                        lastLoggedStatus = status.result;
                     }
                 } else if (status.status === 'not_found') {
                     notFoundCount++;
@@ -257,7 +284,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const selectedIpTypeElement = document.querySelector('input[name="ipType"]:checked');
             if (!selectedIpTypeElement) { log("错误：请选择一个公网IP类型。", "error"); return; }
             const userData = UI.userData.value;
-            const userDataB64 = btoa(unescape(encodeURIComponent(userData)));
+            const userDataB64 = userData ? btoa(unescape(encodeURIComponent(userData))) : "";
             const payload = {
                 region: UI.regionSelector.value, vm_size: document.getElementById('vmSize').value,
                 os_image: document.getElementById('vmOs').value, disk_size: parseInt(document.getElementById('vmDiskSize').value, 10),
@@ -273,7 +300,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (e) {
             console.error("创建虚拟机过程中发生错误:", e);
-            log("创建虚拟机过程中发生前端错误。", "error");
         }
     });
 
@@ -288,4 +314,3 @@ document.addEventListener('DOMContentLoaded', function() {
     loadAccounts();
     updateActionButtonsState();
 });
-
