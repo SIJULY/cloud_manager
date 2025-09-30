@@ -1,29 +1,25 @@
-# -*- coding: utf-8 -*-
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
 import oci
+# 核心修正：导入正确的类，特别是 UpdateInstanceShapeConfigDetails
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails, 
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
                              LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails,
-                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails)
+                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails) # <--- 注意这里
 from oci.exceptions import ServiceError
-from celery.exceptions import MaxRetriesExceededError
-
-# --- 核心改动1: 从主程序 app.py 导入共享的 celery 实例 ---
-from app import celery
+from celery import Celery
 
 # --- Blueprint Setup ---
 oci_bp = Blueprint('oci', __name__, template_folder='../templates', static_folder='../static')
 
 # --- Celery Setup ---
-# celery = Celery(oci_bp.import_name) # <-- 核心改动2: 删除了此处的旧代码
+celery = Celery(oci_bp.import_name)
 
 # --- Configuration ---
 KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
-
 
 # --- 数据库核心辅助函数 (已为并发优化) ---
 def get_db_connection():
@@ -749,16 +745,12 @@ def _create_instance_task(task_id, profile_config, alias, details):
 
 
 @celery.task
-def _snatch_instance_task(task_id, profile_config, alias, details, count=1): # 增加 count 参数
-    # --- 准备阶段的代码和原来保持完全一样 ---
+def _snatch_instance_task(task_id, profile_config, alias, details):
     clients, error = None, None
     launch_details = None
     instance_password = None
     try:
-        # 仅在第一次运行时(count==1)才更新状态为'running'，避免重复设置
-        if count == 1:
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
-        
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
         clients, error = get_oci_clients(profile_config)
         if error: raise Exception(error)
         
@@ -788,51 +780,45 @@ def _snatch_instance_task(task_id, profile_config, alias, details, count=1): # �
             shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
         )
     except Exception as e:
-        # 准备阶段失败，直接终止任务
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
 
-    # --- 执行阶段 (核心修改部分) ---
-    delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
-    
-    # 检查任务是否已被手动停止
-    task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
-    if not task_record or task_record['status'] != 'running':
-        logging.info(f"Snatching task {task_id} has been stopped or is in a non-running state. Exiting.")
-        # 如果任务状态不是running (例如已被用户停止)，则不再重新调度
-        if task_record and task_record['status'] != 'failure':
-             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', '任务已停止，不再继续尝试。', task_id))
-        return
-
-    try:
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试创建实例...", task_id))
-        instance = clients['compute'].launch_instance(launch_details).data
+    count = 0
+    while True:
+        count += 1
+        delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
         
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试成功！实例 {instance.display_name} 正在置备 (PROVISIONING)...", task_id))
-        
-        oci.wait_until(
-            clients['compute'],
-            clients['compute'].get_instance(instance.id),
-            'lifecycle_state',
-            'RUNNING',
-            max_wait_seconds=600
-        )
-        
-        msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- 登陆用户名：ubuntu 密码：{instance_password}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
-        return # 成功，结束任务
+        task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
+        if not task_record or task_record['status'] == 'failure':
+            logging.info(f"Snatching task {task_id} has been stopped or failed. Exiting loop.")
+            return
 
-    except ServiceError as e:
-        if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
-            msg = f"第 {count} 次尝试失败：资源不足或请求频繁。将在 {delay} 秒后重试..."
-        else:
-            msg = f"第 {count} 次尝试失败：API错误 ({e.code})。将在 {delay} 秒后重试..."
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
-        # 重新调度自己，在 'delay' 秒后执行，并将 count + 1
-        _snatch_instance_task.apply_async(args=[task_id, profile_config, alias, details, count + 1], countdown=delay)
+        try:
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试创建实例...", task_id))
+            instance = compute_client.launch_instance(launch_details).data
+            
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试成功！实例 {instance.display_name} 正在置备 (PROVISIONING)...", task_id))
+            
+            oci.wait_until(
+                compute_client,
+                compute_client.get_instance(instance.id),
+                'lifecycle_state',
+                'RUNNING',
+                max_wait_seconds=600
+            )
+            
+            msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- 登陆用户名：ubuntu 密码：{instance_password}"
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
+            return
 
-    except Exception as e:
-        msg = f"第 {count} 次尝试失败：未知错误({str(e)[:100]}...)。将在 {delay} 秒后重试..."
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
-        # 重新调度自己
-        _snatch_instance_task.apply_async(args=[task_id, profile_config, alias, details, count + 1], countdown=delay)
+        except ServiceError as e:
+            if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
+                msg = f"第 {count} 次尝试失败：资源不足或请求频繁。将在 {delay} 秒后重试..."
+            else:
+                msg = f"第 {count} 次尝试失败：API错误 ({e.code})。将在 {delay} 秒后重试..."
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
+            time.sleep(delay)
+        except Exception as e:
+            msg = f"第 {count} 次尝试失败：未知错误({str(e)[:100]}...)。将在 {delay} 秒后重试..."
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (msg, task_id))
+            time.sleep(delay)
