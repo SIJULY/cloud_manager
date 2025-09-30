@@ -486,13 +486,16 @@
                 <div class="tab-content" id="snatchTaskTabsContent">
                     <div class="tab-pane fade show active" id="running-tab-pane" role="tabpanel">
                         <div class="p-3">
-                            <p class="text-muted small">下方列出了所有正在后台持续尝试创建实例的任务。可选中任务并点击下方按钮停止。</p>
+                            <p class="text-muted small">
+                                下方列出了正在运行的抢占任务。选中任务后可点击下方按钮停止。
+                                <span class="fw-bold text-danger">（日志每10次尝试更新一次）</span>
+                            </p>
                             <ul class="list-group" id="runningSnatchTasksList"></ul>
                         </div>
                     </div>
                     <div class="tab-pane fade" id="completed-tab-pane" role="tabpanel">
                          <div class="p-3">
-                            <p class="text-muted small">下方列出了最近已成功或失败的抢占任务。双击成功的任务可查看密码。</p>
+                            <p class="text-muted small">下方列出了最近已完成（成功或失败）的抢占任务。双击成功的任务可查看密码，选中记录后可删除。</p>
                             <ul class="list-group" id="completedSnatchTasksList"></ul>
                         </div>
                     </div>
@@ -506,6 +509,7 @@
         </div>
     </div>
 </div>
+
 
 <div class="modal fade" id="taskResultModal" tabindex="-1" aria-labelledby="taskResultModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
