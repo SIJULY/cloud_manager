@@ -7,7 +7,7 @@ from celery import Celery
 # --- App & Celery Configuration ---
 app = Flask(__name__)
 app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
-PASSWORD = os.getenv("PANEL_PASSWORD", "050148Sq$") 
+PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345") 
 
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 
