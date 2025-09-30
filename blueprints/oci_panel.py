@@ -776,7 +776,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             return
         except ServiceError as e:
             if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
-                msg = f"第 {count} 次失败：资源不足或请求频繁。将在 {delay} 秒后重试..."
+                msg = f"第 {count} 次失败：资源不足或请求频繁。将在 {delay} 秒后重试...（日志每10次尝试更新一次）"
             else:
                 msg = f"第 {count} 次失败：API错误 ({e.code})。将在 {delay} 秒后重试..."
             if count == 1 or count % 10 == 0:
