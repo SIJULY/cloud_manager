@@ -1,25 +1,32 @@
+# /opt/cloud_manager/app.py
+
 import os
 from flask import Flask, render_template, request, session, redirect, url_for
-from blueprints.azure_panel import azure_bp, init_db as init_azure_db
-from blueprints.oci_panel import oci_bp, init_db as init_oci_db, celery
-from blueprints.aws_panel import aws_bp
+from celery import Celery
 
-# --- App Configuration ---
+# --- App & Celery Configuration ---
 app = Flask(__name__)
 app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
-# 从环境变量读取密码，如果找不到，则使用一个默认值
-PASSWORD = os.getenv("PANEL_PASSWORD", "default_password") 
+PASSWORD = os.getenv("PANEL_PASSWORD", "050148Sq$") 
 
-# --- Celery Configuration (for OCI) ---
-# 【核心修正】优先从环境变量读取REDIS_URL，如果找不到，则使用默认的localhost，以兼容非Docker环境
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
+# 更新 Flask 配置 (注意：这里没有 task_acks_late)
 app.config.update(
     broker_url=redis_url,
     result_backend=redis_url,
     SEND_FILE_MAX_AGE_DEFAULT = 0,
     TEMPLATES_AUTO_RELOAD = True
 )
+
+# --- Celery 实例的创建和配置 ---
+celery = Celery(app.import_name, broker=app.config['broker_url'])
 celery.conf.update(app.config)
+
+# --- 必须在 Celery 实例创建后，再导入蓝图 ---
+from blueprints.azure_panel import azure_bp, init_db as init_azure_db
+from blueprints.oci_panel import oci_bp, init_db as init_oci_db
+from blueprints.aws_panel import aws_bp
 
 # --- Register Blueprints ---
 app.register_blueprint(aws_bp, url_prefix='/aws')
