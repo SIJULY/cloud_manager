@@ -6,18 +6,17 @@ from blueprints.aws_panel import aws_bp
 
 # --- App Configuration ---
 app = Flask(__name__)
-app.secret_key = 'a_very_secret_key_for_the_3in1_panel'
-# 从环境变量读取密码，如果找不到，则使用一个默认值
-PASSWORD = os.getenv("PANEL_PASSWORD", "050148Sq$") 
+app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
+PASSWORD = os.getenv("PANEL_PASSWORD", "050148Sq$")
+DEBUG_MODE = os.getenv("FLASK_DEBUG", "false").lower() in ['true', '1', 't']
 
 # --- Celery Configuration (for OCI) ---
-# 【核心修正】优先从环境变量读取REDIS_URL，如果找不到，则使用默认的localhost，以兼容非Docker环境
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 app.config.update(
     broker_url=redis_url,
     result_backend=redis_url,
     SEND_FILE_MAX_AGE_DEFAULT = 0,
-    TEMPLATES_AUTO_RELOAD = True
+    TEMPLATES_AUTO_RELOAD = DEBUG_MODE
 )
 celery.conf.update(app.config)
 
@@ -48,14 +47,12 @@ def index():
         return redirect(url_for('login'))
     return redirect(url_for('aws.aws_index'))
 
-# --- Database Initialization on First Run ---
+# 【核心修正】无条件调用 init_db 函数。
+# init_db 函数现在足够智能，可以自己判断是否需要创建表。
 with app.app_context():
-    if not os.path.exists('azure_tasks.db'):
-        print("Initializing Azure database...")
-        init_azure_db()
-    if not os.path.exists('oci_tasks.db'):
-        print("Initializing OCI database...")
-        init_oci_db()
+    print("Checking and initializing databases if necessary...")
+    init_azure_db()
+    init_oci_db()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=DEBUG_MODE)
