@@ -132,24 +132,17 @@ install_or_update_docker_panel() {
         sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
 
-        print_info "步骤 4: 创建配置文件并修复Dockerfile..."
-        # 【核心修正】只创建程序不会自动生成的配置文件。数据库文件将由程序在首次启动时自动初始化。
-        touch azure_keys.json oci_profiles.json key.txt
-        chmod 666 azure_keys.json oci_profiles.json key.txt
+        print_info "步骤 4: 创建配置文件、数据库文件并修复Dockerfile..."
+        # 【核心修正】在 Docker 启动前，必须先在主机上创建空的数据库文件，防止 Docker 将其创建为目录。
+        touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+        chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
         
         # 自动修复 Dockerfile 以使用更新的基础镜像
         sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
-        print_success "Dockerfile 已更新, 配置文件已创建。"
+        print_success "Dockerfile 已更新, 所有配置文件已创建。"
 
         print_info "步骤 5: 启动所有服务 (首次启动需要构建镜像，可能需要几分钟)..."
         docker compose up -d --build
-
-        print_info "等待应用初始化数据库文件..."
-        sleep 5 
-
-        print_info "为新创建的数据库文件设置写入权限..."
-        chmod 666 *.db &> /dev/null || true
-        print_success "数据库文件权限设置完成。"
 
         echo ""
         print_success "Cloud Manager Docker 版已成功部署！"
