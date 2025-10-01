@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager Docker版一键安装脚本 (V4 - 交互式预检版)
-# 在配置外部Caddy前，增加交互式检查清单，提升成功率。
+# Cloud Manager Docker版一键安装脚本 (V5 - 最终修复版)
+# 修复了V4版本中一个致命的sed命令语法错误。
 # ==============================================================================
 
 # --- 配置 ---
@@ -16,7 +16,6 @@ print_warning() { echo -e "\e[33m[警告]\e[0m $1"; }
 print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
 
 # --- 功能函数 ---
-# ... (卸载、修复等函数与V3版本相同，为简洁省略)
 uninstall_docker_panel() {
     print_warning "您确定要彻底卸载 Cloud Manager Docker 版吗？"
     read -p "此操作将停止并删除所有相关的容器、网络、存储卷以及项目文件。此过程不可逆！请输入 'yes' 确认: " confirmation
@@ -63,7 +62,12 @@ install_or_update_docker_panel() {
             print_info "将禁用内置的 Caddy 服务并暴露 Web 端口。"
             START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
             if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
-                COMMENT_END_LINE=$((END_LINE - 1)); sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/"; sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
+                COMMENT_END_LINE=$((END_LINE - 1))
+                # ================= V5 修复点 =================
+                # 在下面的sed命令末尾加上了缺失的文件名 docker-compose.yml
+                sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
+                # ===============================================
+                sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
             else
                 print_error "无法在 docker-compose.yml 中定位 Caddy 服务块，自动化修改失败。"
             fi
@@ -97,15 +101,11 @@ install_or_update_docker_panel() {
     if [ "$USE_EXTERNAL_PROXY" = true ]; then
         if [ -n "$FINAL_DOMAIN_NAME" ]; then
             CADDY_FILE="/etc/caddy/Caddyfile"
-            
-            # ================= V4 新增逻辑开始 =================
-            echo ""
-            print_warning "脚本即将修改您系统的 Caddy 服务，为域名 '${FINAL_DOMAIN_NAME}' 启用 HTTPS。"
+            echo ""; print_warning "脚本即将修改您系统的 Caddy 服务，为域名 '${FINAL_DOMAIN_NAME}' 启用 HTTPS。"
             print_warning "为确保成功，请在继续前，务必手动确认以下两点："
             echo "    1.  【DNS 解析】：域名 '${FINAL_DOMAIN_NAME}' 是否已设置了 A 记录，并正确指向本服务器的公网 IP？"
             echo "    2.  【防火墙端口】：本服务器的云平台安全组或系统防火墙，是否已对公网开放了 TCP 的 80 和 443 端口？"
-            echo ""
-            read -p "您是否已确认以上两点均已配置正确？[y/N]: " confirm_prereqs
+            echo ""; read -p "您是否已确认以上两点均已配置正确？[y/N]: " confirm_prereqs
 
             if [[ "$confirm_prereqs" =~ ^[Yy]$ ]]; then
                 print_info "好的，将继续尝试自动配置..."
@@ -131,7 +131,6 @@ install_or_update_docker_panel() {
                 echo "    echo -e \"\n${FINAL_DOMAIN_NAME} {\\n    reverse_proxy localhost:8000\\n}\" | sudo tee -a ${CADDY_FILE}"
                 echo "    sudo systemctl reload caddy"
             fi
-            # ================= V4 新增逻辑结束 =================
         fi
     else
         source .env; print_info "访问地址: ${DOMAIN_OR_IP}"; print_info "登录密码: 您设置的密码"
@@ -148,7 +147,7 @@ echo "==========================================================================
 read -p "您已了解风险并希望继续吗？ [y/N]: " confirm_risk
 if [[ ! "$confirm_risk" =~ ^[Yy]$ ]]; then print_info "操作已取消。"; exit 0; fi
 
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V4-交互式预检版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V5-最终修复版)"
 echo "==============================================="
 echo "请选择要执行的操作:"; echo "  1) 安装 或 更新 面板 (默认选项)"; echo "  2) 彻底卸载 面板"; echo "  3) 退出脚本"; echo "==============================================="
 read -p "请输入选项数字 [1]: " choice
