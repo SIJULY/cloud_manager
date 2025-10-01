@@ -29,14 +29,24 @@ def close_connection(exception):
         db.close()
 
 def init_db():
-    if os.path.exists(DATABASE):
-        return
+    # 直接连接数据库文件，如果不存在则会创建
     db = sqlite3.connect(DATABASE)
-    schema_sql = "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL, result TEXT);"
-    db.cursor().executescript(schema_sql)
-    db.commit()
+    cursor = db.cursor()
+    
+    # 检查 'tasks' 表在数据库中是否存在
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
+    table_exists = cursor.fetchone()
+    
+    # 如果表不存在，就创建它
+    if not table_exists:
+        print("Initializing Azure database table 'tasks'...")
+        logging.info("Azure database file found, but 'tasks' table is missing. Creating table...")
+        schema_sql = "CREATE TABLE tasks (id TEXT PRIMARY KEY, type TEXT, name TEXT, status TEXT NOT NULL, result TEXT, created_at TEXT);"
+        cursor.executescript(schema_sql)
+        db.commit()
+        logging.info("'tasks' table created successfully in Azure database.")
+    
     db.close()
-    logging.info("Azure database initialized.")
 
 def query_db(query, args=(), one=False):
     cur = get_db().execute(query, args)
