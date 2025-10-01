@@ -33,13 +33,15 @@
 
 请以 `root` 用户身份登录您的服务器，然后执行以下一行命令（安装/更新，卸载）：
 
-```bash
-bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/install.sh)
-```
-DOCKER版本
+DOCKER版本（推荐版本）
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/docker-install.sh)
 ```
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/install.sh)
+```
+
 脚本将会引导您完成以下操作：
 
 1. 自动安装所有系统和 Python 依赖。  
