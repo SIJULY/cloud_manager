@@ -145,7 +145,7 @@ update_panel() {
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then print_error "此脚本必须以root用户身份运行。"; fi
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V7-最终交互版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (作者: 小龙女她爸 )"
 echo "=========================================================="
 echo "请选择要执行的操作:"
 echo "  1) 在【全新服务器】上安装 (将占用80/443端口)"
