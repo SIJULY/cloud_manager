@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager Docker版一键安装脚本 (V7 - 最终交互版)
-# 根据用户反馈优化了主菜单和交互流程。
+# Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
+# 将“已有服务”模式作为更安全的默认选项。
 # ==============================================================================
 
 # --- 配置 ---
@@ -145,11 +145,12 @@ update_panel() {
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then print_error "此脚本必须以root用户身份运行。"; fi
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (作者: 小龙女她爸 )"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (作者: 小龙女她爸)"
 echo "=========================================================="
 echo "请选择要执行的操作:"
-echo "  1) 在【全新服务器】上安装 (将占用80/443端口)"
-echo "  2) 在【已有服务】的服务器上安装 (仅暴露8000端口)"
+# V8 版本修改：将“已有服务”作为更安全的默认选项1
+echo "  1) 在【已有服务】的服务器上安装 (仅暴露8000端口) [默认]"
+echo "  2) 在【全新服务器】上安装 (将占用80/443端口)"
 echo "  3) 更新现有面板"
 echo "  4) 彻底卸载面板"
 echo "  5) 退出脚本"
@@ -158,11 +159,12 @@ read -p "请输入选项数字 [1]: " choice
 choice=${choice:-1}
 
 case $choice in
+    # V8 版本修改：交换1和2的调用函数
     1)
-        install_clean_server
+        install_existing_server
         ;;
     2)
-        install_existing_server
+        install_clean_server
         ;;
     3)
         update_panel
