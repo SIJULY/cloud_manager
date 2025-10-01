@@ -17,6 +17,15 @@
         color: #6c757d;
         opacity: 1;
     }
+    /* --- 【核心修正】新增缺失的样式，使其与OCI/Azure面板一致 --- */
+    .action-group { 
+        display: flex; 
+        flex-wrap: wrap; 
+        gap: 0.5rem; 
+    }
+    .action-group .btn { 
+        flex-grow: 1; 
+    }
 </style>
 {% endblock %}
 
@@ -137,12 +146,12 @@ fi
             </div>
         </div>
         <div class="card-footer text-center">
-            <div class="d-flex justify-content-center gap-5" role="group">
-                <button type="button" id="startBtn" class="btn" disabled>启动实例</button>
-                <button type="button" id="stopBtn" class="btn" disabled>停止实例</button>
-                <button type="button" id="restartBtn" class="btn" disabled>重启实例</button>
-                <button type="button" id="changeIpBtn" class="btn" disabled>更换IP</button>
-                <button type="button" id="deleteBtn" class="btn" disabled>删除实例</button>
+            <div id="instanceActionGroup" class="action-group" role="group">
+                <button type="button" id="startBtn" class="btn btn-success" disabled>启动实例</button>
+                <button type="button" id="stopBtn" class="btn btn-warning" disabled>停止实例</button>
+                <button type="button" id="restartBtn" class="btn btn-info" disabled>重启实例</button>
+                <button type="button" id="changeIpBtn" class="btn btn-secondary" disabled>更换IP</button>
+                <button type="button" id="deleteBtn" class="btn btn-danger" disabled>删除实例</button>
             </div>
         </div>
     </div>
