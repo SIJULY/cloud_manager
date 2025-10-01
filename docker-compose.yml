@@ -6,10 +6,12 @@ services:
     restart: always
     volumes:
       - redis_data:/data
+
   web:
     build: .
     restart: always
-    command: gunicorn --workers 4 --bind 0.0.0.0:5000 app:app
+    # 【核心修正】删除了这里多余的 "command:"
+    command: gunicorn --workers 4 --bind 0.0.0.0:5000 --preload app:app
     volumes:
       - ./azure_keys.json:/app/azure_keys.json
       - ./oci_profiles.json:/app/oci_profiles.json
@@ -18,9 +20,10 @@ services:
       - ./oci_tasks.db:/app/oci_tasks.db
     environment:
       - PANEL_PASSWORD=${PANEL_PASSWORD}
-      - REDIS_URL=redis://redis:6379/0  # <--- 新增此行
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
+
   worker:
     build: .
     restart: always
@@ -32,9 +35,10 @@ services:
       - ./azure_tasks.db:/app/azure_tasks.db
       - ./oci_tasks.db:/app/oci_tasks.db
     environment:
-      - REDIS_URL=redis://redis:6379/0  # <--- 新增此行
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - redis
+
   caddy:
     image: caddy:latest
     restart: always
