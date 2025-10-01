@@ -8,13 +8,11 @@ from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateIntern
                              LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails,
                              UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails)
 from oci.exceptions import ServiceError
-from celery import Celery
+# 【核心架构】从主程序 app.py 导入共享的 Celery 实例
+from app import celery
 
 # --- Blueprint Setup ---
 oci_bp = Blueprint('oci', __name__, template_folder='../templates', static_folder='../static')
-
-# --- Celery Setup ---
-celery = Celery(oci_bp.import_name)
 
 # --- Configuration ---
 KEYS_FILE = "oci_profiles.json"
@@ -65,16 +63,12 @@ def close_connection(exception):
         db.close()
 
 def init_db():
-    # 不再检查文件是否存在，而是直接连接并检查表是否存在
+    # 智能的数据库初始化函数，检查表是否存在
     db = get_db_connection()
     cursor = db.cursor()
-    
-    # 检查 'tasks' 表是否存在于数据库中
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
     table_exists = cursor.fetchone()
-    
     if not table_exists:
-        # 如果表不存在，就创建它
         print("Initializing OCI database table 'tasks'...")
         logging.info("OCI database file found, but 'tasks' table is missing. Creating table...")
         cursor.executescript("""
@@ -85,7 +79,6 @@ def init_db():
         """)
         db.commit()
         logging.info("'tasks' table created successfully in OCI database.")
-    
     db.close()
 
 def query_db(query, args=(), one=False):
