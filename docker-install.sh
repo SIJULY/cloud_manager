@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 智能端口检测增强版
-# 新增功能：自动检测 80/443 端口占用，并提供备用端口安装选项。
+# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 最终完整修正版
+# 修正了备用端口模式的BUG并增加了严格的错误检查
 # ==============================================================================
 
 # --- 配置 ---
@@ -16,11 +16,9 @@ print_success() { echo -e "\e[32m[成功]\e[0m $1"; }
 print_warning() { echo -e "\e[33m[警告]\e[0m $1"; }
 print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
 
-# --- 【新增功能】端口检测函数 ---
-# 使用 ss 命令检测指定端口是否被监听
+# --- 端口检测函数 ---
 check_port() {
     local port_to_check=$1
-    # ss -lnt 检查监听的 TCP 端口, awk 提取地址列, grep 精确匹配 ":端口号"
     if ss -lnt | awk '{print $4}' | grep -q ":${port_to_check}$"; then
         return 1 # 端口被占用
     else
@@ -55,7 +53,6 @@ uninstall_docker_panel() {
     print_success "Cloud Manager Docker 版已彻底卸载！"
 }
 
-# 确保所有必需的文件都存在，并应用必要的修复
 ensure_files_and_fixes() {
     print_info "检查并应用兼容性修复..."
 
@@ -87,28 +84,22 @@ install_or_update_docker_panel() {
     fi
     print_success "Docker 环境检查通过。"
 
-    # 更新流程
     if [ -d "${INSTALL_DIR}" ]; then
         print_info "步骤 2: 检测到现有安装，执行更新流程..."
         cd "${INSTALL_DIR}"
-        print_info "正在从 Git 拉取最新代码..."
         git config --global --add safe.directory ${INSTALL_DIR}
         git pull origin main
-    # 全新安装流程
     else
         print_info "步骤 2: 未检测到安装，执行全新安装..."
         git clone ${REPO_URL} ${INSTALL_DIR}
         cd ${INSTALL_DIR}
     fi
-
-    # 步骤 3: 确保文件存在并应用修复 (无论全新安装还是更新都执行)
+    
     ensure_files_and_fixes
     
-    # --- 【新增功能】端口占用检测与用户交互 ---
     local use_custom_port=false
     local final_access_address=""
 
-    # 检查 80 或 443 端口
     if ! check_port 80 || ! check_port 443; then
         print_warning "检测到 80 或 443 端口已被占用！"
         print_info "Caddy 默认需要使用 80 和 443 端口来提供 Web 服务并自动申请 HTTPS 证书。"
@@ -123,17 +114,18 @@ install_or_update_docker_panel() {
             1)
                 print_info "好的，将使用备用端口 ${CUSTOM_PORT} 进行安装。"
                 use_custom_port=true
-                # 创建 docker-compose.override.yml 文件来覆盖端口设置
-                cat > docker-compose.override.yml << EOF
-services:
-  caddy:
-    ports:
-      - "${CUSTOM_PORT}:80"
-EOF
-                print_success "已创建端口覆盖文件 docker-compose.override.yml"
+                # 【核心修正】直接修改 docker-compose.yml 文件
+                print_info "正在修改 docker-compose.yml以使用备用端口..."
+                # 为了安全，先备份
+                cp docker-compose.yml docker-compose.yml.bak
+                # 使用 sed 注释掉原有的 80 和 443 端口，并添加新的端口
+                # 这个sed命令会找到caddy服务块中，从ports:开始到第一个- "443:443"行为止的范围进行操作
+                sed -i -e "/caddy:/,/- \"443:443\"/s/- \"80:80\"/- \"${CUSTOM_PORT}:80\"/" \
+                       -e "/caddy:/,/- \"443:443\"/s/- \"443:443\"/#- \"443:443\"/" docker-compose.yml
+                print_success "docker-compose.yml 已成功修改。"
                 ;;
             2)
-                print_info "脚本已退出。请先运行 'sudo systemctl stop nginx' 或 'sudo systemctl stop apache2' 等命令释放端口，然后再重新运行此脚本。"
+                print_info "脚本已退出。请先运行 'sudo systemctl stop nginx' 等命令释放端口，然后再重新运行此脚本。"
                 exit 0
                 ;;
             *)
@@ -142,11 +134,10 @@ EOF
         esac
     else
         print_success "端口 80 和 443 未被占用，将进行标准安装。"
-        # 确保没有旧的覆盖文件
-        rm -f docker-compose.override.yml
+        # 如果之前有备份，恢复原始文件
+        [ -f docker-compose.yml.bak ] && mv docker-compose.yml.bak docker-compose.yml
     fi
 
-    # 步骤 4: 配置面板 (仅在 .env 文件不存在时执行)
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
         cp .env.example .env
@@ -159,39 +150,43 @@ EOF
         fi
         read -s -p "请输入新的面板登录密码: " new_password; echo
 
-        # 【新增功能】根据是否使用自定义端口来确定最终访问地址
         if [ "$use_custom_port" = true ]; then
             final_access_address="http://${ACCESS_ADDRESS}:${CUSTOM_PORT}"
-            CADDY_ADDRESS=$final_access_address # Caddyfile 中将使用这个地址
+            CADDY_ADDRESS=$final_access_address
         elif [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             final_access_address="http://${ACCESS_ADDRESS}"
             CADDY_ADDRESS=$final_access_address
         else
-            final_access_address="https://${ACCESS_ADDRESS}" # 只有标准端口和域名才能是https
+            final_access_address="https://${ACCESS_ADDRESS}"
             CADDY_ADDRESS=$ACCESS_ADDRESS
         fi
         
         sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
         sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
-    else
-        print_info "步骤 4: .env 文件已存在，跳过配置。"
-        # 【新增功能】如果 .env 已存在，也需要判断如何显示最终地址
-        source .env
-        if [ "$use_custom_port" = true ]; then
-             # 提取基础地址 (IP或域名)
-            base_address=$(echo $DOMAIN_OR_IP | sed -E 's#^https?://##; s#/:.*##')
-            final_access_address="http://${base_address}:${CUSTOM_PORT}"
-        elif [[ "$DOMAIN_OR_IP" =~ ^http:// ]]; then
-            final_access_address="$DOMAIN_OR_IP"
-        else
-            final_access_address="https://$DOMAIN_OR_IP"
-        fi
     fi
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
-    docker compose up -d --build
+    # 【核心修正】增加了错误检查，如果 docker compose 失败则脚本会退出
+    if ! docker compose up -d --build; then
+        print_error "Docker Compose 启动失败！请检查上面的日志输出以确定问题。"
+        # 如果是因为端口修改失败，可以尝试恢复
+        [ -f docker-compose.yml.bak ] && mv docker-compose.yml.bak docker-compose.yml
+        exit 1
+    fi
     
+    # 获取最终访问地址
+    source .env
+    # 提取基础地址 (IP或域名)，兼容http/https前缀和可能存在的端口号
+    base_address=$(echo $DOMAIN_OR_IP | sed -E 's#^https?://##; s#:[0-9]+.*##')
+    if [ "$use_custom_port" = true ]; then
+        final_access_address="http://${base_address}:${CUSTOM_PORT}"
+    elif [[ "$DOMAIN_OR_IP" =~ ^http:// ]]; then
+        final_access_address="http://${base_address}"
+    else
+        final_access_address="https://$base_address"
+    fi
+
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
@@ -200,13 +195,14 @@ EOF
     echo "------------------------------------------------------------"
 }
 
+
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then
     print_error "此脚本必须以root用户身份运行。"
 fi
 
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (智能端口检测增强版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (最终完整修正版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
