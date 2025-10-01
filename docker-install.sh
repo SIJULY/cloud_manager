@@ -1,19 +1,32 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 最终修复版
-# 解决了数据库文件挂载和 Gunicorn 启动竞争问题
+# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 智能端口检测增强版
+# 新增功能：自动检测 80/443 端口占用，并提供备用端口安装选项。
 # ==============================================================================
 
 # --- 配置 ---
 INSTALL_DIR="/opt/cloud_manager"
 REPO_URL="https://github.com/SIJULY/cloud_manager.git"
+CUSTOM_PORT="5005" # 定义备用端口
 
 # --- 辅助函数 ---
 print_info() { echo -e "\e[34m[信息]\e[0m $1"; }
 print_success() { echo -e "\e[32m[成功]\e[0m $1"; }
 print_warning() { echo -e "\e[33m[警告]\e[0m $1"; }
 print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
+
+# --- 【新增功能】端口检测函数 ---
+# 使用 ss 命令检测指定端口是否被监听
+check_port() {
+    local port_to_check=$1
+    # ss -lnt 检查监听的 TCP 端口, awk 提取地址列, grep 精确匹配 ":端口号"
+    if ss -lnt | awk '{print $4}' | grep -q ":${port_to_check}$"; then
+        return 1 # 端口被占用
+    else
+        return 0 # 端口未被占用
+    fi
+}
 
 # --- 功能函数 ---
 
@@ -90,6 +103,48 @@ install_or_update_docker_panel() {
 
     # 步骤 3: 确保文件存在并应用修复 (无论全新安装还是更新都执行)
     ensure_files_and_fixes
+    
+    # --- 【新增功能】端口占用检测与用户交互 ---
+    local use_custom_port=false
+    local final_access_address=""
+
+    # 检查 80 或 443 端口
+    if ! check_port 80 || ! check_port 443; then
+        print_warning "检测到 80 或 443 端口已被占用！"
+        print_info "Caddy 默认需要使用 80 和 443 端口来提供 Web 服务并自动申请 HTTPS 证书。"
+        echo "------------------------------------------------------------"
+        echo "请选择您的操作："
+        echo "  1) 使用备用端口 ${CUSTOM_PORT} 进行安装 (将以 HTTP 方式访问，无法自动申请证书)"
+        echo "  2) 退出脚本，我将手动暂停占用端口的服务 (如 Nginx, Apache 等)"
+        echo "------------------------------------------------------------"
+        read -p "请输入选项 [1]: " port_choice
+        
+        case ${port_choice:-1} in
+            1)
+                print_info "好的，将使用备用端口 ${CUSTOM_PORT} 进行安装。"
+                use_custom_port=true
+                # 创建 docker-compose.override.yml 文件来覆盖端口设置
+                cat > docker-compose.override.yml << EOF
+services:
+  caddy:
+    ports:
+      - "${CUSTOM_PORT}:80"
+EOF
+                print_success "已创建端口覆盖文件 docker-compose.override.yml"
+                ;;
+            2)
+                print_info "脚本已退出。请先运行 'sudo systemctl stop nginx' 或 'sudo systemctl stop apache2' 等命令释放端口，然后再重新运行此脚本。"
+                exit 0
+                ;;
+            *)
+                print_error "无效的选项。"
+                ;;
+        esac
+    else
+        print_success "端口 80 和 443 未被占用，将进行标准安装。"
+        # 确保没有旧的覆盖文件
+        rm -f docker-compose.override.yml
+    fi
 
     # 步骤 4: 配置面板 (仅在 .env 文件不存在时执行)
     if [ ! -f ".env" ]; then
@@ -103,16 +158,35 @@ install_or_update_docker_panel() {
             ACCESS_ADDRESS=$domain_name
         fi
         read -s -p "请输入新的面板登录密码: " new_password; echo
-        if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
+
+        # 【新增功能】根据是否使用自定义端口来确定最终访问地址
+        if [ "$use_custom_port" = true ]; then
+            final_access_address="http://${ACCESS_ADDRESS}:${CUSTOM_PORT}"
+            CADDY_ADDRESS=$final_access_address # Caddyfile 中将使用这个地址
+        elif [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            final_access_address="http://${ACCESS_ADDRESS}"
+            CADDY_ADDRESS=$final_access_address
         else
+            final_access_address="https://${ACCESS_ADDRESS}" # 只有标准端口和域名才能是https
             CADDY_ADDRESS=$ACCESS_ADDRESS
         fi
+        
         sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
         sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
     else
         print_info "步骤 4: .env 文件已存在，跳过配置。"
+        # 【新增功能】如果 .env 已存在，也需要判断如何显示最终地址
+        source .env
+        if [ "$use_custom_port" = true ]; then
+             # 提取基础地址 (IP或域名)
+            base_address=$(echo $DOMAIN_OR_IP | sed -E 's#^https?://##; s#/:.*##')
+            final_access_address="http://${base_address}:${CUSTOM_PORT}"
+        elif [[ "$DOMAIN_OR_IP" =~ ^http:// ]]; then
+            final_access_address="$DOMAIN_OR_IP"
+        else
+            final_access_address="https://$DOMAIN_OR_IP"
+        fi
     fi
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
@@ -121,8 +195,7 @@ install_or_update_docker_panel() {
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
-    source .env
-    print_info "访问地址: ${DOMAIN_OR_IP}"
+    print_info "访问地址: ${final_access_address}"
     print_info "登录密码: 您设置的密码"
     echo "------------------------------------------------------------"
 }
@@ -133,7 +206,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (最终修复版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (智能端口检测增强版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
