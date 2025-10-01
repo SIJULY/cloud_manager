@@ -17,11 +17,22 @@
 - **一键安装**: 提供自动化脚本，可在全新的服务器上快速完成所有环境配置和部署。  
 
 ---
-<img width="1918" height="1913" alt="c9d37e04-db60-4765-ad6a-99d3fb981377" src="https://github.com/user-attachments/assets/4b81db74-54b2-4e07-b664-27271a3b8580" />
+<img width="1894" height="1908" alt="4ad1dc3d-a708-4fa2-9a5b-0b86ab39123e" src="https://github.com/user-attachments/assets/17cbbf28-0bf8-44c5-a72d-57b4539ac934" />
 
-<img width="1921" height="1916" alt="092697da-9557-4c85-bdab-e1d375c43af1" src="https://github.com/user-attachments/assets/06be02df-48cd-4047-9ee1-b05eff17d55c" />
+<img width="1834" height="1884" alt="9d39cf65-3dfa-4ac5-a79c-06926f3f3c74" src="https://github.com/user-attachments/assets/b2d1e655-e903-45bc-bd8b-878d84cf8f18" />
 
-<img width="1916" height="1616" alt="4d29ef9d-27a1-45ea-a6b2-dcf01addb51b" src="https://github.com/user-attachments/assets/70e70715-1a72-48da-b902-880a8de55a14" />
+<img width="1901" height="1799" alt="3394f3cc-0ae0-4c55-a4f3-8e57ddf7d684" src="https://github.com/user-attachments/assets/203baebc-e9f7-400f-9a39-514d51de168d" />
+
+<img width="1918" height="1626" alt="image" src="https://github.com/user-attachments/assets/e7c654ef-3ce7-4f7e-b60b-00f9e59f8b3a" />
+
+<img width="1924" height="1606" alt="image" src="https://github.com/user-attachments/assets/cb14db44-9ec2-4493-a658-906ba14af789" />
+
+<img width="1921" height="1613" alt="image" src="https://github.com/user-attachments/assets/a26e779b-2f83-4d24-9ba8-4dbb36286a4a" />
+
+<img width="1921" height="1534" alt="image" src="https://github.com/user-attachments/assets/fcd7ca55-b2c4-491b-9327-86175697d172" />
+
+
+
 
 
 
