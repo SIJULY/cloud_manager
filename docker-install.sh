@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager Docker版一键安装脚本 (V2 - 修复检测逻辑)
+# Cloud Manager Docker版一键安装脚本 (V3 - 最终稳定版)
+# 修复了Caddy检测逻辑、docker-compose文件修改逻辑、并增加了错误处理。
 # [警告] 本脚本会尝试自动修改系统中的Caddy服务，属于高风险操作。
-#        请在执行前备份您的Caddy配置文件 /etc/caddy/Caddyfile。
 # ==============================================================================
 
 # --- 配置 ---
@@ -44,8 +44,12 @@ ensure_files_and_fixes() {
     print_info "检查并应用兼容性修复..."
     touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
     chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+    # 移除过时的 version 标签，避免警告
+    if grep -q "version: '3.8'" docker-compose.yml; then
+        sed -i "/version: '3.8'/d" docker-compose.yml
+    fi
     print_success "修复1: 所有必需的配置文件和数据库文件已确保存在。"
-
+    
     if [ -f "Dockerfile" ]; then
         sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
         print_success "修复2: Dockerfile 已更新为 Bullseye 基础镜像。"
@@ -66,6 +70,7 @@ install_or_update_docker_panel() {
     fi
     print_success "Docker 环境检查通过。"
 
+
     if [ -d "${INSTALL_DIR}" ]; then
         print_info "步骤 2: 检测到现有安装，执行更新流程..."
         cd "${INSTALL_DIR}"
@@ -81,7 +86,6 @@ install_or_update_docker_panel() {
 
     ensure_files_and_fixes
 
-    # V2 - 修正检测逻辑：检查systemd服务或80端口占用情况
     PORT_80_IN_USE=false
     if systemctl is-active --quiet caddy || ss -tuln | grep -q ':80 '; then
         print_warning "检测到现有Caddy服务或80端口已被占用，将强制进入外部代理模式。"
@@ -90,13 +94,23 @@ install_or_update_docker_panel() {
 
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
-
+        
         if [ "$PORT_80_IN_USE" = true ]; then
-            # 外部代理模式
             print_info "将禁用内置的 Caddy 服务并暴露 Web 端口。"
-            sed -i -e '/^  caddy:/,/^  depends_on:.*web/s/^/#/' docker-compose.yml
-            sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
+            # V3 修复：使用更安全的行号定位方式来注释Caddy服务块
+            START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1)
+            END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
+            if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
+                COMMENT_END_LINE=$((END_LINE - 1))
+                sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
+                # 同时注释掉 volumes 块里 caddy 相关的定义
+                sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
+            else
+                print_error "无法在 docker-compose.yml 中定位 Caddy 服务块，自动化修改失败。"
+            fi
 
+            sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
+            
             cp .env.example .env
             read -p "请输入您要为Cloud Manager分配的域名 (例如 cm.example.com): " domain_name
             if [ -z "$domain_name" ]; then print_error "使用外部代理时，必须提供一个域名。"; fi
@@ -130,8 +144,11 @@ install_or_update_docker_panel() {
     fi
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
-    docker compose up -d --build
-
+    # V3 修复：增加Docker启动失败的错误检查
+    if ! docker compose up -d --build; then
+        print_error "Docker Compose 启动失败！请检查上面的日志输出。安装已终止。"
+    fi
+    
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
@@ -140,24 +157,22 @@ install_or_update_docker_panel() {
         if [ -n "$FINAL_DOMAIN_NAME" ]; then
             CADDY_FILE="/etc/caddy/Caddyfile"
             print_warning "正在尝试全自动配置现有的Caddy服务..."
-
-            if [ ! -f "$CADDY_FILE" ]; then
-                print_error "未找到标准的Caddy配置文件: ${CADDY_FILE}。无法继续自动配置。"
-            fi
+            
+            if [ ! -f "$CADDY_FILE" ]; then print_error "未找到标准的Caddy配置文件: ${CADDY_FILE}。"; fi
 
             if grep -q "${FINAL_DOMAIN_NAME}" "$CADDY_FILE"; then
                 print_success "检测到配置文件中已存在域名 ${FINAL_DOMAIN_NAME} 的配置，跳过修改。"
             else
                 print_info "正在停止现有的Caddy服务（服务会短暂中断）..."
                 systemctl stop caddy
-
+                
                 print_info "正在向 ${CADDY_FILE} 追加新配置..."
                 CONFIG_BLOCK="\n${FINAL_DOMAIN_NAME} {\n    reverse_proxy localhost:8000\n}\n"
                 echo -e "$CONFIG_BLOCK" | tee -a "$CADDY_FILE" > /dev/null
-
+                
                 print_info "正在重新启动Caddy服务..."
                 systemctl start caddy
-
+                
                 sleep 3
                 if systemctl is-active --quiet caddy; then
                     print_success "Caddy服务已成功重启！"
@@ -184,7 +199,6 @@ clear
 echo "=============================================================================="
 print_warning "本脚本将尝试自动检测并修改您系统中现有的Caddy服务配置。"
 print_warning "这是一个高风险操作，可能导致您服务器上所有网站短暂中断或配置失败。"
-print_warning "在继续之前，强烈建议您备份 Caddy 配置文件 (通常位于 /etc/caddy/Caddyfile)。"
 echo "=============================================================================="
 read -p "您已了解风险并希望继续吗？ [y/N]: " confirm_risk
 if [[ ! "$confirm_risk" =~ ^[Yy]$ ]]; then
@@ -192,7 +206,7 @@ if [[ ! "$confirm_risk" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V2-修复版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V3-最终稳定版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
