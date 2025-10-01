@@ -71,6 +71,12 @@ install_or_update_docker_panel() {
         print_info "正在从 Git 拉取最新代码..."
         git config --global --add safe.directory ${INSTALL_DIR}
         git pull origin main
+
+        ### 核心修正：在更新流程中也确保文件存在 ###
+        print_info "正在检查并确保所有必需的文件存在..."
+        touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+        chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+        print_success "文件检查完毕。"
         
         print_info "正在检查并修复 Dockerfile..."
         if [ -f "Dockerfile" ]; then
