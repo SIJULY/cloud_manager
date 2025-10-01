@@ -5,7 +5,7 @@ import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails,
+                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule,
                              UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails)
 from oci.exceptions import ServiceError
 # 【核心架构】从主程序 app.py 导入共享的 Celery 实例
@@ -132,16 +132,44 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     profiles = load_profiles()
     profile_config = profiles.get(alias, {})
     subnet_id = profile_config.get('default_subnet_ocid')
+
+    # Step 1: Check for a pre-configured and valid subnet ID.
     if subnet_id:
         try:
             if vnet_client.get_subnet(subnet_id).data.lifecycle_state == 'AVAILABLE':
-                logging.info(f"Using existing subnet {subnet_id} for {alias}")
+                logging.info(f"Using existing subnet {subnet_id} from profile for {alias}")
                 return subnet_id
         except ServiceError as e:
             if e.status != 404: raise
-            logging.warning(f"Subnet {subnet_id} not found, creating a new one.")
+            logging.warning(f"Saved subnet {subnet_id} not found, will try to auto-discover or create a new one.")
+
+    # Step 2: Auto-discover an existing network if none is configured.
+    logging.info(f"No valid subnet configured for {alias}. Attempting to auto-discover an existing network...")
+    try:
+        vcns = vnet_client.list_vcns(compartment_id=tenancy_ocid).data
+        if vcns:
+            default_vcn = vcns[0] # Use the first VCN found as the default.
+            logging.info(f"Auto-discovered VCN: {default_vcn.display_name} ({default_vcn.id})")
+            subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
+            if subnets:
+                default_subnet = subnets[0] # Use the first subnet found as the default.
+                logging.info(f"Auto-discovered Subnet: {default_subnet.display_name} ({default_subnet.id})")
+                
+                # Save the discovered subnet ID for future use.
+                profiles[alias]['default_subnet_ocid'] = default_subnet.id
+                save_profiles(profiles)
+                logging.info(f"Discovered subnet has been saved to profile for {alias}.")
+                return default_subnet.id
+            else:
+                    logging.warning(f"Discovered VCN {default_vcn.display_name} has no subnets. Proceeding to creation.")
+        else:
+            logging.info("No existing VCNs found in the compartment. Proceeding to creation.")
+    except Exception as e:
+        logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
+
+    # Step 3: [FALLBACK] If discovery fails, create a new network from scratch.
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('首次运行，正在自动创建网络资源 (VCN, 子网等)，预计需要2-3分钟...', task_id))
-    logging.info(f"Creating network resources for {alias}...")
+    logging.info(f"Creating new network resources for {alias}...")
     vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
     vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid)
     vcn = vnet_client.create_vcn(vcn_details).data
@@ -161,6 +189,8 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     subnet = vnet_client.create_subnet(subnet_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
     oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
+    
+    # Save the NEWLY CREATED subnet ID.
     profiles[alias]['default_subnet_ocid'] = subnet.id
     save_profiles(profiles)
     logging.info(f"New subnet {subnet.id} created and saved for {alias}")
@@ -288,7 +318,7 @@ def stop_task(task_id):
 
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
-@timeout(20) # 登录验证可以慢一点，给20秒
+@timeout(20) 
 def oci_session_route():
     try:
         if request.method == "POST":
@@ -314,7 +344,7 @@ def oci_session_route():
     except TimeoutException as e:
         session.pop('oci_profile_alias', None)
         logging.warning(f"选择账号时API验证超时: {e}")
-        return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504 # 504 Gateway Timeout
+        return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504 
     except Exception as e:
         session.pop('oci_profile_alias', None)
         return jsonify({"error": str(e)}), 500
@@ -322,7 +352,7 @@ def oci_session_route():
 @oci_bp.route('/api/instances')
 @login_required
 @oci_clients_required
-@timeout(30) # 获取实例列表可能较慢
+@timeout(30)
 def get_instances():
     try:
         compute_client, vnet_client, bs_client = g.oci_clients['compute'], g.oci_clients['vnet'], g.oci_clients['bs']
@@ -373,7 +403,7 @@ def _create_task_entry(task_type, task_name):
     task_id = str(uuid.uuid4())
     alias = session.get('oci_profile_alias', 'N/A')
     db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              (task_id, task_type, task_name, 'pending', '', datetime.datetime.utcnow().isoformat(), alias))
+               (task_id, task_type, task_name, 'pending', '', datetime.datetime.utcnow().isoformat(), alias))
     db.commit()
     return task_id
 
@@ -758,14 +788,34 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
 
+    # --- ↓↓↓ 最终解决方案：使用重试逻辑来确认状态，而不是固定等待 ↓↓↓ ---
+    is_ready = False
+    for i in range(5):  # 最多尝试5次
+        task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
+        if task_record and task_record['status'] == 'running':
+            is_ready = True
+            logging.info(f"Task {task_id} confirmed status is 'running'. Starting snatch loop.")
+            break
+        logging.warning(f"Attempt {i + 1}/5: Task status not confirmed as 'running' yet. Retrying in 2 seconds...")
+        time.sleep(2)
+
+    if not is_ready:
+        logging.error(f"Task {task_id} failed to confirm 'running' status after multiple attempts. Exiting.")
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 任务状态确认失败，无法启动。", task_id))
+        return
+    # --- ↑↑↑ 最终解决方案结束 ↑↑↑ ---
+
     count = 0
     while True:
+        # 内部循环的检查保持不变，用于响应用户手动停止任务
+        task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
+        if not task_record_check or task_record_check['status'] != 'running':
+            logging.info(f"Snatching task {task_id} has been stopped by user or completed. Exiting loop.")
+            return
+
         count += 1
         delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
-        task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
-        if not task_record or task_record['status'] != 'running':
-            logging.info(f"Snatching task {task_id} has been stopped or completed. Exiting loop.")
-            return
+        
         try:
             if count == 1 or count % 10 == 0:
                 _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试创建实例...", task_id))
