@@ -30,8 +30,8 @@ uninstall_docker_panel() {
     print_info "开始卸载流程..."
     if [ -d "${INSTALL_DIR}" ]; then
         cd "${INSTALL_DIR}"
-        # 先清理失败的残余容器
         docker compose down -v --remove-orphans
+        cd ~
         rm -rf "${INSTALL_DIR}"
         print_success "项目文件和Docker资源已清理。"
     else
@@ -45,7 +45,7 @@ ensure_files_and_fixes() {
     touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
     chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
     print_success "修复1: 所有必需的配置文件和数据库文件已确保存在。"
-    
+
     if [ -f "Dockerfile" ]; then
         sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
         print_success "修复2: Dockerfile 已更新为 Bullseye 基础镜像。"
@@ -90,13 +90,13 @@ install_or_update_docker_panel() {
 
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
-        
+
         if [ "$PORT_80_IN_USE" = true ]; then
             # 外部代理模式
             print_info "将禁用内置的 Caddy 服务并暴露 Web 端口。"
             sed -i -e '/^  caddy:/,/^  depends_on:.*web/s/^/#/' docker-compose.yml
             sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
-            
+
             cp .env.example .env
             read -p "请输入您要为Cloud Manager分配的域名 (例如 cm.example.com): " domain_name
             if [ -z "$domain_name" ]; then print_error "使用外部代理时，必须提供一个域名。"; fi
@@ -131,7 +131,7 @@ install_or_update_docker_panel() {
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
     docker compose up -d --build
-    
+
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
@@ -140,7 +140,7 @@ install_or_update_docker_panel() {
         if [ -n "$FINAL_DOMAIN_NAME" ]; then
             CADDY_FILE="/etc/caddy/Caddyfile"
             print_warning "正在尝试全自动配置现有的Caddy服务..."
-            
+
             if [ ! -f "$CADDY_FILE" ]; then
                 print_error "未找到标准的Caddy配置文件: ${CADDY_FILE}。无法继续自动配置。"
             fi
@@ -150,14 +150,14 @@ install_or_update_docker_panel() {
             else
                 print_info "正在停止现有的Caddy服务（服务会短暂中断）..."
                 systemctl stop caddy
-                
+
                 print_info "正在向 ${CADDY_FILE} 追加新配置..."
                 CONFIG_BLOCK="\n${FINAL_DOMAIN_NAME} {\n    reverse_proxy localhost:8000\n}\n"
                 echo -e "$CONFIG_BLOCK" | tee -a "$CADDY_FILE" > /dev/null
-                
+
                 print_info "正在重新启动Caddy服务..."
                 systemctl start caddy
-                
+
                 sleep 3
                 if systemctl is-active --quiet caddy; then
                     print_success "Caddy服务已成功重启！"
@@ -178,11 +178,6 @@ install_or_update_docker_panel() {
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then
     print_error "此脚本必须以root用户身份运行。"
-fi
-
-# 在选择操作前，先清理上次失败的安装（如果存在）
-if [ -d "${INSTALL_DIR}" ] && ! docker ps -a --format '{{.Names}}' | grep -q "${COMPOSE_PROJECT_NAME:-cloud_manager}-web-1"; then
-    print_warning "检测到可能失败的安装目录，建议先卸载。"
 fi
 
 clear
