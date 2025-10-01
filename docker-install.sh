@@ -1,30 +1,20 @@
+
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 最终完整修正版
-# 修正了备用端口模式的BUG并增加了严格的错误检查
+# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 最终修复版
+# 解决了数据库文件挂载和 Gunicorn 启动竞争问题
 # ==============================================================================
 
 # --- 配置 ---
 INSTALL_DIR="/opt/cloud_manager"
 REPO_URL="https://github.com/SIJULY/cloud_manager.git"
-CUSTOM_PORT="5005" # 定义备用端口
 
 # --- 辅助函数 ---
 print_info() { echo -e "\e[34m[信息]\e[0m $1"; }
 print_success() { echo -e "\e[32m[成功]\e[0m $1"; }
 print_warning() { echo -e "\e[33m[警告]\e[0m $1"; }
 print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
-
-# --- 端口检测函数 ---
-check_port() {
-    local port_to_check=$1
-    if ss -lnt | awk '{print $4}' | grep -q ":${port_to_check}$"; then
-        return 1 # 端口被占用
-    else
-        return 0 # 端口未被占用
-    fi
-}
 
 # --- 功能函数 ---
 
@@ -53,6 +43,7 @@ uninstall_docker_panel() {
     print_success "Cloud Manager Docker 版已彻底卸载！"
 }
 
+# 确保所有必需的文件都存在，并应用必要的修复
 ensure_files_and_fixes() {
     print_info "检查并应用兼容性修复..."
 
@@ -84,60 +75,24 @@ install_or_update_docker_panel() {
     fi
     print_success "Docker 环境检查通过。"
 
+    # 更新流程
     if [ -d "${INSTALL_DIR}" ]; then
         print_info "步骤 2: 检测到现有安装，执行更新流程..."
         cd "${INSTALL_DIR}"
+        print_info "正在从 Git 拉取最新代码..."
         git config --global --add safe.directory ${INSTALL_DIR}
         git pull origin main
+    # 全新安装流程
     else
         print_info "步骤 2: 未检测到安装，执行全新安装..."
         git clone ${REPO_URL} ${INSTALL_DIR}
         cd ${INSTALL_DIR}
     fi
-    
+
+    # 步骤 3: 确保文件存在并应用修复 (无论全新安装还是更新都执行)
     ensure_files_and_fixes
-    
-    local use_custom_port=false
-    local final_access_address=""
 
-    if ! check_port 80 || ! check_port 443; then
-        print_warning "检测到 80 或 443 端口已被占用！"
-        print_info "Caddy 默认需要使用 80 和 443 端口来提供 Web 服务并自动申请 HTTPS 证书。"
-        echo "------------------------------------------------------------"
-        echo "请选择您的操作："
-        echo "  1) 使用备用端口 ${CUSTOM_PORT} 进行安装 (将以 HTTP 方式访问，无法自动申请证书)"
-        echo "  2) 退出脚本，我将手动暂停占用端口的服务 (如 Nginx, Apache 等)"
-        echo "------------------------------------------------------------"
-        read -p "请输入选项 [1]: " port_choice
-        
-        case ${port_choice:-1} in
-            1)
-                print_info "好的，将使用备用端口 ${CUSTOM_PORT} 进行安装。"
-                use_custom_port=true
-                # 【核心修正】直接修改 docker-compose.yml 文件
-                print_info "正在修改 docker-compose.yml以使用备用端口..."
-                # 为了安全，先备份
-                cp docker-compose.yml docker-compose.yml.bak
-                # 使用 sed 注释掉原有的 80 和 443 端口，并添加新的端口
-                # 这个sed命令会找到caddy服务块中，从ports:开始到第一个- "443:443"行为止的范围进行操作
-                sed -i -e "/caddy:/,/- \"443:443\"/s/- \"80:80\"/- \"${CUSTOM_PORT}:80\"/" \
-                       -e "/caddy:/,/- \"443:443\"/s/- \"443:443\"/#- \"443:443\"/" docker-compose.yml
-                print_success "docker-compose.yml 已成功修改。"
-                ;;
-            2)
-                print_info "脚本已退出。请先运行 'sudo systemctl stop nginx' 等命令释放端口，然后再重新运行此脚本。"
-                exit 0
-                ;;
-            *)
-                print_error "无效的选项。"
-                ;;
-        esac
-    else
-        print_success "端口 80 和 443 未被占用，将进行标准安装。"
-        # 如果之前有备份，恢复原始文件
-        [ -f docker-compose.yml.bak ] && mv docker-compose.yml.bak docker-compose.yml
-    fi
-
+    # 步骤 4: 配置面板 (仅在 .env 文件不存在时执行)
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
         cp .env.example .env
@@ -149,52 +104,29 @@ install_or_update_docker_panel() {
             ACCESS_ADDRESS=$domain_name
         fi
         read -s -p "请输入新的面板登录密码: " new_password; echo
-
-        if [ "$use_custom_port" = true ]; then
-            final_access_address="http://${ACCESS_ADDRESS}:${CUSTOM_PORT}"
-            CADDY_ADDRESS=$final_access_address
-        elif [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            final_access_address="http://${ACCESS_ADDRESS}"
-            CADDY_ADDRESS=$final_access_address
+        if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
         else
-            final_access_address="https://${ACCESS_ADDRESS}"
             CADDY_ADDRESS=$ACCESS_ADDRESS
         fi
-        
         sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
         sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
+    else
+        print_info "步骤 4: .env 文件已存在，跳过配置。"
     fi
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
-    # 【核心修正】增加了错误检查，如果 docker compose 失败则脚本会退出
-    if ! docker compose up -d --build; then
-        print_error "Docker Compose 启动失败！请检查上面的日志输出以确定问题。"
-        # 如果是因为端口修改失败，可以尝试恢复
-        [ -f docker-compose.yml.bak ] && mv docker-compose.yml.bak docker-compose.yml
-        exit 1
-    fi
+    docker compose up -d --build
     
-    # 获取最终访问地址
-    source .env
-    # 提取基础地址 (IP或域名)，兼容http/https前缀和可能存在的端口号
-    base_address=$(echo $DOMAIN_OR_IP | sed -E 's#^https?://##; s#:[0-9]+.*##')
-    if [ "$use_custom_port" = true ]; then
-        final_access_address="http://${base_address}:${CUSTOM_PORT}"
-    elif [[ "$DOMAIN_OR_IP" =~ ^http:// ]]; then
-        final_access_address="http://${base_address}"
-    else
-        final_access_address="https://$base_address"
-    fi
-
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
-    print_info "访问地址: ${final_access_address}"
+    source .env
+    print_info "访问地址: ${DOMAIN_OR_IP}"
     print_info "登录密码: 您设置的密码"
     echo "------------------------------------------------------------"
 }
-
 
 # --- 脚本主入口 ---
 if [ "$(id -u)" -ne 0 ]; then
@@ -202,7 +134,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (最终完整修正版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (最终修复版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
