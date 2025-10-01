@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager Docker版一键安装脚本 (全自动集成外部Caddy版)
+# Cloud Manager Docker版一键安装脚本 (V2 - 修复检测逻辑)
 # [警告] 本脚本会尝试自动修改系统中的Caddy服务，属于高风险操作。
 #        请在执行前备份您的Caddy配置文件 /etc/caddy/Caddyfile。
 # ==============================================================================
@@ -28,18 +28,15 @@ uninstall_docker_panel() {
     fi
 
     print_info "开始卸载流程..."
-
-    if [ -d "${INSTALL_DIR}" ] && [ -f "${INSTALL_DIR}/docker-compose.yml" ]; then
-        print_info "1. 进入项目目录并停止、移除所有相关容器和数据卷..."
+    if [ -d "${INSTALL_DIR}" ]; then
         cd "${INSTALL_DIR}"
-        docker compose down -v
-        print_success "所有 Docker 资源已清理。"
+        # 先清理失败的残余容器
+        docker compose down -v --remove-orphans
+        rm -rf "${INSTALL_DIR}"
+        print_success "项目文件和Docker资源已清理。"
+    else
+        print_warning "未找到安装目录，无需清理。"
     fi
-
-    print_info "2. 移除项目目录 ${INSTALL_DIR}..."
-    rm -rf "${INSTALL_DIR}"
-    print_success "项目目录已删除。"
-    
     print_success "Cloud Manager Docker 版已彻底卸载！"
 }
 
@@ -54,7 +51,6 @@ ensure_files_and_fixes() {
         print_success "修复2: Dockerfile 已更新为 Bullseye 基础镜像。"
     fi
 }
-
 
 install_or_update_docker_panel() {
     print_info "步骤 1: 检查并安装 Docker 环境..."
@@ -85,16 +81,18 @@ install_or_update_docker_panel() {
 
     ensure_files_and_fixes
 
-    DETECTED_CADDY=false
-    if systemctl is-active --quiet caddy; then
-        print_warning "检测到正在运行的 Caddy (systemd) 服务，将自动为您集成。"
-        DETECTED_CADDY=true
+    # V2 - 修正检测逻辑：检查systemd服务或80端口占用情况
+    PORT_80_IN_USE=false
+    if systemctl is-active --quiet caddy || ss -tuln | grep -q ':80 '; then
+        print_warning "检测到现有Caddy服务或80端口已被占用，将强制进入外部代理模式。"
+        PORT_80_IN_USE=true
     fi
 
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
         
-        if [ "$DETECTED_CADDY" = true ]; then
+        if [ "$PORT_80_IN_USE" = true ]; then
+            # 外部代理模式
             print_info "将禁用内置的 Caddy 服务并暴露 Web 端口。"
             sed -i -e '/^  caddy:/,/^  depends_on:.*web/s/^/#/' docker-compose.yml
             sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
@@ -107,7 +105,8 @@ install_or_update_docker_panel() {
             export FINAL_DOMAIN_NAME=$domain_name
             USE_EXTERNAL_PROXY=true
         else
-            print_info "未检测到现有Caddy服务，将使用内置Caddy进行安装。"
+            # 内置Caddy模式
+            print_info "未检测到端口冲突，将使用内置Caddy进行安装。"
             cp .env.example .env
             read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
             if [ -z "$domain_name" ]; then
@@ -117,11 +116,7 @@ install_or_update_docker_panel() {
                 ACCESS_ADDRESS=$domain_name
             fi
             read -s -p "请输入新的面板登录密码: " new_password; echo
-            if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
-            else
-                CADDY_ADDRESS=$ACCESS_ADDRESS
-            fi
+            CADDY_ADDRESS=$([[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "http://${ACCESS_ADDRESS}" || echo "$ACCESS_ADDRESS")
             sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
             sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
             USE_EXTERNAL_PROXY=false
@@ -129,9 +124,8 @@ install_or_update_docker_panel() {
         print_success "配置已保存到 .env 文件。"
     else
         print_info "步骤 4: .env 文件已存在，跳过配置。"
-        if [ "$DETECTED_CADDY" = true ] && grep -q "# caddy:" docker-compose.yml; then
+        if [ "$PORT_80_IN_USE" = true ] && grep -q "# caddy:" docker-compose.yml; then
             USE_EXTERNAL_PROXY=true
-            # 尝试从.env或已知信息中恢复域名，但此处简化为让用户手动检查
         fi
     fi
 
@@ -143,10 +137,7 @@ install_or_update_docker_panel() {
     echo "------------------------------------------------------------"
 
     if [ "$USE_EXTERNAL_PROXY" = true ]; then
-        if [ -z "$FINAL_DOMAIN_NAME" ] && [ -f ".env" ]; then
-            print_warning "正在更新模式下，无法自动获取域名，将跳过Caddy自动配置。"
-            print_info "请确保您已手动将域名指向 localhost:8000。"
-        elif [ -n "$FINAL_DOMAIN_NAME" ]; then
+        if [ -n "$FINAL_DOMAIN_NAME" ]; then
             CADDY_FILE="/etc/caddy/Caddyfile"
             print_warning "正在尝试全自动配置现有的Caddy服务..."
             
@@ -189,6 +180,11 @@ if [ "$(id -u)" -ne 0 ]; then
     print_error "此脚本必须以root用户身份运行。"
 fi
 
+# 在选择操作前，先清理上次失败的安装（如果存在）
+if [ -d "${INSTALL_DIR}" ] && ! docker ps -a --format '{{.Names}}' | grep -q "${COMPOSE_PROJECT_NAME:-cloud_manager}-web-1"; then
+    print_warning "检测到可能失败的安装目录，建议先卸载。"
+fi
+
 clear
 echo "=============================================================================="
 print_warning "本脚本将尝试自动检测并修改您系统中现有的Caddy服务配置。"
@@ -201,8 +197,7 @@ if [[ ! "$confirm_risk" =~ ^[Yy]$ ]]; then
     exit 0
 fi
 
-
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (全自动集成版)"
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (V2-修复版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
@@ -210,7 +205,6 @@ echo "  2) 彻底卸载 面板"
 echo "  3) 退出脚本"
 echo "==============================================="
 read -p "请输入选项数字 [1]: " choice
-
 choice=${choice:-1}
 
 case $choice in
