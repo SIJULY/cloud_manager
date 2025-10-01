@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # ==============================================================================
-# Cloud Manager 三合一面板 一键安装脚本 (Docker版) - 最终修复版
-# 解决了数据库文件挂载和 Gunicorn 启动竞争问题
+# Cloud Manager Docker版一键安装脚本 (全自动集成外部Caddy版)
+# [警告] 本脚本会尝试自动修改系统中的Caddy服务，属于高风险操作。
+#        请在执行前备份您的Caddy配置文件 /etc/caddy/Caddyfile。
 # ==============================================================================
 
 # --- 配置 ---
@@ -42,16 +43,12 @@ uninstall_docker_panel() {
     print_success "Cloud Manager Docker 版已彻底卸载！"
 }
 
-# 确保所有必需的文件都存在，并应用必要的修复
 ensure_files_and_fixes() {
     print_info "检查并应用兼容性修复..."
-
-    # 修复1: 确保所有必需的文件都已创建，防止Docker挂载时创建成目录
     touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
     chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
     print_success "修复1: 所有必需的配置文件和数据库文件已确保存在。"
     
-    # 修复2: 更新 Dockerfile 基础镜像以增强兼容性
     if [ -f "Dockerfile" ]; then
         sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile
         print_success "修复2: Dockerfile 已更新为 Bullseye 基础镜像。"
@@ -69,50 +66,73 @@ install_or_update_docker_panel() {
     fi
     if ! docker compose version &> /dev/null; then
         print_warning "未检测到 Docker Compose 插件，正在尝试自动安装..."
-        apt-get update
-        apt-get install -y docker-compose-plugin
+        apt-get update -y && apt-get install -y docker-compose-plugin
     fi
     print_success "Docker 环境检查通过。"
 
-    # 更新流程
     if [ -d "${INSTALL_DIR}" ]; then
         print_info "步骤 2: 检测到现有安装，执行更新流程..."
         cd "${INSTALL_DIR}"
         print_info "正在从 Git 拉取最新代码..."
+        git restore docker-compose.yml
         git config --global --add safe.directory ${INSTALL_DIR}
         git pull origin main
-    # 全新安装流程
     else
         print_info "步骤 2: 未检测到安装，执行全新安装..."
         git clone ${REPO_URL} ${INSTALL_DIR}
         cd ${INSTALL_DIR}
     fi
 
-    # 步骤 3: 确保文件存在并应用修复 (无论全新安装还是更新都执行)
     ensure_files_and_fixes
 
-    # 步骤 4: 配置面板 (仅在 .env 文件不存在时执行)
+    DETECTED_CADDY=false
+    if systemctl is-active --quiet caddy; then
+        print_warning "检测到正在运行的 Caddy (systemd) 服务，将自动为您集成。"
+        DETECTED_CADDY=true
+    fi
+
     if [ ! -f ".env" ]; then
         print_info "步骤 4: 首次安装，开始配置面板..."
-        cp .env.example .env
-        read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
-        if [ -z "$domain_name" ]; then
-            ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
-            if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
+        
+        if [ "$DETECTED_CADDY" = true ]; then
+            print_info "将禁用内置的 Caddy 服务并暴露 Web 端口。"
+            sed -i -e '/^  caddy:/,/^  depends_on:.*web/s/^/#/' docker-compose.yml
+            sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
+            
+            cp .env.example .env
+            read -p "请输入您要为Cloud Manager分配的域名 (例如 cm.example.com): " domain_name
+            if [ -z "$domain_name" ]; then print_error "使用外部代理时，必须提供一个域名。"; fi
+            read -s -p "请输入新的面板登录密码: " new_password; echo
+            sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
+            export FINAL_DOMAIN_NAME=$domain_name
+            USE_EXTERNAL_PROXY=true
         else
-            ACCESS_ADDRESS=$domain_name
+            print_info "未检测到现有Caddy服务，将使用内置Caddy进行安装。"
+            cp .env.example .env
+            read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
+            if [ -z "$domain_name" ]; then
+                ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
+                if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
+            else
+                ACCESS_ADDRESS=$domain_name
+            fi
+            read -s -p "请输入新的面板登录密码: " new_password; echo
+            if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
+            else
+                CADDY_ADDRESS=$ACCESS_ADDRESS
+            fi
+            sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
+            sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
+            USE_EXTERNAL_PROXY=false
         fi
-        read -s -p "请输入新的面板登录密码: " new_password; echo
-        if [[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            CADDY_ADDRESS="http://${ACCESS_ADDRESS}"
-        else
-            CADDY_ADDRESS=$ACCESS_ADDRESS
-        fi
-        sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
-        sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
         print_success "配置已保存到 .env 文件。"
     else
         print_info "步骤 4: .env 文件已存在，跳过配置。"
+        if [ "$DETECTED_CADDY" = true ] && grep -q "# caddy:" docker-compose.yml; then
+            USE_EXTERNAL_PROXY=true
+            # 尝试从.env或已知信息中恢复域名，但此处简化为让用户手动检查
+        fi
     fi
 
     print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
@@ -121,9 +141,46 @@ install_or_update_docker_panel() {
     echo ""
     print_success "Cloud Manager Docker 版已成功部署/更新！"
     echo "------------------------------------------------------------"
-    source .env
-    print_info "访问地址: ${DOMAIN_OR_IP}"
-    print_info "登录密码: 您设置的密码"
+
+    if [ "$USE_EXTERNAL_PROXY" = true ]; then
+        if [ -z "$FINAL_DOMAIN_NAME" ] && [ -f ".env" ]; then
+            print_warning "正在更新模式下，无法自动获取域名，将跳过Caddy自动配置。"
+            print_info "请确保您已手动将域名指向 localhost:8000。"
+        elif [ -n "$FINAL_DOMAIN_NAME" ]; then
+            CADDY_FILE="/etc/caddy/Caddyfile"
+            print_warning "正在尝试全自动配置现有的Caddy服务..."
+            
+            if [ ! -f "$CADDY_FILE" ]; then
+                print_error "未找到标准的Caddy配置文件: ${CADDY_FILE}。无法继续自动配置。"
+            fi
+
+            if grep -q "${FINAL_DOMAIN_NAME}" "$CADDY_FILE"; then
+                print_success "检测到配置文件中已存在域名 ${FINAL_DOMAIN_NAME} 的配置，跳过修改。"
+            else
+                print_info "正在停止现有的Caddy服务（服务会短暂中断）..."
+                systemctl stop caddy
+                
+                print_info "正在向 ${CADDY_FILE} 追加新配置..."
+                CONFIG_BLOCK="\n${FINAL_DOMAIN_NAME} {\n    reverse_proxy localhost:8000\n}\n"
+                echo -e "$CONFIG_BLOCK" | tee -a "$CADDY_FILE" > /dev/null
+                
+                print_info "正在重新启动Caddy服务..."
+                systemctl start caddy
+                
+                sleep 3
+                if systemctl is-active --quiet caddy; then
+                    print_success "Caddy服务已成功重启！"
+                    print_info "您的面板现在应该可以通过 https://${FINAL_DOMAIN_NAME} 访问了。"
+                else
+                    print_error "Caddy服务启动失败！请立即手动检查配置文件 ${CADDY_FILE} 进行修复！"
+                fi
+            fi
+        fi
+    else
+        source .env
+        print_info "访问地址: ${DOMAIN_OR_IP}"
+        print_info "登录密码: 您设置的密码"
+    fi
     echo "------------------------------------------------------------"
 }
 
@@ -133,7 +190,19 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (最终修复版)"
+echo "=============================================================================="
+print_warning "本脚本将尝试自动检测并修改您系统中现有的Caddy服务配置。"
+print_warning "这是一个高风险操作，可能导致您服务器上所有网站短暂中断或配置失败。"
+print_warning "在继续之前，强烈建议您备份 Caddy 配置文件 (通常位于 /etc/caddy/Caddyfile)。"
+echo "=============================================================================="
+read -p "您已了解风险并希望继续吗？ [y/N]: " confirm_risk
+if [[ ! "$confirm_risk" =~ ^[Yy]$ ]]; then
+    print_info "操作已取消。"
+    exit 0
+fi
+
+
+print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (全自动集成版)"
 echo "==============================================="
 echo "请选择要执行的操作:"
 echo "  1) 安装 或 更新 面板 (默认选项)"
