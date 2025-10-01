@@ -65,17 +65,28 @@ def close_connection(exception):
         db.close()
 
 def init_db():
-    if not os.path.exists(DATABASE):
-        db = get_db_connection()
-        db.cursor().executescript("""
+    # 不再检查文件是否存在，而是直接连接并检查表是否存在
+    db = get_db_connection()
+    cursor = db.cursor()
+    
+    # 检查 'tasks' 表是否存在于数据库中
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
+    table_exists = cursor.fetchone()
+    
+    if not table_exists:
+        # 如果表不存在，就创建它
+        print("Initializing OCI database table 'tasks'...")
+        logging.info("OCI database file found, but 'tasks' table is missing. Creating table...")
+        cursor.executescript("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, name TEXT, status TEXT NOT NULL,
             result TEXT, created_at TEXT, account_alias TEXT
         );
         """)
         db.commit()
-        db.close()
-        logging.info("OCI database has been initialized with WAL mode.")
+        logging.info("'tasks' table created successfully in OCI database.")
+    
+    db.close()
 
 def query_db(query, args=(), one=False):
     db = get_db_connection(timeout=20)
