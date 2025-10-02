@@ -51,7 +51,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const tgBotTokenInput = document.getElementById('tgBotToken');
     const tgChatIdInput = document.getElementById('tgChatId');
     const saveTgSettingsBtn = document.getElementById('saveTgSettingsBtn');
-
     
     // 通用确认模态框的元素
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
@@ -190,12 +189,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (button.classList.contains('edit-btn')) {
             addLog(`正在加载账号 ${alias} 的信息以供编辑...`);
             try {
-                // 注意: 这个API默认不返回私钥内容, 这是安全的
                 const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
                 document.getElementById('editProfileOriginalAlias').value = alias;
                 document.getElementById('editProfileAlias').value = alias;
                 
-                const { default_ssh_public_key, key_content, default_subnet_ocid, tg_bot_token, tg_chat_id, ...configParts } = profileData;
+                const { default_ssh_public_key, key_content, default_subnet_ocid, ...configParts } = profileData;
                 const configText = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
 
                 document.getElementById('editProfileConfigText').value = configText;
@@ -240,12 +238,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
         addLog(`正在保存对账号 ${originalAlias} 的更改...`);
         try {
-            const originalProfileData = await apiRequest(`/oci/api/profiles/${originalAlias}`);
-            // 继承tg设置, 避免在编辑时丢失
-            const profileData = {
-                tg_bot_token: originalProfileData.tg_bot_token, 
-                tg_chat_id: originalProfileData.tg_chat_id
-            };
+            const latestProfileData = await apiRequest(`/oci/api/profiles/${originalAlias}`);
+            const profileData = {...latestProfileData};
             
             configText.split('\n').forEach(line => {
                 const parts = line.split('=');
@@ -298,7 +292,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionAreaProfile.classList.remove('d-none');
                 enableMainControls(true, data.can_create, data.can_snatch);
                 refreshInstances();
-                currentProfileAlias = data.alias; // 更新当前账号别名
+                currentProfileAlias = data.alias;
 
                 const activeButton = document.querySelector(`.connect-btn[data-alias="${data.alias}"]`);
                 if (activeButton) {
@@ -311,13 +305,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentProfileStatus.textContent = '未连接';
                 actionAreaProfile.classList.add('d-none');
                 enableMainControls(false, false, false);
-                currentProfileAlias = null; // 清除账号别名
+                currentProfileAlias = null;
             }
         } catch (error) {
              currentProfileStatus.textContent = '未连接 (会话检查失败)';
              actionAreaProfile.classList.add('d-none');
              enableMainControls(false, false, false);
-             currentProfileAlias = null; // 清除账号别名
+             currentProfileAlias = null;
         }
     }
     
@@ -430,7 +424,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     Object.entries(instanceActionButtons).forEach(([key, button]) => {
-        if (key !== 'editInstance') { // Exclude the edit button from this generic handler
+        if (key !== 'editInstance') {
             button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
         }
     });
@@ -614,7 +608,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // --- 任务状态轮询 ---
     function pollTaskStatus(taskId) {
         addLog(`正在监控任务 ${taskId}...`);
-        const maxRetries = 300; // 轮询大约 25 分钟
+        const maxRetries = 300; 
         let retries = 0;
         let lastLoggedStatus = ''; 
     
@@ -698,21 +692,15 @@ document.addEventListener('DOMContentLoaded', function() {
         snatchShapeSelect.dispatchEvent(new Event('change'));
     }
 
-    // 新增: 打开抢占实例模态框时, 加载并填充TG Bot设置
     snatchInstanceBtn.addEventListener('click', async () => {
-        if (!currentProfileAlias) {
-            addLog("未连接账号, 无法加载TG设置", "warning");
-            return;
-        }
         try {
-            const profileData = await apiRequest(`/oci/api/profiles/${currentProfileAlias}`);
-            const token = profileData.tg_bot_token;
-            const chatId = profileData.tg_chat_id;
-
+            // 【核心修正】: API地址已更正
+            const tgSettings = await apiRequest('/oci/api/global-settings/telegram');
+            const token = tgSettings.tg_bot_token;
+            const chatId = tgSettings.tg_chat_id;
             tgBotTokenInput.value = token || '';
             tgChatIdInput.value = chatId || '';
-
-            if (token && chatId) {
+            if (token || chatId) {
                 saveTgSettingsBtn.textContent = '更新设置';
                 saveTgSettingsBtn.classList.remove('btn-outline-info');
                 saveTgSettingsBtn.classList.add('btn-info');
@@ -722,7 +710,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 saveTgSettingsBtn.classList.add('btn-outline-info');
             }
         } catch (error) {
-            addLog("加载TG设置失败", "error");
+            addLog("加载全局TG设置失败", "error");
             tgBotTokenInput.value = '';
             tgChatIdInput.value = '';
             saveTgSettingsBtn.textContent = '保存设置';
@@ -731,39 +719,29 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // 新增: 保存TG Bot设置的逻辑
     saveTgSettingsBtn.addEventListener('click', async () => {
-        if (!currentProfileAlias) {
-            addLog("请先连接一个账号再保存设置", "error");
-            return;
-        }
         const token = tgBotTokenInput.value.trim();
         const chatId = tgChatIdInput.value.trim();
-
         const payload = {
-            alias: currentProfileAlias,
-            profile_data: {
-                tg_bot_token: token,
-                tg_chat_id: chatId
-            }
+            tg_bot_token: token,
+            tg_chat_id: chatId
         };
-
-        addLog("正在保存 Telegram Bot 设置...", "info");
+        addLog("正在保存全局 Telegram Bot 设置...", "info");
         try {
-            await apiRequest('/oci/api/profiles', {
+            // 【核心修正】: API地址已更正
+            await apiRequest('/oci/api/global-settings/telegram', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            addLog("Telegram Bot 设置已保存!", "success");
+            addLog("全局 Telegram Bot 设置已保存!", "success");
             saveTgSettingsBtn.textContent = '更新设置';
             saveTgSettingsBtn.classList.remove('btn-outline-info');
             saveTgSettingsBtn.classList.add('btn-info');
         } catch (error) {
-            addLog("保存TG设置失败", "error");
+            addLog("保存全局TG设置失败", "error");
         }
     });
-
 
     document.getElementById('submitSnatchInstanceBtn').addEventListener('click', async () => {
         const shape = snatchShapeSelect.value;
@@ -828,7 +806,7 @@ document.addEventListener('DOMContentLoaded', function() {
         tr.className = 'rule-row';
         const isStateless = rule.is_stateless || false;
         const sourceOrDest = type === 'ingress' ? (rule.source || '0.0.0.0/0') : (rule.destination || '0.0.0.0/0');
-        const protocol = rule.protocol || '6'; // Default to TCP
+        const protocol = rule.protocol || '6'; 
         
         const protocolOptions = {
             'all': '所有协议', '1': 'ICMP', '6': 'TCP', '17': 'UDP'
@@ -843,7 +821,7 @@ document.addEventListener('DOMContentLoaded', function() {
         };
 
         const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
-        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.tcp_options.destination_port_range : null));
+        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
         
         tr.innerHTML = `
             <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${isStateless ? 'checked' : ''}></td>
@@ -930,7 +908,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 rule.destination_type = 'CIDR_BLOCK';
             }
 
-            if (rule.protocol === '6' || rule.protocol === '17') { // TCP or UDP
+            if (rule.protocol === '6' || rule.protocol === '17') { 
                 const options = {};
                 const dest_min = parseInt(tr.querySelector('[data-key="dest_port_min"]').value, 10);
                 const dest_max = parseInt(tr.querySelector('[data-key="dest_port_max"]').value, 10);
@@ -996,8 +974,8 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.task_id) {
                 pollTaskStatus(response.task_id);
             }
-            editInstanceModal.hide(); // 操作提交后关闭模态框
-            setTimeout(refreshInstances, 3000); // 稍后刷新列表
+            editInstanceModal.hide(); 
+            setTimeout(refreshInstances, 3000); 
         } catch(e) {}
     }
 
@@ -1040,7 +1018,6 @@ document.addEventListener('DOMContentLoaded', function() {
             instance_id: selectedInstance.id
         });
     });
-
 
     // 初始化页面
     loadProfiles();
