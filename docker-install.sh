@@ -4,6 +4,7 @@
 # Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
 # 将“已有服务”模式作为更安全的默认选项。
 # V9: 增加了对安装目录的权限修复，以解决容器内文件写入问题。
+# V9.1 (修正): 调整了文件创建和权限设置的顺序，确保新文件权限正确。
 # ==============================================================================
 
 # --- 配置 ---
@@ -51,11 +52,12 @@ prepare_files() {
     git clone ${REPO_URL} ${INSTALL_DIR}
     cd ${INSTALL_DIR}
 
-    # <<< 关键修正：为整个目录授予写入权限 >>>
-    print_info "步骤 3: 修正目录权限以确保容器可写..."
-    chmod -R 777 . # 使用 . 代表当前目录 /opt/cloud_manager
+    # <<< 关键修正：先创建文件，再设置权限 >>>
+    print_info "步骤 3: 初始化文件并修正目录权限..."
     # 创建必要的空文件，以防万一
     touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
+    # 然后再统一为所有文件和目录设置权限
+    chmod -R 777 .
     print_success "权限和文件初始化完成。"
 
     print_info "步骤 4: 检查并应用兼容性修复..."
