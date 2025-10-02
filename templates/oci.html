@@ -250,7 +250,7 @@
                         管理与默认子网关联的第一个安全列表的规则。当前VCN: <strong id="currentVcnName">加载中...</strong> | 安全列表: <strong id="currentSlName">加载中...</strong>
                     </div>
                 </div>
-                
+
                 <ul class="nav nav-tabs" id="pills-tab" role="tablist">
                     <li class="nav-item" role="presentation">
                         <button class="nav-link active" id="pills-ingress-tab" data-bs-toggle="pill" data-bs-target="#pills-ingress" type="button" role="tab">入站规则</button>
@@ -458,7 +458,28 @@
                         </div>
                     </div>
                 </form>
-            </div>
+
+                <hr class="my-4">
+                <div id="tgBotSettings">
+                    <h6>Telegram Bot 通知设置 (可选)</h6>
+                    <div class="row">
+                        <div class="col-md-12 mb-2">
+                             <label for="tgBotToken" class="form-label">Bot Token</label>
+                             <input type="text" class="form-control" id="tgBotToken" placeholder="输入您的 Bot Token">
+                        </div>
+                        <div class="col-md-8 mb-2">
+                             <label for="tgChatId" class="form-label">Chat ID</label>
+                             <input type="text" class="form-control" id="tgChatId" placeholder="输入您的用户 Chat ID">
+                        </div>
+                        <div class="col-md-4 d-flex align-items-end mb-2">
+                             <button class="btn btn-outline-info w-100" id="saveTgSettingsBtn">保存设置</button>
+                        </div>
+                    </div>
+                    <small class="form-text text-muted">
+                        如何获取: 1. 与 <a href="https://t.me/BotFather" target="_blank">@BotFather</a> 对话创建机器人获取 Token. 2. 与 <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> 对话获取您的 Chat ID.
+                    </small>
+                </div>
+                </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="submitSnatchInstanceBtn">开始抢占</button>
