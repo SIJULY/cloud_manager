@@ -47,6 +47,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const saveVpusBtn = document.getElementById('saveVpusBtn');
     const applyNetBoostBtn = document.getElementById('applyNetBoostBtn');
 
+    // TG Bot 设置元素
+    const tgBotTokenInput = document.getElementById('tgBotToken');
+    const tgChatIdInput = document.getElementById('tgChatId');
+    const saveTgSettingsBtn = document.getElementById('saveTgSettingsBtn');
+
     
     // 通用确认模态框的元素
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
@@ -71,6 +76,7 @@ document.addEventListener('DOMContentLoaded', function() {
     let runningTasksData = [];
     let completedTasksData = [];
     let currentSecurityList = null;
+    let currentProfileAlias = null;
 
     // --- 通用辅助函数 ---
     function addLog(message, type = 'info') {
@@ -184,11 +190,12 @@ document.addEventListener('DOMContentLoaded', function() {
         if (button.classList.contains('edit-btn')) {
             addLog(`正在加载账号 ${alias} 的信息以供编辑...`);
             try {
+                // 注意: 这个API默认不返回私钥内容, 这是安全的
                 const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
                 document.getElementById('editProfileOriginalAlias').value = alias;
                 document.getElementById('editProfileAlias').value = alias;
                 
-                const { default_ssh_public_key, key_content, default_subnet_ocid, ...configParts } = profileData;
+                const { default_ssh_public_key, key_content, default_subnet_ocid, tg_bot_token, tg_chat_id, ...configParts } = profileData;
                 const configText = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
 
                 document.getElementById('editProfileConfigText').value = configText;
@@ -234,7 +241,11 @@ document.addEventListener('DOMContentLoaded', function() {
         addLog(`正在保存对账号 ${originalAlias} 的更改...`);
         try {
             const originalProfileData = await apiRequest(`/oci/api/profiles/${originalAlias}`);
-            const profileData = {...originalProfileData};
+            // 继承tg设置, 避免在编辑时丢失
+            const profileData = {
+                tg_bot_token: originalProfileData.tg_bot_token, 
+                tg_chat_id: originalProfileData.tg_chat_id
+            };
             
             configText.split('\n').forEach(line => {
                 const parts = line.split('=');
@@ -287,6 +298,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionAreaProfile.classList.remove('d-none');
                 enableMainControls(true, data.can_create, data.can_snatch);
                 refreshInstances();
+                currentProfileAlias = data.alias; // 更新当前账号别名
 
                 const activeButton = document.querySelector(`.connect-btn[data-alias="${data.alias}"]`);
                 if (activeButton) {
@@ -299,11 +311,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 currentProfileStatus.textContent = '未连接';
                 actionAreaProfile.classList.add('d-none');
                 enableMainControls(false, false, false);
+                currentProfileAlias = null; // 清除账号别名
             }
         } catch (error) {
              currentProfileStatus.textContent = '未连接 (会话检查失败)';
              actionAreaProfile.classList.add('d-none');
              enableMainControls(false, false, false);
+             currentProfileAlias = null; // 清除账号别名
         }
     }
     
@@ -403,12 +417,12 @@ document.addEventListener('DOMContentLoaded', function() {
             confirmActionModalTerminateOptions.classList.add('d-none');
         }
         if (action === 'changeip') {
-             message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
+              message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
         }
         if (action === 'assignipv6') {
-             message = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
+              message = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
         }
-       
+        
         confirmActionModalLabel.textContent = title;
         confirmActionModalBody.textContent = message;
         confirmActionModalConfirmBtn.dataset.action = action; 
@@ -683,6 +697,74 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         snatchShapeSelect.dispatchEvent(new Event('change'));
     }
+
+    // 新增: 打开抢占实例模态框时, 加载并填充TG Bot设置
+    snatchInstanceBtn.addEventListener('click', async () => {
+        if (!currentProfileAlias) {
+            addLog("未连接账号, 无法加载TG设置", "warning");
+            return;
+        }
+        try {
+            const profileData = await apiRequest(`/oci/api/profiles/${currentProfileAlias}`);
+            const token = profileData.tg_bot_token;
+            const chatId = profileData.tg_chat_id;
+
+            tgBotTokenInput.value = token || '';
+            tgChatIdInput.value = chatId || '';
+
+            if (token && chatId) {
+                saveTgSettingsBtn.textContent = '更新设置';
+                saveTgSettingsBtn.classList.remove('btn-outline-info');
+                saveTgSettingsBtn.classList.add('btn-info');
+            } else {
+                saveTgSettingsBtn.textContent = '保存设置';
+                saveTgSettingsBtn.classList.remove('btn-info');
+                saveTgSettingsBtn.classList.add('btn-outline-info');
+            }
+        } catch (error) {
+            addLog("加载TG设置失败", "error");
+            tgBotTokenInput.value = '';
+            tgChatIdInput.value = '';
+            saveTgSettingsBtn.textContent = '保存设置';
+            saveTgSettingsBtn.classList.remove('btn-info');
+            saveTgSettingsBtn.classList.add('btn-outline-info');
+        }
+    });
+
+    // 新增: 保存TG Bot设置的逻辑
+    saveTgSettingsBtn.addEventListener('click', async () => {
+        if (!currentProfileAlias) {
+            addLog("请先连接一个账号再保存设置", "error");
+            return;
+        }
+        const token = tgBotTokenInput.value.trim();
+        const chatId = tgChatIdInput.value.trim();
+
+        const payload = {
+            alias: currentProfileAlias,
+            profile_data: {
+                tg_bot_token: token,
+                tg_chat_id: chatId
+            }
+        };
+
+        addLog("正在保存 Telegram Bot 设置...", "info");
+        try {
+            await apiRequest('/oci/api/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            addLog("Telegram Bot 设置已保存!", "success");
+            saveTgSettingsBtn.textContent = '更新设置';
+            saveTgSettingsBtn.classList.remove('btn-outline-info');
+            saveTgSettingsBtn.classList.add('btn-info');
+        } catch (error) {
+            addLog("保存TG设置失败", "error");
+        }
+    });
+
+
     document.getElementById('submitSnatchInstanceBtn').addEventListener('click', async () => {
         const shape = snatchShapeSelect.value;
         const details = {
