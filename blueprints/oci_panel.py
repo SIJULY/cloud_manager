@@ -690,12 +690,25 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在创建新的公共IP...', task_id))
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
+        
+        # --- ↓↓↓ 针对 ASSIGNIPV6 的错误处理修改 ↓↓↓ ---
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
             if not vnic_id: raise Exception("缺少 vnic_id")
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在请求IPv6地址...', task_id))
-            new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
-            result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
+            try:
+                new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
+                result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
+            except ServiceError as e:
+                # 捕获特定的API错误
+                if "IPv6 is not enabled in this subnet" in str(e.message):
+                    # 抛出一个带有用户友好信息的新异常
+                    raise Exception("您的IPv6网络模块尚未开启，请先在OCI官网后台为您的VCN和子网开启IPv6，然后再执行此操作。")
+                else:
+                    # 如果是其他API错误，则重新抛出原始异常
+                    raise e
+        # --- ↑↑↑ 修改结束 ↑↑↑ ---
+
         else:
             raise Exception(f"未知的操作: {action}")
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
