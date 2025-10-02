@@ -3,6 +3,7 @@
 # ==============================================================================
 # Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
 # 将“已有服务”模式作为更安全的默认选项。
+# V9: 增加了对安装目录的权限修复，以解决容器内文件写入问题。
 # ==============================================================================
 
 # --- 配置 ---
@@ -50,16 +51,22 @@ prepare_files() {
     git clone ${REPO_URL} ${INSTALL_DIR}
     cd ${INSTALL_DIR}
 
-    print_info "步骤 3: 检查并应用兼容性修复..."
-    touch azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db; chmod 666 azure_keys.json oci_profiles.json key.txt azure_tasks.db oci_tasks.db
+    # <<< 关键修正：为整个目录授予写入权限 >>>
+    print_info "步骤 3: 修正目录权限以确保容器可写..."
+    chmod -R 777 . # 使用 . 代表当前目录 /opt/cloud_manager
+    # 创建必要的空文件，以防万一
+    touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
+    print_success "权限和文件初始化完成。"
+
+    print_info "步骤 4: 检查并应用兼容性修复..."
     if grep -q "version: " docker-compose.yml; then sed -i "/version: /d" docker-compose.yml; fi
     if [ -f "Dockerfile" ]; then sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile; fi
-    print_success "文件准备就绪。"
+    print_success "兼容性修复完成。"
 }
 
 # 启动容器
 launch_docker() {
-    print_info "步骤 5: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
+    print_info "步骤 6: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
     if ! docker compose up -d --build; then
         print_error "Docker Compose 启动失败！请检查上面的日志输出。安装已终止。"
     fi
@@ -70,7 +77,7 @@ launch_docker() {
 # 安装逻辑 - 全新服务器
 install_clean_server() {
     prepare_files
-    print_info "步骤 4: 配置面板 (全新服务器模式)..."
+    print_info "步骤 5: 配置面板 (全新服务器模式)..."
     cp .env.example .env
     read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
     if [ -z "$domain_name" ]; then ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip); if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
@@ -93,7 +100,7 @@ install_clean_server() {
 # 安装逻辑 - 已有服务
 install_existing_server() {
     prepare_files
-    print_info "步骤 4: 配置面板 (已有服务模式)..."
+    print_info "步骤 5: 配置面板 (已有服务模式)..."
     print_info "将禁用内置Caddy并暴露8000端口。"
     START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
     if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
@@ -158,7 +165,6 @@ read -p "请输入选项数字 [1]: " choice
 choice=${choice:-1}
 
 case $choice in
-    # V8 版本修改：交换1和2的调用函数
     1)
         install_existing_server
         ;;
