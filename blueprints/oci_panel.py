@@ -749,13 +749,13 @@ def _create_instance_task(task_id, profile_config, alias, details):
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
-    
-    # 【最终修复】: 将TG设置的加载和通知放在状态确认之后，严格遵循原始逻辑
+    # 严格遵循原始模式，先定义变量
     profiles = load_profiles()
     global_settings = profiles.get('_global_settings', {})
     tg_bot_token = global_settings.get('tg_bot_token')
     tg_chat_id = global_settings.get('tg_chat_id')
+    
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
     
     try:
         clients, error = get_oci_clients(profile_config, validate=False)
@@ -763,9 +763,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
-
         subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-
         ad_name = details.get('availabilityDomain') or identity_client.list_availability_domains(tenancy_ocid).data[0].name
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
@@ -787,7 +785,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         _send_tg_notification(tg_bot_token, tg_chat_id, msg)
         return
 
-    # 恢复您原始版本中至关重要的状态确认循环
     is_ready = False
     for i in range(5):
         task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
@@ -805,15 +802,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         _send_tg_notification(tg_bot_token, tg_chat_id, f"*任务失败*\n- *账号:* `{alias}`\n- *原因:* {msg}")
         return
 
-    # 在状态确认成功后，再发送TG通知
-    start_message = f"""
-*OCI 抢占任务开始*
-- *账号:* `{alias}`
-- *任务名称:* `{details.get('display_name_prefix', 'snatch-instance')}`
-- *Shape:* `{details.get('shape')}`
-    """
-    _send_tg_notification(tg_bot_token, tg_chat_id, start_message)
-
     count = 0
     while True:
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
@@ -822,6 +810,17 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             return
 
         count += 1
+        
+        # 【最终修正】: 只在第一次循环时发送“任务开始”通知
+        if count == 1:
+            start_message = f"""
+*OCI 抢占任务开始*
+- *账号:* `{alias}`
+- *任务名称:* `{details.get('display_name_prefix', 'snatch-instance')}`
+- *Shape:* `{details.get('shape')}`
+            """
+            _send_tg_notification(tg_bot_token, tg_chat_id, start_message)
+
         delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
         
         try:
