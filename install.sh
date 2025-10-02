@@ -4,7 +4,7 @@
 # Cloud Manager 三合一面板 一键安装脚本 (最终修正版)
 # 该脚本适用于一个全新的、基于 Debian/Ubuntu 的系统。
 # 它会自动安装所有依赖、配置并启动服务。
-# 作者: 小龙女她爸 
+# 作者: 小龙女她爸 
 # ==============================================================================
 
 # --- 配置 ---
@@ -106,8 +106,13 @@ install_or_update_panel() {
         git clone "${REPO_URL}" "${INSTALL_DIR}"
         cd "${INSTALL_DIR}"
         
-        # 【核心修正】只创建程序不会自动生成的配置文件，数据库文件由程序在首次启动时自动初始化。
-        touch azure_keys.json oci_profiles.json key.txt
+        # <<< 关键修正：为整个目录授予写入权限 >>>
+        print_info "修正目录权限以确保服务可写..."
+        chmod -R 777 .
+
+        # 创建必要的空配置文件，数据库文件由程序在首次启动时自动初始化。
+        touch azure_keys.json oci_profiles.json key.txt tg_settings.json
+        print_success "权限和文件初始化完成。"
 
         print_info "设置登录密码..."
         while true; do
