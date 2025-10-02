@@ -30,13 +30,11 @@ def timeout(seconds):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
-            # 为当前请求设置一个闹钟信号
             signal.signal(signal.SIGALRM, timeout_handler)
             signal.alarm(seconds)
             try:
                 result = f(*args, **kwargs)
             finally:
-                # 请求结束（无论成功或失败），都取消闹钟
                 signal.alarm(0)
             return result
         return wrapper
@@ -63,7 +61,6 @@ def close_connection(exception):
         db.close()
 
 def init_db():
-    # 智能的数据库初始化函数，检查表是否存在
     db = get_db_connection()
     cursor = db.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
@@ -132,8 +129,6 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     profiles = load_profiles()
     profile_config = profiles.get(alias, {})
     subnet_id = profile_config.get('default_subnet_ocid')
-
-    # Step 1: Check for a pre-configured and valid subnet ID.
     if subnet_id:
         try:
             if vnet_client.get_subnet(subnet_id).data.lifecycle_state == 'AVAILABLE':
@@ -142,32 +137,26 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
         except ServiceError as e:
             if e.status != 404: raise
             logging.warning(f"Saved subnet {subnet_id} not found, will try to auto-discover or create a new one.")
-
-    # Step 2: Auto-discover an existing network if none is configured.
     logging.info(f"No valid subnet configured for {alias}. Attempting to auto-discover an existing network...")
     try:
         vcns = vnet_client.list_vcns(compartment_id=tenancy_ocid).data
         if vcns:
-            default_vcn = vcns[0] # Use the first VCN found as the default.
+            default_vcn = vcns[0]
             logging.info(f"Auto-discovered VCN: {default_vcn.display_name} ({default_vcn.id})")
             subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
             if subnets:
-                default_subnet = subnets[0] # Use the first subnet found as the default.
+                default_subnet = subnets[0]
                 logging.info(f"Auto-discovered Subnet: {default_subnet.display_name} ({default_subnet.id})")
-
-                # Save the discovered subnet ID for future use.
                 profiles[alias]['default_subnet_ocid'] = default_subnet.id
                 save_profiles(profiles)
                 logging.info(f"Discovered subnet has been saved to profile for {alias}.")
                 return default_subnet.id
             else:
-                    logging.warning(f"Discovered VCN {default_vcn.display_name} has no subnets. Proceeding to creation.")
+                logging.warning(f"Discovered VCN {default_vcn.display_name} has no subnets. Proceeding to creation.")
         else:
             logging.info("No existing VCNs found in the compartment. Proceeding to creation.")
     except Exception as e:
         logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
-
-    # Step 3: [FALLBACK] If discovery fails, create a new network from scratch.
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('首次运行，正在自动创建网络资源 (VCN, 子网等)，预计需要2-3分钟...', task_id))
     logging.info(f"Creating new network resources for {alias}...")
     vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
@@ -189,8 +178,6 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     subnet = vnet_client.create_subnet(subnet_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
     oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
-
-    # Save the NEWLY CREATED subnet ID.
     profiles[alias]['default_subnet_ocid'] = subnet.id
     save_profiles(profiles)
     logging.info(f"New subnet {subnet.id} created and saved for {alias}")
@@ -210,18 +197,12 @@ runcmd:
 """
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
 
-# --- 新增: Telegram Bot 通知函数 ---
 def _send_tg_notification(bot_token, chat_id, message):
     if not bot_token or not chat_id:
         logging.info("Telegram Bot token or chat_id not configured. Skipping notification.")
         return
-    
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        'chat_id': chat_id,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown'}
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
@@ -230,7 +211,6 @@ def _send_tg_notification(bot_token, chat_id, message):
             logging.error(f"Failed to send Telegram notification. Status: {response.status_code}, Response: {response.text}")
     except Exception as e:
         logging.error(f"An exception occurred while sending Telegram notification: {e}")
-
 
 # --- Decorators ---
 def login_required(f):
@@ -263,6 +243,26 @@ def oci_clients_required(f):
 def oci_index():
     return render_template("oci.html")
 
+# --- 全局TG设置 API ---
+@oci_bp.route('/api/global-settings/telegram', methods=['GET', 'POST'])
+@login_required
+def manage_global_tg_settings():
+    profiles = load_profiles()
+    if request.method == 'GET':
+        global_settings = profiles.get('_global_settings', {})
+        return jsonify(global_settings)
+    
+    if request.method == 'POST':
+        if '_global_settings' not in profiles:
+            profiles['_global_settings'] = {}
+        
+        tg_settings = request.json
+        profiles['_global_settings']['tg_bot_token'] = tg_settings.get('tg_bot_token', '')
+        profiles['_global_settings']['tg_chat_id'] = tg_settings.get('tg_chat_id', '')
+        
+        save_profiles(profiles)
+        return jsonify({"success": True, "message": "Global Telegram settings updated."})
+
 # --- API Routes ---
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
@@ -270,8 +270,8 @@ def manage_profiles():
     try:
         profiles = load_profiles()
         if request.method == "GET":
-            # 返回不含敏感信息的账号列表
-            return jsonify(list(profiles.keys()))
+            profile_keys = [k for k in profiles.keys() if not k.startswith('_')]
+            return jsonify(profile_keys)
         if request.method == "POST":
             data = request.json
             alias = data.get('alias')
@@ -294,10 +294,15 @@ def handle_single_profile(alias):
         profiles = load_profiles()
         if alias not in profiles: return jsonify({"error": "账号未找到"}), 404
         if request.method == "GET":
-             # 出于安全考虑，不直接返回包含私钥内容的完整配置
             profile_data = profiles[alias].copy()
-            profile_data.pop('key_content', None) # 移除私钥内容
-            return jsonify(profile_data)
+            profile_data.pop('key_content', None)
+            profile_data.pop('tg_bot_token', None)
+            profile_data.pop('tg_chat_id', None)
+            response = jsonify(profile_data)
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+            return response
         if request.method == "DELETE":
             del profiles[alias]
             save_profiles(profiles)
@@ -387,14 +392,7 @@ def get_instances():
         instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
         instance_details_list = []
         for instance in instances:
-            data = {
-                "display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state,
-                "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None,
-                "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'),
-                "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'),
-                "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A",
-                "vnic_id": None, "subnet_id": None
-            }
+            data = {"display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state, "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None, "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A", "vnic_id": None, "subnet_id": None}
             try:
                 if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
@@ -413,10 +411,8 @@ def get_instances():
                 if se.status == 404:
                     logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
                     data['public_ip'] = "资源已删除"
-                else:
-                    logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
-            except Exception as ex:
-                logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
+                else: logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
+            except Exception as ex: logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
             instance_details_list.append(data)
         return jsonify(instance_details_list)
     except (TimeoutException) as e:
@@ -429,8 +425,7 @@ def _create_task_entry(task_type, task_name):
     db = get_db()
     task_id = str(uuid.uuid4())
     alias = session.get('oci_profile_alias', 'N/A')
-    db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
-               (task_id, task_type, task_name, 'pending', '', datetime.datetime.utcnow().isoformat(), alias))
+    db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)', (task_id, task_type, task_name, 'pending', '', datetime.datetime.utcnow().isoformat(), alias))
     db.commit()
     return task_id
 
@@ -451,8 +446,7 @@ def instance_action():
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
             logging.warning(f"请求失败，原因为超时或数据库锁定: {e}")
             return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        else:
-            raise
+        else: raise
     except Exception as e:
         logging.error(f"提交实例操作失败: {e}")
         return jsonify({"error": f"提交实例操作失败: {e}"}), 500
@@ -467,20 +461,11 @@ def get_instance_details(instance_id):
         bs_client = g.oci_clients['bs']
         compartment_id = g.oci_config['tenancy']
         instance = compute_client.get_instance(instance_id).data
-        boot_vol_attachments = oci.pagination.list_call_get_all_results(
-            compute_client.list_boot_volume_attachments,
-            instance.availability_domain,
-            compartment_id,
-            instance_id=instance.id
-        ).data
+        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
         if not boot_vol_attachments:
             return jsonify({"error": "找不到此实例的引导卷"}), 404
         boot_volume = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-        return jsonify({
-            "display_name": instance.display_name, "shape": instance.shape, "ocpus": instance.shape_config.ocpus,
-            "memory_in_gbs": instance.shape_config.memory_in_gbs, "boot_volume_id": boot_volume.id,
-            "boot_volume_size_in_gbs": boot_volume.size_in_gbs, "vpus_per_gb": boot_volume.vpus_per_gb
-        })
+        return jsonify({"display_name": instance.display_name, "shape": instance.shape, "ocpus": instance.shape_config.ocpus, "memory_in_gbs": instance.shape_config.memory_in_gbs, "boot_volume_id": boot_volume.id, "boot_volume_size_in_gbs": boot_volume.size_in_gbs, "vpus_per_gb": boot_volume.vpus_per_gb})
     except (TimeoutException) as e:
         logging.warning(f"获取实例详情超时: {e}")
         return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
@@ -509,8 +494,7 @@ def update_instance():
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
             logging.warning(f"请求失败，原因为超时或数据库锁定: {e}")
             return jsonify({"error": "请求超时或数据库繁忙，请稍后重-试。"}), 503
-        else:
-            raise
+        else: raise
     except Exception as e:
         logging.error(f"提交实例更新任务失败: {e}")
         return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
@@ -550,10 +534,7 @@ def update_security_rules():
         if not security_list_id or not rules:
             return jsonify({"error": "缺少 security_list_id 或 rules"}), 400
         vnet_client = g.oci_clients['vnet']
-        update_details = UpdateSecurityListDetails(
-            ingress_security_rules=rules.get('ingress_security_rules', []),
-            egress_security_rules=rules.get('egress_security_rules', [])
-        )
+        update_details = UpdateSecurityListDetails(ingress_security_rules=rules.get('ingress_security_rules', []), egress_security_rules=rules.get('egress_security_rules', []))
         vnet_client.update_security_list(security_list_id, update_details)
         return jsonify({"success": True, "message": "安全规则已成功更新！"})
     except (TimeoutException) as e:
@@ -576,8 +557,7 @@ def create_instance():
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
             logging.warning(f"请求失败，原因为超时或数据库锁定: {e}")
             return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        else:
-            raise
+        else: raise
     except Exception as e:
         logging.error(f"提交创建实例任务失败: {e}")
         return jsonify({"error": f"提交创建实例任务失败: {e}"}), 500
@@ -596,8 +576,7 @@ def snatch_instance():
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
             logging.warning(f"请求失败，原因为超时或数据库锁定: {e}")
             return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        else:
-            raise
+        else: raise
     except Exception as e:
         logging.error(f"提交抢占任务失败: {e}")
         return jsonify({"error": f"提交抢占任务失败: {e}"}), 500
@@ -635,12 +614,7 @@ def _update_instance_details_task(task_id, profile_config, data):
             compute_client.update_instance(instance_id, details)
             result_message = "✅ CPU/内存配置更新成功！请手动启动实例。"
         elif action == 'update_boot_volume':
-            boot_vol_attachments = oci.pagination.list_call_get_all_results(
-                compute_client.list_boot_volume_attachments,
-                instance.availability_domain,
-                profile_config['tenancy'],
-                instance_id=instance_id
-            ).data
+            boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, profile_config['tenancy'], instance_id=instance_id).data
             if not boot_vol_attachments: raise Exception("找不到引导卷")
             boot_volume_id = boot_vol_attachments[0].boot_volume_id
             update_data = {}
@@ -684,20 +658,14 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'正在发送 {action_upper} 命令...', task_id))
             compute_client.instance_action(instance_id=instance_id, action=oci_action)
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'等待实例进入 {target_state} 状态...', task_id))
-            oci.wait_until(
-                compute_client, compute_client.get_instance(instance_id),
-                'lifecycle_state', target_state, max_wait_seconds=300
-            )
+            oci.wait_until(compute_client, compute_client.get_instance(instance_id), 'lifecycle_state', target_state, max_wait_seconds=300)
             result_message = f"✅ 实例已成功 {action}!"
         elif action_upper == "TERMINATE":
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在发送终止命令...', task_id))
             preserve_volume = data.get('preserve_boot_volume', True)
             compute_client.terminate_instance(instance_id, preserve_boot_volume=preserve_volume)
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('等待实例进入 TERMINATED 状态...', task_id))
-            oci.wait_until(
-                compute_client, compute_client.get_instance(instance_id),
-                'lifecycle_state', 'TERMINATED', max_wait_seconds=300, succeed_on_not_found=True
-            )
+            oci.wait_until(compute_client, compute_client.get_instance(instance_id), 'lifecycle_state', 'TERMINATED', max_wait_seconds=300, succeed_on_not_found=True)
             result_message = "✅ 实例已成功终止!"
         elif action_upper == "CHANGEIP":
             vnic_id = data.get('vnic_id')
@@ -717,8 +685,6 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在创建新的公共IP...', task_id))
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
-
-        # --- ↓↓↓ 针对 ASSIGNIPV6 的错误处理修改 ↓↓↓ ---
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
             if not vnic_id: raise Exception("缺少 vnic_id")
@@ -727,15 +693,10 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
                 new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
                 result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
             except ServiceError as e:
-                # 捕获特定的API错误
                 if "IPv6 is not enabled in this subnet" in str(e.message):
-                    # 抛出一个带有用户友好信息的新异常
                     raise Exception("您的IPv6网络模块尚未开启，请先在OCI官网后台为您的VCN和子网开启IPv6，然后再执行此操作。")
                 else:
-                    # 如果是其他API错误，则重新抛出原始异常
                     raise e
-        # --- ↑↑↑ 修改结束 ↑↑↑ ---
-
         else:
             raise Exception(f"未知的操作: {action}")
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
@@ -755,9 +716,7 @@ def _create_instance_task(task_id, profile_config, alias, details):
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
-
         subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-
         ad_name = identity_client.list_availability_domains(tenancy_ocid).data[0].name
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
@@ -770,19 +729,10 @@ def _create_instance_task(task_id, profile_config, alias, details):
         for i in range(details.get('instance_count', 1)):
             instance_name = f"{details.get('display_name_prefix', 'Instance')}-{i+1}" if details.get('instance_count', 1) > 1 else details.get('display_name_prefix', 'Instance')
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'正在为 {instance_name} 发送创建请求...', task_id))
-            launch_details = LaunchInstanceDetails(
-                compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=instance_name,
-                create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
-                metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
-                source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
-                shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
-            )
+            launch_details = LaunchInstanceDetails(compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=instance_name, create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']), shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None)
             instance = compute_client.launch_instance(launch_details).data
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'实例 {instance_name} 正在置备 (PROVISIONING)... 请耐心等待...', task_id))
-            oci.wait_until(
-                compute_client, compute_client.get_instance(instance.id),
-                'lifecycle_state', 'RUNNING', max_wait_seconds=600
-            )
+            oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
             created_instances_info.append(instance_name)
             if i < details.get('instance_count', 1) - 1: time.sleep(5)
         msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 实例名: {', '.join(created_instances_info)}\n- 登陆用户名：ubuntu 密码：{instance_password}"
@@ -799,19 +749,15 @@ def _create_instance_task(task_id, profile_config, alias, details):
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
-    # 【TG通知-开始】
-    tg_bot_token = profile_config.get('tg_bot_token')
-    tg_chat_id = profile_config.get('tg_chat_id')
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
+    
+    # 【最终修复】: 将TG设置的加载和通知放在状态确认之后，严格遵循原始逻辑
+    profiles = load_profiles()
+    global_settings = profiles.get('_global_settings', {})
+    tg_bot_token = global_settings.get('tg_bot_token')
+    tg_chat_id = global_settings.get('tg_chat_id')
+    
     try:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
-        start_message = f"""
-*OCI 抢占任务开始*
-- *账号:* `{alias}`
-- *任务名称:* `{details.get('display_name_prefix', 'snatch-instance')}`
-- *Shape:* `{details.get('shape')}`
-        """
-        _send_tg_notification(tg_bot_token, tg_chat_id, start_message)
-
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: raise Exception(error)
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
@@ -838,12 +784,10 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
     except Exception as e:
         msg = f"❌ 抢占任务准备阶段失败: {e}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
-        # 【TG通知-准备失败】
         _send_tg_notification(tg_bot_token, tg_chat_id, msg)
-        # 这里保留原始的 return
         return
 
-    # 原始的状态确认循环 (必须保留)
+    # 恢复您原始版本中至关重要的状态确认循环
     is_ready = False
     for i in range(5):
         task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
@@ -858,17 +802,23 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         msg = "❌ 任务状态确认失败，无法启动。"
         logging.error(f"Task {task_id} failed to confirm 'running' status after multiple attempts. Exiting.")
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
-        # 【TG通知-状态确认失败】
         _send_tg_notification(tg_bot_token, tg_chat_id, f"*任务失败*\n- *账号:* `{alias}`\n- *原因:* {msg}")
-        # 这里保留原始的 return
         return
+
+    # 在状态确认成功后，再发送TG通知
+    start_message = f"""
+*OCI 抢占任务开始*
+- *账号:* `{alias}`
+- *任务名称:* `{details.get('display_name_prefix', 'snatch-instance')}`
+- *Shape:* `{details.get('shape')}`
+    """
+    _send_tg_notification(tg_bot_token, tg_chat_id, start_message)
 
     count = 0
     while True:
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if not task_record_check or task_record_check['status'] != 'running':
             logging.info(f"Snatching task {task_id} has been stopped by user or completed. Exiting loop.")
-            # 这里保留原始的 return
             return
 
         count += 1
@@ -879,14 +829,10 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
                 _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试创建实例...", task_id))
             instance = compute_client.launch_instance(launch_details).data
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (f"第 {count} 次尝试成功！实例 {instance.display_name} 正在置备...", task_id))
-            oci.wait_until(
-                compute_client, compute_client.get_instance(instance.id),
-                'lifecycle_state', 'RUNNING', max_wait_seconds=600
-            )
+            oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
             msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- 登陆用户名：ubuntu 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
 
-            # 【TG通知-成功】
             try:
                 public_ip = "获取中..."
                 vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=tenancy_ocid, instance_id=instance.id).data
@@ -907,9 +853,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
 - *Shape:* `{instance.shape}`
             """
             _send_tg_notification(tg_bot_token, tg_chat_id, success_message)
-            
-            # 【重要】删除了我之前错误添加的 `return` 语句，让函数在成功后自然结束
-            break # 成功后跳出 while 循环
+            break 
 
         except ServiceError as e:
             if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
