@@ -1,4 +1,4 @@
-import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal
+import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
 import oci
@@ -154,7 +154,7 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
             if subnets:
                 default_subnet = subnets[0] # Use the first subnet found as the default.
                 logging.info(f"Auto-discovered Subnet: {default_subnet.display_name} ({default_subnet.id})")
-                
+
                 # Save the discovered subnet ID for future use.
                 profiles[alias]['default_subnet_ocid'] = default_subnet.id
                 save_profiles(profiles)
@@ -189,7 +189,7 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     subnet = vnet_client.create_subnet(subnet_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
     oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
-    
+
     # Save the NEWLY CREATED subnet ID.
     profiles[alias]['default_subnet_ocid'] = subnet.id
     save_profiles(profiles)
@@ -209,6 +209,28 @@ runcmd:
   - systemctl restart sshd || service sshd restart || service ssh restart
 """
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
+
+# --- 新增: Telegram Bot 通知函数 ---
+def _send_tg_notification(bot_token, chat_id, message):
+    if not bot_token or not chat_id:
+        logging.info("Telegram Bot token or chat_id not configured. Skipping notification.")
+        return
+    
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': message,
+        'parse_mode': 'Markdown'
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code == 200:
+            logging.info(f"Successfully sent Telegram notification to chat_id: {chat_id}")
+        else:
+            logging.error(f"Failed to send Telegram notification. Status: {response.status_code}, Response: {response.text}")
+    except Exception as e:
+        logging.error(f"An exception occurred while sending Telegram notification: {e}")
+
 
 # --- Decorators ---
 def login_required(f):
@@ -248,6 +270,7 @@ def manage_profiles():
     try:
         profiles = load_profiles()
         if request.method == "GET":
+            # 返回不含敏感信息的账号列表
             return jsonify(list(profiles.keys()))
         if request.method == "POST":
             data = request.json
@@ -270,7 +293,11 @@ def handle_single_profile(alias):
     try:
         profiles = load_profiles()
         if alias not in profiles: return jsonify({"error": "账号未找到"}), 404
-        if request.method == "GET": return jsonify(profiles[alias])
+        if request.method == "GET":
+             # 出于安全考虑，不直接返回包含私钥内容的完整配置
+            profile_data = profiles[alias].copy()
+            profile_data.pop('key_content', None) # 移除私钥内容
+            return jsonify(profile_data)
         if request.method == "DELETE":
             del profiles[alias]
             save_profiles(profiles)
@@ -318,7 +345,7 @@ def stop_task(task_id):
 
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
-@timeout(20) 
+@timeout(20)
 def oci_session_route():
     try:
         if request.method == "POST":
@@ -344,7 +371,7 @@ def oci_session_route():
     except TimeoutException as e:
         session.pop('oci_profile_alias', None)
         logging.warning(f"选择账号时API验证超时: {e}")
-        return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504 
+        return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504
     except Exception as e:
         session.pop('oci_profile_alias', None)
         return jsonify({"error": str(e)}), 500
@@ -690,7 +717,7 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在创建新的公共IP...', task_id))
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
-        
+
         # --- ↓↓↓ 针对 ASSIGNIPV6 的错误处理修改 ↓↓↓ ---
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
@@ -728,9 +755,9 @@ def _create_instance_task(task_id, profile_config, alias, details):
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
-        
+
         subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-        
+
         ad_name = identity_client.list_availability_domains(tenancy_ocid).data[0].name
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
@@ -772,8 +799,19 @@ def _create_instance_task(task_id, profile_config, alias, details):
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
+    # 【TG通知-开始】
+    tg_bot_token = profile_config.get('tg_bot_token')
+    tg_chat_id = profile_config.get('tg_chat_id')
     try:
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中...', task_id))
+        start_message = f"""
+*OCI 抢占任务开始*
+- *账号:* `{alias}`
+- *任务名称:* `{details.get('display_name_prefix', 'snatch-instance')}`
+- *Shape:* `{details.get('shape')}`
+        """
+        _send_tg_notification(tg_bot_token, tg_chat_id, start_message)
+
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: raise Exception(error)
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
@@ -798,12 +836,16 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
         )
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
+        msg = f"❌ 抢占任务准备阶段失败: {e}"
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
+        # 【TG通知-准备失败】
+        _send_tg_notification(tg_bot_token, tg_chat_id, msg)
+        # 这里保留原始的 return
         return
 
-    # --- ↓↓↓ 最终解决方案：使用重试逻辑来确认状态，而不是固定等待 ↓↓↓ ---
+    # 原始的状态确认循环 (必须保留)
     is_ready = False
-    for i in range(5):  # 最多尝试5次
+    for i in range(5):
         task_record = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if task_record and task_record['status'] == 'running':
             is_ready = True
@@ -813,17 +855,20 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         time.sleep(2)
 
     if not is_ready:
+        msg = "❌ 任务状态确认失败，无法启动。"
         logging.error(f"Task {task_id} failed to confirm 'running' status after multiple attempts. Exiting.")
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 任务状态确认失败，无法启动。", task_id))
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
+        # 【TG通知-状态确认失败】
+        _send_tg_notification(tg_bot_token, tg_chat_id, f"*任务失败*\n- *账号:* `{alias}`\n- *原因:* {msg}")
+        # 这里保留原始的 return
         return
-    # --- ↑↑↑ 最终解决方案结束 ↑↑↑ ---
 
     count = 0
     while True:
-        # 内部循环的检查保持不变，用于响应用户手动停止任务
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if not task_record_check or task_record_check['status'] != 'running':
             logging.info(f"Snatching task {task_id} has been stopped by user or completed. Exiting loop.")
+            # 这里保留原始的 return
             return
 
         count += 1
@@ -840,7 +885,32 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             )
             msg = f"🎉 抢占成功 (第 {count} 次尝试)!\n- 实例名: {instance.display_name}\n- 登陆用户名：ubuntu 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
-            return
+
+            # 【TG通知-成功】
+            try:
+                public_ip = "获取中..."
+                vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=tenancy_ocid, instance_id=instance.id).data
+                if vnic_attachments:
+                    vnic = vnet_client.get_vnic(vnic_attachments[0].vnic_id).data
+                    public_ip = vnic.public_ip or "无"
+            except Exception as e:
+                public_ip = f"获取失败: {e}"
+            success_message = f"""
+*🎉 OCI 实例抢占成功!*
+- *账号:* `{alias}`
+- *实例名:* `{instance.display_name}`
+- *IP 地址:* `{public_ip}`
+- *用户名:* `ubuntu`
+- *密码:* `{instance_password}`
+- *区域:* `{instance.region}`
+- *可用域:* `{instance.availability_domain}`
+- *Shape:* `{instance.shape}`
+            """
+            _send_tg_notification(tg_bot_token, tg_chat_id, success_message)
+            
+            # 【重要】删除了我之前错误添加的 `return` 语句，让函数在成功后自然结束
+            break # 成功后跳出 while 循环
+
         except ServiceError as e:
             if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
                 msg = f"第 {count} 次失败：资源不足或请求频繁。将在 {delay} 秒后重试...（日志每10次尝试更新一次）"
