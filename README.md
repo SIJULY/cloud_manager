@@ -54,7 +54,7 @@ TGBOT控制面板（可选）
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/SIJULY/tgbot/main/install_tgbot.sh)
 ```
-功能介绍相见：
+TGBOT控制面板功能介绍相见：
 
 ```bash
 https://github.com/SIJULY/tgbot
