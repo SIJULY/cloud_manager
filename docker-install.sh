@@ -51,9 +51,8 @@ prepare_files() {
 
     # <<< 关键修正：先创建文件，再设置权限 >>>
     print_info "步骤 3: 初始化文件并修正目录权限..."
-    # 创建所有必要的空文件，以防万一
-    # <<< [优化] 新增 config.json >>>
-    touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db config.json
+    # 创建必要的空文件，以防万一
+    touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
     # 然后再统一为所有文件和目录设置权限
     chmod -R 777 .
     print_success "权限和文件初始化完成。"
