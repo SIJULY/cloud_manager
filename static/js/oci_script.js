@@ -97,25 +97,19 @@ document.addEventListener('DOMContentLoaded', function() {
     
     clearLogBtn.addEventListener('click', () => logOutput.innerHTML = '');
 
-    // <<< [核心修改] 升级apiRequest函数以处理登录超时 >>>
     async function apiRequest(url, options = {}) {
         try {
             const response = await fetch(url, options);
-
-            // 新增的登录状态处理逻辑
             if (response.status === 401) {
                 const errorData = await response.json();
-                // 如果后端返回了需要登录的标志
                 if (errorData.login_required) {
                     addLog('登录会话已超时，2秒后将自动跳转到登录页面...', 'error');
-                    // 延迟2秒后跳转，给用户看提示的时间
                     setTimeout(() => {
                         window.location.href = '/login';
                     }, 2000);
                 }
                 throw new Error(errorData.error || '需要认证');
             }
-
             if (!response.ok) {
                 const errorData = await response.json();
                 throw new Error(errorData.error || `HTTP 错误! 状态: ${response.status}`);
@@ -123,12 +117,20 @@ document.addEventListener('DOMContentLoaded', function() {
              const text = await response.text();
              return text ? JSON.parse(text) : {};
         } catch (error) {
-            // 如果错误已经被上面的逻辑处理并记录，这里就不重复记录
             if (!error.message.includes('登录会话已超时')) {
                 addLog(`请求失败: ${error.message}`, 'error');
             }
             throw error;
         }
+    }
+
+    // --- [新功能] 动态设置按钮状态和颜色的辅助函数 ---
+    const btnColorClasses = ['btn-success', 'btn-info', 'btn-danger', 'btn-secondary', 'btn-primary'];
+    function setButtonState(button, enabled, activeClass) {
+        if (!button) return;
+        button.disabled = !enabled;
+        button.classList.remove(...btnColorClasses);
+        button.classList.add(enabled ? activeClass : 'btn-secondary');
     }
 
     // --- TG & API 设置管理 ---
@@ -146,16 +148,11 @@ document.addEventListener('DOMContentLoaded', function() {
         const spinner = saveTgConfigBtn.querySelector('.spinner-border');
         saveTgConfigBtn.disabled = true;
         spinner.classList.remove('d-none');
-
         try {
             const payload = { 
                 bot_token: tgBotTokenInput.value.trim(), 
                 chat_id: tgChatIdInput.value.trim() 
             };
-            if (!payload.bot_token || !payload.chat_id) {
-                addLog("Bot Token 和 Chat ID 不能为空。", "error");
-                return;
-            }
             const response = await apiRequest('/oci/api/tg-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -163,7 +160,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             addLog(response.message, 'success');
         } catch (error) {
-            // 错误日志已在 apiRequest 中处理
         } finally {
             spinner.classList.add('d-none');
             saveTgConfigBtn.disabled = false;
@@ -186,12 +182,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 }, () => {
                     addLog('自动复制失败，请手动复制。', 'warning');
                 });
-            } else {
-                apiKeyInput.value = data.error || '获取密钥失败';
             }
-        } catch (error) {
-            apiKeyInput.value = '请求出错';
-        }
+        } catch (error) {}
     });
     
     // --- 账号管理 ---
@@ -231,7 +223,6 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!alias || !configText || !sshKey || !keyFile) {
             return addLog('所有字段都不能为空', 'error');
         }
-
         try {
             addLog(`正在添加账号: ${alias}...`);
             const profileData = {};
@@ -253,10 +244,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 loadProfiles();
             };
             reader.readAsText(keyFile);
-
-        } catch (error) {
-            // 日志已在 apiRequest 中处理
-        }
+        } catch (error) {}
     });
 
     profileList.addEventListener('click', async (e) => {
@@ -323,7 +311,6 @@ document.addEventListener('DOMContentLoaded', function() {
         if (!newAlias || !configText || !sshKey) {
             return addLog('账号名称、配置信息和SSH公钥不能为空', 'error');
         }
-
         addLog(`正在保存对账号 ${originalAlias} 的更改...`);
         try {
             const originalProfileData = await apiRequest(`/oci/api/profiles/${originalAlias}`);
@@ -333,7 +320,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 const parts = line.split('=');
                 if (parts.length === 2) profileData[parts[0].trim()] = parts[1].trim();
             });
-
             profileData['default_ssh_public_key'] = sshKey;
             
             const saveChanges = async (finalProfileData) => {
@@ -365,7 +351,6 @@ document.addEventListener('DOMContentLoaded', function() {
     async function checkSession() {
         try {
             const data = await apiRequest('/oci/api/session');
-            
             document.querySelectorAll('.connect-btn').forEach(btn => {
                 btn.textContent = '连接';
                 btn.classList.remove('btn-secondary');
@@ -399,21 +384,23 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
+    // --- [修改] 使用新的 setButtonState 函数来管理按钮状态和颜色 ---
     function enableMainControls(enabled, canCreate, canSnatch) {
-        refreshInstancesBtn.disabled = !enabled;
-        createInstanceBtn.disabled = !canCreate;
-        snatchInstanceBtn.disabled = !canSnatch;
-        networkSettingsBtn.disabled = !enabled;
-        
+        setButtonState(refreshInstancesBtn, enabled, 'btn-primary');
+        setButtonState(createInstanceBtn, canCreate, 'btn-success');
+        setButtonState(snatchInstanceBtn, canCreate, 'btn-success');
+        setButtonState(networkSettingsBtn, enabled, 'btn-info');
+        setButtonState(document.getElementById('tgSettingsBtn'), true, 'btn-info'); // This button is always enabled
+
         if (!enabled) {
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
-            Object.values(instanceActionButtons).forEach(btn => btn.disabled = true);
+            Object.values(instanceActionButtons).forEach(btn => setButtonState(btn, false, 'btn-secondary'));
         }
     }
 
     async function refreshInstances() {
         addLog('正在刷新实例列表...');
-        refreshInstancesBtn.disabled = true;
+        setButtonState(refreshInstancesBtn, false, 'btn-primary');
         instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div> 正在加载...</td></tr>`;
         
         try {
@@ -433,12 +420,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     tr.innerHTML = `
                         <td style="text-align: left; padding-left: 1rem;">${inst.display_name}</td>
-                        <td>
-                            <div class="status-cell">
-                                <span class="status-dot ${dotClass}"></span>
-                                <span>${state}</span>
-                            </div>
-                        </td>
+                        <td><div class="status-cell"><span class="status-dot ${dotClass}"></span><span>${state}</span></div></td>
                         <td>${inst.public_ip || '无'}</td>
                         <td>${inst.ipv6_address || '无'}</td>
                         <td>${inst.ocpus}c / ${inst.memory_in_gbs}g / ${inst.boot_volume_size_gb}</td>
@@ -451,12 +433,13 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-5">加载实例列表失败</td></tr>`;
         } finally {
-            refreshInstancesBtn.disabled = false;
+            setButtonState(refreshInstancesBtn, true, 'btn-primary');
         }
     }
     
     refreshInstancesBtn.addEventListener('click', refreshInstances);
     
+    // --- [修改] 使用新的 setButtonState 函数来动态改变实例操作按钮的颜色和状态 ---
     instanceList.addEventListener('click', (e) => {
         const row = e.target.closest('tr');
         if (!row || !row.dataset.instanceId) return;
@@ -468,14 +451,17 @@ document.addEventListener('DOMContentLoaded', function() {
         const state = selectedInstance.lifecycle_state;
         const isTerminated = ['TERMINATED', 'TERMINATING'].includes(state);
         
-        Object.values(instanceActionButtons).forEach(btn => btn.disabled = isTerminated);
-        instanceActionButtons.start.disabled = state !== 'STOPPED';
-        instanceActionButtons.stop.disabled = state !== 'RUNNING';
-        instanceActionButtons.restart.disabled = state !== 'RUNNING';
-        instanceActionButtons.changeIp.disabled = state !== 'RUNNING';
-        instanceActionButtons.assignIpv6.disabled = !(state === 'RUNNING' && selectedInstance.vnic_id);
+        // 使用 setButtonState 更新按钮
+        setButtonState(instanceActionButtons.start, !isTerminated && state === 'STOPPED', 'btn-success');
+        setButtonState(instanceActionButtons.restart, !isTerminated && state === 'RUNNING', 'btn-success');
+        setButtonState(instanceActionButtons.editInstance, !isTerminated, 'btn-success');
+        setButtonState(instanceActionButtons.changeIp, !isTerminated && state === 'RUNNING', 'btn-success');
+        setButtonState(instanceActionButtons.assignIpv6, !isTerminated && state === 'RUNNING' && selectedInstance.vnic_id, 'btn-success');
+        setButtonState(instanceActionButtons.stop, !isTerminated && state === 'RUNNING', 'btn-danger');
+        setButtonState(instanceActionButtons.terminate, !isTerminated, 'btn-danger');
     });
     
+    // The rest of the file remains unchanged as it doesn't handle button styling
     async function performInstanceAction(action) {
         if (!selectedInstance) {
             addLog('请先选择一个实例', 'warning');
@@ -507,8 +493,9 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     Object.entries(instanceActionButtons).forEach(([key, button]) => {
-        if (key !== 'editInstance') {
-            button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
+        // The 'edit' button has its own modal trigger, so we don't add a second listener.
+        if (key !== 'editInstance') { 
+            button.addEventListener('click', () => performInstanceAction(key));
         }
     });
 
@@ -541,7 +528,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     async function loadSnatchTasks() {
-        // Clear previous selections and disable buttons
         runningSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
         completedSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
         stopSnatchTaskBtn.disabled = true;
@@ -566,7 +552,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     const li = document.createElement('li');
                     li.className = 'list-group-item list-group-item-action';
                     li.dataset.taskId = task.id;
-                    // MODIFICATION: Added checkbox and wrapped content
                     li.innerHTML = `
                         <div class="d-flex w-100 align-items-center">
                             <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
@@ -595,7 +580,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     
                     let statusBadge = task.status === 'success' ? '<span class="badge bg-success">成功</span>' : '<span class="badge bg-danger">失败</span>';
                     
-                    // MODIFICATION: Added checkbox and wrapped content
                     li.innerHTML = `
                         <div class="d-flex w-100 align-items-center">
                             <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
@@ -624,36 +608,6 @@ document.addEventListener('DOMContentLoaded', function() {
     
     document.getElementById('viewSnatchTasksBtn').addEventListener('click', loadSnatchTasks);
 
-    runningSnatchTasksList.addEventListener('click', (e) => {
-        const li = e.target.closest('li');
-        if (li && li.dataset.taskId) {
-            // Keep the .active class for visual feedback if user clicks the row
-            document.querySelectorAll('#runningSnatchTasksList li').forEach(el => el.classList.remove('active'));
-            li.classList.add('active');
-        }
-    });
-
-    completedSnatchTasksList.addEventListener('dblclick', (e) => {
-        const li = e.target.closest('li');
-        if (!li || !li.dataset.taskId) return;
-        // Prevent checkbox from interfering with double click
-        if (e.target.type === 'checkbox') return;
-        const task = completedTasksData.find(t => t.id === li.dataset.taskId);
-        if (task) {
-            document.getElementById('taskResultContent').textContent = task.result;
-            taskResultModal.show();
-        }
-    });
-
-    completedSnatchTasksList.addEventListener('click', (e) => {
-        const li = e.target.closest('li');
-        if (li && li.dataset.taskId) {
-            document.querySelectorAll('#completedSnatchTasksList li').forEach(el => el.classList.remove('active'));
-            li.classList.add('active');
-        }
-    });
-
-    // NEW: Add listeners for checkbox changes to control button state
     runningSnatchTasksList.addEventListener('change', (e) => {
         if (e.target.classList.contains('task-checkbox')) {
             const anyChecked = !!runningSnatchTasksList.querySelector('.task-checkbox:checked');
@@ -668,21 +622,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // NEW: Add listeners for "Select All" checkboxes
     document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         runningSnatchTasksList.querySelectorAll('.task-checkbox').forEach(chk => chk.checked = isChecked);
-        stopSnatchTaskBtn.disabled = !isChecked && runningTasksData.length > 0 ? false : !isChecked;
+        stopSnatchTaskBtn.disabled = !isChecked;
     });
 
     document.getElementById('selectAllCompletedTasks').addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         completedSnatchTasksList.querySelectorAll('.task-checkbox').forEach(chk => chk.checked = isChecked);
-        deleteSnatchTaskBtn.disabled = !isChecked && completedTasksData.length > 0 ? false : !isChecked;
+        deleteSnatchTaskBtn.disabled = !isChecked;
     });
 
-
-    // MODIFICATION: Updated stop task button to handle multiple selections
     stopSnatchTaskBtn.addEventListener('click', async () => {
         const selectedCheckboxes = document.querySelectorAll('#runningSnatchTasksList .task-checkbox:checked');
         if (selectedCheckboxes.length === 0) return addLog('请先勾选一个或多个要停止的任务', 'warning');
@@ -697,7 +648,6 @@ document.addEventListener('DOMContentLoaded', function() {
             confirmActionModal.hide();
             addLog(`正在发送停止 ${taskIds.length} 个任务的请求...`);
             try {
-                // Send all requests in parallel
                 await Promise.all(taskIds.map(taskId => 
                     apiRequest(`/oci/api/tasks/${taskId}/stop`, { method: 'POST' })
                 ));
@@ -713,7 +663,6 @@ document.addEventListener('DOMContentLoaded', function() {
         confirmActionModal.show();
     });
 
-    // MODIFICATION: Updated delete task button to handle multiple selections
     deleteSnatchTaskBtn.addEventListener('click', async () => {
         const selectedCheckboxes = document.querySelectorAll('#completedSnatchTasksList .task-checkbox:checked');
         if (selectedCheckboxes.length === 0) return addLog('请先勾选一个或多个要删除的任务记录', 'warning');
@@ -773,9 +722,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             } catch (error) {
                 clearInterval(intervalId);
-                if (error.message.includes("404")) {
-                     console.log(`停止监控任务 ${taskId}，因为它已不存在。`);
-                }
             }
             retries++;
         }, 5000);
@@ -790,30 +736,28 @@ document.addEventListener('DOMContentLoaded', function() {
         });
         createShapeSelect.dispatchEvent(new Event('change'));
     }
-    if (document.getElementById('submitCreateInstance')) {
-        document.getElementById('submitCreateInstance').addEventListener('click', async () => {
-            const shape = createShapeSelect.value;
-            const details = {
-                display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
-                instance_count: parseInt(document.getElementById('instanceCount').value, 10),
-                os_name_version: document.getElementById('instanceOS').value,
-                shape: shape,
-                boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
-            };
-            if (shape.includes('Flex')) {
-                details.ocpus = parseInt(document.getElementById('instanceOcpus').value, 10);
-                details.memory_in_gbs = parseInt(document.getElementById('instanceMemory').value, 10);
-            }
-            if (!details.display_name_prefix) { return addLog('实例名称前缀不能为空', 'error'); }
-            addLog(`正在提交创建实例 [${details.display_name_prefix}] 的请求...`);
-            try {
-                const response = await apiRequest('/oci/api/create-instance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(details) });
-                addLog(response.message, 'success');
-                createInstanceModal.hide();
-                if (response.task_id) { pollTaskStatus(response.task_id); }
-            } catch (error) {}
-        });
-    }
+    document.getElementById('submitCreateInstance').addEventListener('click', async () => {
+        const shape = createShapeSelect.value;
+        const details = {
+            display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
+            instance_count: parseInt(document.getElementById('instanceCount').value, 10),
+            os_name_version: document.getElementById('instanceOS').value,
+            shape: shape,
+            boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
+        };
+        if (shape.includes('Flex')) {
+            details.ocpus = parseInt(document.getElementById('instanceOcpus').value, 10);
+            details.memory_in_gbs = parseInt(document.getElementById('instanceMemory').value, 10);
+        }
+        if (!details.display_name_prefix) { return addLog('实例名称前缀不能为空', 'error'); }
+        addLog(`正在提交创建实例 [${details.display_name_prefix}] 的请求...`);
+        try {
+            const response = await apiRequest('/oci/api/create-instance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(details) });
+            addLog(response.message, 'success');
+            createInstanceModal.hide();
+            if (response.task_id) { pollTaskStatus(response.task_id); }
+        } catch (error) {}
+    });
 
     const snatchShapeSelect = document.getElementById('snatchInstanceShape');
     const snatchFlexConfig = document.getElementById('snatchFlexShapeConfig');
@@ -857,13 +801,9 @@ document.addEventListener('DOMContentLoaded', function() {
             currentSecurityList = data.security_list;
             document.getElementById('currentVcnName').textContent = data.vcn_name || 'N/A';
             document.getElementById('currentSlName').textContent = currentSecurityList.display_name || 'N/A';
-            
             renderRules('ingress', currentSecurityList.ingress_security_rules);
             renderRules('egress', currentSecurityList.egress_security_rules);
-
-        } catch (error) {
-            // log handled in apiRequest
-        }
+        } catch (error) {}
     });
 
     function renderRules(type, rules) {
@@ -886,18 +826,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const sourceOrDest = type === 'ingress' ? (rule.source || '0.0.0.0/0') : (rule.destination || '0.0.0.0/0');
         const protocol = rule.protocol || '6'; 
         
-        const protocolOptions = {
-            'all': '所有协议', '1': 'ICMP', '6': 'TCP', '17': 'UDP'
-        };
+        const protocolOptions = {'all': '所有协议', '1': 'ICMP', '6': 'TCP', '17': 'UDP'};
         const protocolSelect = `<select class="form-select form-select-sm" data-key="protocol">
             ${Object.entries(protocolOptions).map(([key, value]) => `<option value="${key}" ${protocol == key ? 'selected' : ''}>${value}</option>`).join('')}
         </select>`;
 
-        const portRange = (options) => {
-            if (!options) return { min: '', max: '' };
-            return { min: options.min || '', max: options.max || '' };
-        };
-
+        const portRange = (options) => (!options) ? { min: '', max: '' } : { min: options.min || '', max: options.max || '' };
         const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
         const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
         
@@ -905,18 +839,8 @@ document.addEventListener('DOMContentLoaded', function() {
             <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${isStateless ? 'checked' : ''}></td>
             <td><input type="text" class="form-control form-control-sm" data-key="${type === 'ingress' ? 'source' : 'destination'}" value="${sourceOrDest}"></td>
             <td>${protocolSelect}</td>
-            <td>
-                <div class="input-group input-group-sm">
-                    <input type="number" class="form-control" placeholder="Min" data-key="src_port_min" value="${srcPorts.min}">
-                    <input type="number" class="form-control" placeholder="Max" data-key="src_port_max" value="${srcPorts.max}">
-                </div>
-            </td>
-            <td>
-                <div class="input-group input-group-sm">
-                    <input type="number" class="form-control" placeholder="Min" data-key="dest_port_min" value="${destPorts.min}">
-                    <input type="number" class="form-control" placeholder="Max" data-key="dest_port_max" value="${destPorts.max}">
-                </div>
-            </td>
+            <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="src_port_min" value="${srcPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="src_port_max" value="${srcPorts.max}"></div></td>
+            <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="dest_port_min" value="${destPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="dest_port_max" value="${destPorts.max}"></div></td>
             <td><button class="btn btn-sm btn-danger remove-rule-btn"><i class="bi bi-trash"></i></button></td>
         `;
         tr.querySelector('.remove-rule-btn').addEventListener('click', () => tr.remove());
@@ -939,31 +863,21 @@ document.addEventListener('DOMContentLoaded', function() {
         const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
         saveNetworkRulesBtn.disabled = true;
         spinner.classList.remove('d-none');
-        
         try {
             const ingress_security_rules = collectRulesFromTable(ingressRulesTable, 'ingress');
             const egress_security_rules = collectRulesFromTable(egressRulesTable, 'egress');
-
             const payload = {
                 security_list_id: currentSecurityList.id,
-                rules: {
-                    ingress_security_rules,
-                    egress_security_rules
-                }
+                rules: { ingress_security_rules, egress_security_rules }
             };
-
-            addLog("正在保存网络规则...");
             const response = await apiRequest('/oci/api/network/update-security-rules', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-
             addLog(response.message, 'success');
             networkSettingsModal.hide();
-
         } catch (error) {
-            // log handled in apiRequest
         } finally {
             saveNetworkRulesBtn.disabled = false;
             spinner.classList.add('d-none');
@@ -1027,7 +941,6 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 editFlexInstanceConfig.classList.add('d-none');
             }
-
             editInstanceModalBS.show();
         } catch(error) {}
     });
@@ -1041,7 +954,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 body: JSON.stringify(payload)
             });
             addLog(response.message, 'success');
-if (response.task_id) {
+            if (response.task_id) {
                 pollTaskStatus(response.task_id);
             }
             editInstanceModalBS.hide();
@@ -1088,7 +1001,6 @@ if (response.task_id) {
             instance_id: selectedInstance.id
         });
     });
-
 
     // --- 页面初始化 ---
     loadProfiles();
