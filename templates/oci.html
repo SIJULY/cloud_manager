@@ -17,9 +17,9 @@
     #logOutput pre { margin-bottom: 0; white-space: pre-wrap; }
     #instanceList td { text-align: center; vertical-align: middle; }
     #instanceList td:first-child { text-align: left; }
-    .action-group { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 0.5rem; }
-    .action-group .btn { flex-grow: 1; }
+    .action-group { display: flex; flex-wrap: wrap; gap: 0.5rem; }
     #viewSnatchTasksModal .list-group-item { cursor: pointer; }
+    .action-group .btn { flex-grow: 1; }
     .profile-action-btn { width: 85px !important; }
     .status-cell { display: flex; align-items: center; justify-content: center; }
     .rule-row input { font-size: 0.9rem; }
@@ -106,8 +106,11 @@
                 <button id="viewSnatchTasksBtn" class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
                     <i class="bi bi-list-task"></i> 查看抢机任务
                 </button>
-                <button id="networkSettingsBtn" class="btn btn-warning ms-auto" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
+                <button id="networkSettingsBtn" class="btn btn-warning" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
                     <i class="bi bi-shield-gear"></i> 网络设置
+                </button>
+                <button id="tgSettingsBtn" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#tgSettingsModal">
+                    <i class="bi bi-telegram"></i> TG & API 设置
                 </button>
             </div>
         </div>
@@ -186,14 +189,14 @@
                     <div class="row">
                         <div class="col-md-5">
                              <div class="input-group">
-                                <span class="input-group-text">OCPU</span>
-                                <input type="number" class="form-control" id="editOcpus" min="1" max="4">
+                                 <span class="input-group-text">OCPU</span>
+                                 <input type="number" class="form-control" id="editOcpus" min="1" max="4">
                             </div>
                         </div>
                         <div class="col-md-5">
                             <div class="input-group">
-                                <span class="input-group-text">内存(GB)</span>
-                                <input type="number" class="form-control" id="editMemory" min="1" max="24">
+                                 <span class="input-group-text">内存(GB)</span>
+                                 <input type="number" class="form-control" id="editMemory" min="1" max="24">
                             </div>
                         </div>
                         <div class="col-md-2 d-grid">
@@ -234,7 +237,6 @@
         </div>
     </div>
 </div>
-
 
 <div class="modal fade" id="networkSettingsModal" tabindex="-1" aria-labelledby="networkSettingsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-xl">
@@ -456,32 +458,6 @@
                             <input type="number" class="form-control" id="snatchMaxDelay" value="90">
                         </div>
                     </div>
-                    <hr>
-                    <h6>
-                        <i class="bi bi-telegram"></i> Telegram 推送设置 (全局配置)
-                        <small class="text-muted" data-bs-toggle="tooltip" data-bs-placement="top" title="此设置将保存为全局配置，适用于所有账号的抢占任务。">
-                            <i class="bi bi-info-circle"></i>
-                        </small>
-                    </h6>
-                    <div class="row">
-                        <div class="col-md-6 mb-3">
-                            <label for="tgBotToken" class="form-label">Bot Token</label>
-                            <input type="password" class="form-control" id="tgBotToken" placeholder="输入您的 Bot Token">
-                        </div>
-                        <div class="col-md-6 mb-3">
-                            <label for="tgChatId" class="form-label">Chat ID</label>
-                            <input type="text" class="form-control" id="tgChatId" placeholder="输入您的 User/Chat ID">
-                        </div>
-                    </div>
-                    <div class="d-flex justify-content-between align-items-center">
-                        <small class="text-muted" style="font-size: 0.75rem;">
-                            如何获取? 1. 与 <a href="https://t.me/BotFather" target="_blank">@BotFather</a> 对话创建机器人获取 Token. 2. 与 <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> 对话获取 Chat ID.
-                        </small>
-                        <button type="button" class="btn btn-info btn-sm" id="saveTgConfigBtn">
-                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                            保存设置
-                        </button>
-                    </div>
                 </form>
             </div>
             <div class="modal-footer">
@@ -512,6 +488,7 @@
                     <div class="tab-pane fade show active" id="running-tab-pane" role="tabpanel">
                         <div class="p-3">
                             <p class="text-muted small">
+                                <input class="form-check-input me-1" type="checkbox" id="selectAllRunningTasks" title="全选/全不选">
                                 下方列出了正在运行的抢占任务。选中任务后可点击下方按钮停止。
                                 <span class="fw-bold text-danger">（日志每10次尝试更新一次）</span>
                             </p>
@@ -520,7 +497,10 @@
                     </div>
                     <div class="tab-pane fade" id="completed-tab-pane" role="tabpanel">
                          <div class="p-3">
-                            <p class="text-muted small">下方列出了最近已完成（成功或失败）的抢占任务。双击成功的任务可查看密码，选中记录后可删除。</p>
+                            <p class="text-muted small">
+                                <input class="form-check-input me-1" type="checkbox" id="selectAllCompletedTasks" title="全选/全不选">
+                                下方列出了最近已完成（成功或失败）的抢占任务。双击成功的任务可查看密码，选中记录后可删除。
+                            </p>
                             <ul class="list-group" id="completedSnatchTasksList"></ul>
                         </div>
                     </div>
@@ -534,7 +514,6 @@
         </div>
     </div>
 </div>
-
 
 <div class="modal fade" id="taskResultModal" tabindex="-1" aria-labelledby="taskResultModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -574,6 +553,62 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-danger" id="confirmActionModalConfirmBtn">确认</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="tgSettingsModal" tabindex="-1" aria-labelledby="tgSettingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="tgSettingsModalLabel">Telegram & API 设置</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h6><i class="bi bi-telegram"></i> Telegram 推送设置 (全局)</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label for="tgBotToken" class="form-label">Bot Token</label>
+                                <input type="password" class="form-control" id="tgBotToken" placeholder="输入您的 Bot Token">
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label for="tgChatId" class="form-label">Chat ID</label>
+                                <input type="text" class="form-control" id="tgChatId" placeholder="输入您的 User/Chat ID">
+                            </div>
+                        </div>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <small class="text-muted" style="font-size: 0.75rem;">
+                                如何获取? 1. 与 <a href="https://t.me/BotFather" target="_blank">@BotFather</a> 对话创建机器人获取 Token. 2. 与 <a href="https://t.me/userinfobot" target="_blank">@userinfobot</a> 对话获取 Chat ID.
+                            </small>
+                            <button type="button" class="btn btn-info btn-sm" id="saveTgConfigBtn">
+                                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                                保存推送设置
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <h6><i class="bi bi-key-fill"></i> TG Bot 助手 API 密钥</h6>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted small">这是您的 TG Bot 控制面板所需的 API 密钥。请妥善保管，不要泄露。程序首次启动时会自动生成。</p>
+                        <div class="input-group">
+                            <input type="text" id="apiKeyInput" class="form-control" placeholder="点击右侧按钮获取密钥" readonly>
+                            <div class="input-group-append">
+                                <button class="btn btn-outline-primary" type="button" id="getApiKeyBtn">获取/复制密钥</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
             </div>
         </div>
     </div>
