@@ -64,7 +64,7 @@
                         <input class="form-control" type="file" id="newProfileKeyFile" accept=".pem">
                     </div>
                     <div class="d-grid">
-                        <button class="btn btn-primary" id="addNewProfileBtn">确认添加</button>
+                        <button class="btn btn-info" id="addNewProfileBtn">确认添加</button>
                     </div>
                     <small class="text-muted d-block mt-2">提示：必须填写SSH公钥才能使用创建和抢占功能。</small>
                 </div>
@@ -100,13 +100,13 @@
                 <button id="createInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#createInstanceModal">
                     <i class="bi bi-plus-circle"></i> 创建实例
                 </button>
-                <button id="snatchInstanceBtn" class="btn btn-primary" disabled data-bs-toggle="modal" data-bs-target="#snatchInstanceModal">
+                <button id="snatchInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#snatchInstanceModal">
                     <i class="bi bi-robot"></i> 自动抢占实例
                 </button>
-                <button id="viewSnatchTasksBtn" class="btn btn-secondary" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
+                <button id="viewSnatchTasksBtn" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
                     <i class="bi bi-list-task"></i> 查看抢机任务
                 </button>
-                <button id="networkSettingsBtn" class="btn btn-warning" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
+                <button id="networkSettingsBtn" class="btn btn-info" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
                     <i class="bi bi-shield-gear"></i> 网络设置
                 </button>
                 <button id="tgSettingsBtn" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#tgSettingsModal">
@@ -144,11 +144,11 @@
         <div class="card-footer text-center">
             <div id="instanceActionGroup" class="action-group">
                 <button type="button" id="startBtn" class="btn btn-success" disabled>启动</button>
-                <button type="button" id="stopBtn" class="btn btn-warning" disabled>停止</button>
-                <button type="button" id="restartBtn" class="btn btn-info" disabled>重启</button>
-                <button type="button" id="editInstanceBtn" class="btn btn-primary" disabled data-bs-toggle="modal" data-bs-target="#editInstanceModal">修改实例</button>
-                <button type="button" id="changeIpBtn" class="btn btn-secondary" disabled>更换公网IP (IPV4)</button>
-                <button type="button" id="assignIpv6Btn" class="btn btn-info" disabled>分配IPV6</button>
+                <button type="button" id="restartBtn" class="btn btn-success" disabled>重启</button>
+                <button type="button" id="editInstanceBtn" class="btn btn-success" disabled>修改实例</button>
+                <button type="button" id="changeIpBtn" class="btn btn-success" disabled>更换公网IP (IPV4)</button>
+                <button type="button" id="assignIpv6Btn" class="btn btn-success" disabled>分配IPV6</button>
+                <button type="button" id="stopBtn" class="btn btn-danger" disabled>停止</button>
                 <button type="button" id="terminateBtn" class="btn btn-danger" disabled>终止</button>
             </div>
         </div>
@@ -508,7 +508,7 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-danger" id="stopSnatchTaskBtn" disabled>停止选中任务</button>
-                <button type="button" class="btn btn-warning" id="deleteSnatchTaskBtn" disabled>删除选中记录</button>
+                <button type="button" class="btn btn-danger" id="deleteSnatchTaskBtn" disabled>删除选中记录</button>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
             </div>
         </div>
