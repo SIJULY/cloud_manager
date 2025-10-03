@@ -106,9 +106,9 @@ install_or_update_panel() {
         git clone "${REPO_URL}" "${INSTALL_DIR}"
         cd "${INSTALL_DIR}"
         
-        # 创建必要的空配置文件，数据库文件由程序在首次启动时自动初始化。
+        # <<< [优化] 创建所有必要的空配置文件 >>>
         print_info "初始化配置文件..."
-        touch azure_keys.json oci_profiles.json key.txt tg_settings.json
+        touch azure_keys.json oci_profiles.json key.txt tg_settings.json config.json
         print_success "文件初始化完成。"
 
         print_info "设置登录密码..."
