@@ -54,9 +54,10 @@ TGBOT控制面板（可选）
 ```bash
 bash <(curl -sL https://raw.githubusercontent.com/SIJULY/tgbot/main/install_tgbot.sh)
 ```
+功能介绍相见：
 
 ```bash
-bash <(curl -sL https://raw.githubusercontent.com/SIJULY/cloud_manager/main/install.sh)
+https://github.com/SIJULY/tgbot
 ```
 
 脚本将会引导您完成以下操作：
