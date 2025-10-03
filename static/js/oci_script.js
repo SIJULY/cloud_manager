@@ -391,6 +391,7 @@ document.addEventListener('DOMContentLoaded', function() {
         setButtonState(snatchInstanceBtn, canCreate, 'btn-success');
         setButtonState(networkSettingsBtn, enabled, 'btn-info');
         setButtonState(document.getElementById('tgSettingsBtn'), true, 'btn-info'); // This button is always enabled
+        setButtonState(document.getElementById('viewSnatchTasksBtn'), true, 'btn-success'); // 查看任务按钮永远可用并设为绿色
 
         if (!enabled) {
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
