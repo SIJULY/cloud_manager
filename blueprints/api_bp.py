@@ -1,4 +1,4 @@
-# 文件名: blueprints/api_bp.py (最终功能增强版)
+# 文件名: blueprints/api_bp.py (已修正)
 
 import os
 import json
@@ -183,7 +183,12 @@ def get_task_status(task_id):
     try:
         task = query_db_api('SELECT id, type, name, status, result, created_at, account_alias FROM tasks WHERE id = ?', [task_id], one=True)
         if task:
-            return jsonify(dict(task))
+            # 在这里也做一次转换，确保单个任务查询也能正确显示
+            task_dict = dict(task)
+            if 'account_alias' in task_dict:
+                task_dict['alias'] = task_dict.pop('account_alias')
+            return jsonify(task_dict)
+
         res = celery.AsyncResult(task_id)
         if res:
              return jsonify({'status': res.state, 'result': str(res.info)})
@@ -201,6 +206,15 @@ def get_tasks_by_type_and_status(task_type, task_status):
             tasks = query_db_api("SELECT id, name, status, result, account_alias, created_at FROM tasks WHERE type = ? AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 20", [task_type])
         else:
             return jsonify({"error": "Invalid task status"}), 400
-        return jsonify([dict(task) for task in tasks])
+        
+        # --- 核心修正 ---
+        # 在返回给机器人前，将'account_alias'重命名为'alias'
+        tasks_list = [dict(task) for task in tasks]
+        for task_dict in tasks_list:
+            if 'account_alias' in task_dict:
+                task_dict['alias'] = task_dict.pop('account_alias')
+        
+        return jsonify(tasks_list)
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
