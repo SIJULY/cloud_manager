@@ -55,6 +55,25 @@ document.addEventListener('DOMContentLoaded', function() {
     const confirmDeleteVolumeCheck = document.getElementById('confirmDeleteVolumeCheck');
     const confirmActionModalConfirmBtn = document.getElementById('confirmActionModalConfirmBtn');
 
+
+    // --- 新增代码：处理“正在运行”任务的全选/全不选 ---
+    document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        // 找到“正在运行”列表中的所有任务复选框并更新它们的状态
+        runningSnatchTasksList.querySelectorAll('.task-checkbox').forEach(chk => chk.checked = isChecked);
+        // 根据是否选中来启用或禁用“停止任务”按钮
+        stopSnatchTaskBtn.disabled = !isChecked;
+    });
+
+    // --- 新增代码：处理“已完成”任务的全选/全不选 ---
+    document.getElementById('selectAllCompletedTasks').addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        // 找到“已完成”列表中的所有任务复选框并更新它们的状态
+        completedSnatchTasksList.querySelectorAll('.task-checkbox').forEach(chk => chk.checked = isChecked);
+        // 根据是否选中来启用或禁用“删除记录”按钮
+        deleteSnatchTaskBtn.disabled = !isChecked;
+    });
+
     // TG Bot 设置相关 DOM 元素
     const tgBotTokenInput = document.getElementById('tgBotToken');
     const tgChatIdInput = document.getElementById('tgChatId');
@@ -509,6 +528,9 @@ document.addEventListener('DOMContentLoaded', function() {
         completedSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
         stopSnatchTaskBtn.disabled = true;
         deleteSnatchTaskBtn.disabled = true;
+        // 重置全选框的状态
+        document.getElementById('selectAllRunningTasks').checked = false;
+        document.getElementById('selectAllCompletedTasks').checked = false;
         
         try {
             const [running, completed] = await Promise.all([
@@ -527,13 +549,20 @@ document.addEventListener('DOMContentLoaded', function() {
                     const li = document.createElement('li');
                     li.className = 'list-group-item list-group-item-action';
                     li.dataset.taskId = task.id;
+                    
+                    // --- 关键修正：为“正在运行”的任务添加复选框和正确的布局 ---
                     li.innerHTML = `
-                        <strong>
-                            <span class="badge bg-primary me-2">${task.account_alias || '未知账号'}</span>
-                            ${task.name}
-                        </strong>
-                        <br>
-                        <small class="text-muted">${task.result}</small>
+                        <div class="d-flex w-100 align-items-center">
+                            <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
+                            <div class="ms-3 flex-grow-1">
+                                <strong>
+                                    <span class="badge bg-primary me-2">${task.account_alias || '未知账号'}</span>
+                                    ${task.name}
+                                </strong>
+                                <br>
+                                <small class="text-muted">${task.result}</small>
+                            </div>
+                        </div>
                     `;
                     runningSnatchTasksList.appendChild(li);
                 });
@@ -545,21 +574,27 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 completed.forEach(task => {
                     const li = document.createElement('li');
-                    li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+                    li.className = 'list-group-item list-group-item-action';
                     li.dataset.taskId = task.id;
                     
                     let statusBadge = task.status === 'success' ? '<span class="badge bg-success">成功</span>' : '<span class="badge bg-danger">失败</span>';
                     
+                    // 统一“已完成”任务的布局，确保它也有复选框
                     li.innerHTML = `
-                        <div>
-                            <strong>
-                                <span class="badge bg-secondary me-2">${task.account_alias || '未知账号'}</span>
-                                ${task.name}
-                            </strong>
-                            <br>
-                            <small class="text-muted">完成于: ${new Date(task.created_at).toLocaleString()}</small>
+                        <div class="d-flex w-100 align-items-center">
+                            <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
+                            <div class="ms-3 flex-grow-1 d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>
+                                        <span class="badge bg-secondary me-2">${task.account_alias || '未知账号'}</span>
+                                        ${task.name}
+                                    </strong>
+                                    <br>
+                                    <small class="text-muted">完成于: ${new Date(task.created_at).toLocaleString()}</small>
+                                </div>
+                                ${statusBadge}
+                            </div>
                         </div>
-                        ${statusBadge}
                     `;
                     completedSnatchTasksList.appendChild(li);
                 });
