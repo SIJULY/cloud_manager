@@ -608,52 +608,70 @@ document.addEventListener('DOMContentLoaded', function() {
     
     document.getElementById('viewSnatchTasksBtn').addEventListener('click', loadSnatchTasks);
 
-    runningSnatchTasksList.addEventListener('click', (e) => {
-        const li = e.target.closest('li');
-        if (li && li.dataset.taskId) {
-            document.querySelectorAll('#runningSnatchTasksList li').forEach(el => el.classList.remove('active'));
-            li.classList.add('active');
-            stopSnatchTaskBtn.disabled = false;
+    // --- 新增代码块：处理对“已完成任务”列表项的双击 ---
+    completedSnatchTasksList.addEventListener('dblclick', function(e) {
+        // 找到用户实际点击的列表项 <li>
+        const listItem = e.target.closest('li.list-group-item');
+        if (!listItem || !listItem.dataset.taskId) {
+            return; // 如果没点中有效目标，则不执行任何操作
         }
-    });
 
-    completedSnatchTasksList.addEventListener('dblclick', (e) => {
-        const li = e.target.closest('li');
-        if (!li || !li.dataset.taskId) return;
-        const task = completedTasksData.find(t => t.id === li.dataset.taskId);
-        if (task) {
-            document.getElementById('taskResultContent').textContent = task.result;
-            taskResultModal.show();
-        }
-    });
+        const taskId = listItem.dataset.taskId;
+        addLog(`正在获取任务 ${taskId} 的最终结果...`);
 
-    completedSnatchTasksList.addEventListener('click', (e) => {
-        const li = e.target.closest('li');
-        if (li && li.dataset.taskId) {
-            document.querySelectorAll('#completedSnatchTasksList li').forEach(el => el.classList.remove('active'));
-            li.classList.add('active');
-            deleteSnatchTaskBtn.disabled = false;
-        }
+        // 调用后端 API 获取任务的详细信息
+        apiRequest(`/api/task_status/${taskId}`)
+            .then(data => {
+                if (data && data.result) {
+                    // 获取弹窗的标题和内容元素
+                    const taskResultModalLabel = document.getElementById('taskResultModalLabel');
+                    const taskResultModalBody = document.getElementById('taskResultModalBody');
+                    
+                    if (taskResultModalLabel && taskResultModalBody) {
+                        // 设置弹窗的标题
+                        taskResultModalLabel.textContent = `任务结果: ${taskId}`;
+                        // 设置弹窗的内容，使用 <pre> 标签可以很好地保留换行和空格格式
+                        taskResultModalBody.innerHTML = `<pre style="white-space: pre-wrap; word-break: break-all;">${data.result}</pre>`;
+                        // 调用 Bootstrap 的方法来显示弹窗
+                        taskResultModal.show();
+                    }
+                } else {
+                    addLog(`未能获取到任务 ${taskId} 的详细结果。`, 'warning');
+                }
+            })
+            .catch(error => {
+                // 如果API请求失败，也在日志中给出提示
+                addLog(`查询任务 ${taskId} 的状态失败。`, 'error');
+            });
     });
 
     stopSnatchTaskBtn.addEventListener('click', async () => {
-        const selectedLi = document.querySelector('#runningSnatchTasksList li.active');
-        if (!selectedLi) return addLog('请先选择一个要停止的任务', 'warning');
+        // 新逻辑：查找所有被勾选的“正在运行”任务的复选框
+        const selectedCheckboxes = document.querySelectorAll('#runningSnatchTasksList .task-checkbox:checked');
+        if (selectedCheckboxes.length === 0) {
+            return addLog('请先勾选一个或多个要停止的任务', 'warning');
+        }
         
-        const taskId = selectedLi.dataset.taskId;
+        // 从复选框中提取所有的 task ID
+        const taskIds = Array.from(selectedCheckboxes).map(cb => cb.dataset.taskId);
         
         confirmActionModalLabel.textContent = '确认停止任务';
-        confirmActionModalBody.textContent = `确定要停止任务 "${taskId}" 吗？`;
+        confirmActionModalBody.textContent = `确定要停止选中的 ${taskIds.length} 个任务吗？`;
         confirmActionModalTerminateOptions.classList.add('d-none');
         
         const confirmStop = async () => {
             confirmActionModal.hide();
-            addLog(`正在发送停止任务 ${taskId} 的请求...`);
+            addLog(`正在发送停止 ${taskIds.length} 个任务的请求...`);
             try {
-                await apiRequest(`/oci/api/tasks/${taskId}/stop`, { method: 'POST' });
-                addLog(`已成功发送停止请求。`, 'success');
-                setTimeout(loadSnatchTasks, 2000);
-            } catch(e) {}
+                // 使用 Promise.all 并发发送所有停止请求
+                await Promise.all(taskIds.map(taskId => 
+                    apiRequest(`/oci/api/tasks/${taskId}/stop`, { method: 'POST' })
+                ));
+                addLog(`已成功发送所有停止请求。`, 'success');
+                setTimeout(loadSnatchTasks, 2000); // 稍后刷新任务列表
+            } catch(e) {
+                 addLog(`停止任务时出错: ${e.message}`, 'error');
+            }
             confirmActionModalConfirmBtn.removeEventListener('click', confirmStop);
         };
         confirmActionModalConfirmBtn.addEventListener('click', confirmStop, { once: true });
@@ -662,23 +680,32 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     deleteSnatchTaskBtn.addEventListener('click', async () => {
-        const selectedLi = document.querySelector('#completedSnatchTasksList li.active');
-        if (!selectedLi) return addLog('请先选择一个要删除的任务记录', 'warning');
+        // 新逻辑：查找所有被勾选的“已完成”任务的复选框
+        const selectedCheckboxes = document.querySelectorAll('#completedSnatchTasksList .task-checkbox:checked');
+        if (selectedCheckboxes.length === 0) {
+            return addLog('请先勾选一个或多个要删除的任务记录', 'warning');
+        }
 
-        const taskId = selectedLi.dataset.taskId;
+        // 从复选框中提取所有的 task ID
+        const taskIds = Array.from(selectedCheckboxes).map(cb => cb.dataset.taskId);
 
         confirmActionModalLabel.textContent = '确认删除记录';
-        confirmActionModalBody.textContent = `确定要删除这条任务记录吗？此操作不可逆。`;
+        confirmActionModalBody.textContent = `确定要删除这 ${taskIds.length} 条任务记录吗？此操作不可逆。`;
         confirmActionModalTerminateOptions.classList.add('d-none');
         
         const confirmDelete = async () => {
             confirmActionModal.hide();
-            addLog(`正在删除任务记录 ${taskId}...`);
+            addLog(`正在删除 ${taskIds.length} 条任务记录...`);
             try {
-                await apiRequest(`/oci/api/tasks/${taskId}`, { method: 'DELETE' });
-                addLog('任务记录已删除。', 'success');
-                loadSnatchTasks();
-            } catch(e) {}
+                // 使用 Promise.all 并发发送所有删除请求
+                await Promise.all(taskIds.map(taskId =>
+                    apiRequest(`/oci/api/tasks/${taskId}`, { method: 'DELETE' })
+                ));
+                addLog('选中的任务记录已删除。', 'success');
+                loadSnatchTasks(); // 立即刷新任务列表
+            } catch(e) {
+                addLog(`删除任务记录时出错: ${e.message}`, 'error');
+            }
             confirmActionModalConfirmBtn.removeEventListener('click', confirmDelete);
         };
         confirmActionModalConfirmBtn.addEventListener('click', confirmDelete, { once: true });
