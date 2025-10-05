@@ -24,16 +24,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const runningSnatchTasksList = document.getElementById('runningSnatchTasksList');
     const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
     const actionAreaProfile = document.getElementById('actionAreaProfile');
-    
-    // 网络设置模态框元素
     const networkSettingsModal = new bootstrap.Modal(document.getElementById('networkSettingsModal'));
     const ingressRulesTable = document.getElementById('ingressRulesTable');
     const egressRulesTable = document.getElementById('egressRulesTable');
     const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
     const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
     const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
-
-    // 修改实例模态框元素
     const editInstanceModal = new bootstrap.Modal(document.getElementById('editInstanceModal'));
     const editDisplayName = document.getElementById('editDisplayName');
     const saveDisplayNameBtn = document.getElementById('saveDisplayNameBtn');
@@ -46,21 +42,16 @@ document.addEventListener('DOMContentLoaded', function() {
     const editVpus = document.getElementById('editVpus');
     const saveVpusBtn = document.getElementById('saveVpusBtn');
     const applyNetBoostBtn = document.getElementById('applyNetBoostBtn');
-
-    // 通用确认模态框的元素
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const confirmActionModalLabel = document.getElementById('confirmActionModalLabel');
     const confirmActionModalBody = document.getElementById('confirmActionModalBody');
     const confirmActionModalTerminateOptions = document.getElementById('confirmActionModalTerminateOptions');
     const confirmDeleteVolumeCheck = document.getElementById('confirmDeleteVolumeCheck');
     const confirmActionModalConfirmBtn = document.getElementById('confirmActionModalConfirmBtn');
-
-    // TG Bot 设置相关 DOM 元素
     const tgBotTokenInput = document.getElementById('tgBotToken');
     const tgChatIdInput = document.getElementById('tgChatId');
     const saveTgConfigBtn = document.getElementById('saveTgConfigBtn');
 
-    // 实例操作按钮
     const instanceActionButtons = {
         start: document.getElementById('startBtn'),
         stop: document.getElementById('stopBtn'),
@@ -77,7 +68,6 @@ document.addEventListener('DOMContentLoaded', function() {
     let currentSecurityList = null;
     let loggedTaskStartTimes = {};
 
-    // --- 全选/全不选 逻辑 ---
     document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => {
         const isChecked = e.target.checked;
         runningSnatchTasksList.querySelectorAll('.task-checkbox').forEach(chk => chk.checked = isChecked);
@@ -90,7 +80,6 @@ document.addEventListener('DOMContentLoaded', function() {
         deleteSnatchTaskBtn.disabled = !isChecked;
     });
 
-    // --- BUG修复：新增单个复选框的事件监听 ---
     runningSnatchTasksList.addEventListener('change', function(e) {
         if (e.target.classList.contains('task-checkbox')) {
             const allCheckboxes = runningSnatchTasksList.querySelectorAll('.task-checkbox');
@@ -109,7 +98,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // --- 辅助函数 ---
     function addLog(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
         const typeMap = { 'error': 'text-danger', 'success': 'text-success', 'warning': 'text-warning' };
@@ -212,6 +200,10 @@ document.addEventListener('DOMContentLoaded', function() {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
         try {
             const profileNames = await apiRequest('/oci/api/profiles');
+            
+            // --- 核心修改：对账户列表进行自然排序 ---
+            profileNames.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN', { numeric: true }));
+            
             profileList.innerHTML = '';
             if (profileNames.length === 0) {
                 profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
