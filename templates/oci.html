@@ -188,15 +188,15 @@
                     <label class="form-label">CPU与内存 (仅限ARM机型)</label>
                     <div class="row">
                         <div class="col-md-5">
-                             <div class="input-group">
-                                 <span class="input-group-text">OCPU</span>
-                                 <input type="number" class="form-control" id="editOcpus" min="1" max="4">
-                            </div>
+                               <div class="input-group">
+                                    <span class="input-group-text">OCPU</span>
+                                    <input type="number" class="form-control" id="editOcpus" min="1" max="4">
+                                </div>
                         </div>
                         <div class="col-md-5">
                             <div class="input-group">
-                                 <span class="input-group-text">内存(GB)</span>
-                                 <input type="number" class="form-control" id="editMemory" min="1" max="24">
+                                    <span class="input-group-text">内存(GB)</span>
+                                    <input type="number" class="form-control" id="editMemory" min="1" max="24">
                             </div>
                         </div>
                         <div class="col-md-2 d-grid">
@@ -221,14 +221,6 @@
                             <button class="btn btn-outline-primary" id="saveVpusBtn">保存性能</button>
                         </div>
                     </div>
-                </div>
-                 <hr>
-                 <div>
-                    <label class="form-label">网络优化</label>
-                    <div class="d-grid">
-                        <button class="btn btn-danger" id="applyNetBoostBtn">一键开启 500Mbps 网络</button>
-                    </div>
-                    <small class="form-text text-muted">此操作将通过SSH连接到实例并执行提速脚本，需要实例处于运行状态。</small>
                 </div>
             </div>
             <div class="modal-footer">
