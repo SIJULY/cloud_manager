@@ -6,8 +6,9 @@ import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule,
-                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails)
+                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
+                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
+                             AddVcnIpv6CidrDetails, UpdateSubnetDetails)
 from oci.exceptions import ServiceError
 from app import celery
 
@@ -103,15 +104,12 @@ def load_profiles():
 def save_profiles(profiles):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(profiles, f, indent=4, ensure_ascii=False)
 
-# --- Telegram Bot 配置辅助函数 ---
 def load_tg_config():
-    if not os.path.exists(TG_CONFIG_FILE):
-        return {}
+    if not os.path.exists(TG_CONFIG_FILE): return {}
     try:
         with open(TG_CONFIG_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {}
+    except (IOError, json.JSONDecodeError): return {}
 
 def save_tg_config(config):
     try:
@@ -128,13 +126,8 @@ def send_tg_notification(message):
     if not bot_token or not chat_id:
         logging.info("Telegram bot_token或chat_id未配置，跳过发送。")
         return
-
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        'chat_id': chat_id,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown'}
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
@@ -161,7 +154,7 @@ def get_oci_clients(profile_config, validate=True):
             config_for_sdk['key_file'] = key_file_path
         if validate:
             oci.config.validate_config(config_for_sdk)
-        return { "identity": oci.identity.IdentityClient(config_for_sdk), "compute": oci.core.ComputeClient(config_for_sdk), "vnet": oci.core.VirtualNetworkClient(config_for_sdk), "bs": oci.core.BlockstorageClient(config_for_sdk) }, None
+        return {"identity": oci.identity.IdentityClient(config_for_sdk), "compute": oci.core.ComputeClient(config_for_sdk), "vnet": oci.core.VirtualNetworkClient(config_for_sdk), "bs": oci.core.BlockstorageClient(config_for_sdk)}, None
     except Exception as e:
         return None, f"创建OCI客户端失败: {e}"
     finally:
@@ -174,61 +167,44 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     if subnet_id:
         try:
             if vnet_client.get_subnet(subnet_id).data.lifecycle_state == 'AVAILABLE':
-                logging.info(f"Using existing subnet {subnet_id} from profile for {alias}")
                 return subnet_id
         except ServiceError as e:
             if e.status != 404: raise
-            logging.warning(f"Saved subnet {subnet_id} not found, will try to auto-discover or create a new one.")
-
-    logging.info(f"No valid subnet configured for {alias}. Attempting to auto-discover an existing network...")
+            logging.warning(f"Saved subnet {subnet_id} not found, will auto-discover or create a new one.")
     try:
         vcns = vnet_client.list_vcns(compartment_id=tenancy_ocid).data
         if vcns:
             default_vcn = vcns[0]
-            logging.info(f"Auto-discovered VCN: {default_vcn.display_name} ({default_vcn.id})")
             subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
             if subnets:
                 default_subnet = subnets[0]
-                logging.info(f"Auto-discovered Subnet: {default_subnet.display_name} ({default_subnet.id})")
                 profiles[alias]['default_subnet_ocid'] = default_subnet.id
                 save_profiles(profiles)
-                logging.info(f"Discovered subnet has been saved to profile for {alias}.")
                 return default_subnet.id
-            else:
-                logging.warning(f"Discovered VCN {default_vcn.display_name} has no subnets. Proceeding to creation.")
-        else:
-            logging.info("No existing VCNs found in the compartment. Proceeding to creation.")
     except Exception as e:
         logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
-
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('首次运行，正在自动创建网络资源 (VCN, 子网等)，预计需要2-3分钟...', task_id))
-    logging.info(f"Creating new network resources for {alias}...")
     vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
     vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid)
     vcn = vnet_client.create_vcn(vcn_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/3) VCN 已创建，正在等待其生效...', task_id))
     oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE')
-
     ig_name = f"ig-autocreated-{alias}-{random.randint(100, 999)}"
     ig_details = CreateInternetGatewayDetails(display_name=ig_name, compartment_id=tenancy_ocid, is_enabled=True, vcn_id=vcn.id)
     ig = vnet_client.create_internet_gateway(ig_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/3) 互联网网关已创建并添加路由...', task_id))
     oci.wait_until(vnet_client, vnet_client.get_internet_gateway(ig.id), 'lifecycle_state', 'AVAILABLE')
-
     route_table_id = vcn.default_route_table_id
     rt_rules = vnet_client.get_route_table(route_table_id).data.route_rules
     rt_rules.append(RouteRule(destination="0.0.0.0/0", network_entity_id=ig.id))
     vnet_client.update_route_table(route_table_id, UpdateRouteTableDetails(route_rules=rt_rules))
-
     subnet_name = f"subnet-autocreated-{alias}-{random.randint(100, 999)}"
     subnet_details = CreateSubnetDetails(compartment_id=tenancy_ocid, vcn_id=vcn.id, cidr_block="10.0.1.0/24", display_name=subnet_name)
     subnet = vnet_client.create_subnet(subnet_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
     oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
-
     profiles[alias]['default_subnet_ocid'] = subnet.id
     save_profiles(profiles)
-    logging.info(f"New subnet {subnet.id} created and saved for {alias}")
     return subnet.id
 
 def get_user_data(password):
@@ -244,6 +220,71 @@ runcmd:
   - systemctl restart sshd || service sshd restart || service ssh restart
 """
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
+
+def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
+    """
+    自动检查并配置VCN和子网的IPv6设置，并更新路由表和安全规则。
+    """
+    # 1. 获取基础资源
+    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/5) 正在获取网络资源...', task_id))
+    vnic = vnet_client.get_vnic(vnic_id).data
+    subnet = vnet_client.get_subnet(vnic.subnet_id).data
+    vcn = vnet_client.get_vcn(subnet.vcn_id).data
+    
+    # 2. 检查并为VCN开启IPv6
+    if not vcn.ipv6_cidr_blocks:
+        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/5) 正在为VCN开启IPv6...', task_id))
+        details = AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
+        
+        # <<< --- 最终、正确的修正 --- >>>
+        # 正确的方法名是 add_ipv6_vcn_cidr
+        vnet_client.add_ipv6_vcn_cidr(vcn_id=vcn.id, add_vcn_ipv6_cidr_details=details)
+        # <<< --- 修正结束 --- >>>
+        
+        oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
+        vcn = vnet_client.get_vcn(vcn.id).data # 重新获取VCN信息
+        logging.info(f"VCN {vcn.id} 已成功开启IPv6，地址段: {vcn.ipv6_cidr_blocks}")
+
+    # 3. 检查并为子网分配IPv6 CIDR
+    if not subnet.ipv6_cidr_block:
+        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/5) 正在为子网分配IPv6地址段...', task_id))
+        vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
+        # 基于VCN的/56地址块生成子网的/64地址块
+        subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
+        details = UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
+        vnet_client.update_subnet(subnet.id, details)
+        oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
+        logging.info(f"Subnet {subnet.id} 已成功分配IPv6地址段: {subnet_ipv6_cidr}")
+
+    # 4. 更新路由表以允许IPv6流量
+    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(4/5) 正在更新路由表以支持IPv6...', task_id))
+    route_table = vnet_client.get_route_table(vcn.default_route_table_id).data
+    
+    # 查找互联网网关
+    igws = vnet_client.list_internet_gateways(compartment_id=vcn.compartment_id, vcn_id=vcn.id).data
+    if not igws:
+        raise Exception("未找到互联网网关，无法为IPv6添加路由规则。")
+    igw_id = igws[0].id
+
+    # 检查IPv6路由规则是否已存在
+    ipv6_rule_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
+    if not ipv6_rule_exists:
+        new_rules = list(route_table.route_rules)
+        new_rules.append(RouteRule(destination='::/0', network_entity_id=igw_id))
+        vnet_client.update_route_table(route_table.id, UpdateRouteTableDetails(route_rules=new_rules))
+        logging.info(f"已为路由表 {route_table.id} 添加IPv6默认路由。")
+
+    # 5. 更新安全列表以允许出站IPv6流量
+    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(5/5) 正在更新安全规则以支持IPv6...', task_id))
+    security_list = vnet_client.get_security_list(vcn.default_security_list_id).data
+    
+    # 检查出站IPv6规则是否已存在
+    egress_ipv6_rule_exists = any(rule.destination == '::/0' for rule in security_list.egress_security_rules)
+    if not egress_ipv6_rule_exists:
+        new_egress_rules = list(security_list.egress_security_rules)
+        new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all')) # 允许所有出站IPv6流量
+        vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
+        logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
 
 # --- Decorators ---
 def login_required(f):
@@ -659,15 +700,18 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
                 if e.status != 404: raise
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
+        
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
             if not vnic_id: raise Exception("缺少 vnic_id")
-            try:
-                new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
-                result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
-            except ServiceError as e:
-                if "IPv6 is not enabled in this subnet" in str(e.message): raise Exception("您的IPv6网络模块尚未开启，请先在OCI官网后台为您的VCN和子网开启IPv6。")
-                else: raise e
+            
+            _enable_ipv6_networking(task_id, vnet_client, vnic_id)
+            
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('网络配置完成，正在为实例分配IPv6地址...', task_id))
+
+            new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
+            result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
+
         else: raise Exception(f"未知的操作: {action}")
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
     except Exception as e:
@@ -688,19 +732,26 @@ def _create_instance_task(task_id, profile_config, alias, details):
         shape = details['shape']
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
-        instance_password = generate_oci_password()
-        user_data_encoded = get_user_data(instance_password)
+        
         created_instances_info = []
+        instance_passwords = {}
+
         for i in range(details.get('instance_count', 1)):
+            instance_password = generate_oci_password()
+            user_data_encoded = get_user_data(instance_password)
             instance_name = f"{details.get('display_name_prefix', 'Instance')}-{i+1}" if details.get('instance_count', 1) > 1 else details.get('display_name_prefix', 'Instance')
             launch_details = LaunchInstanceDetails(compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=instance_name, create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']), shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None)
             instance = compute_client.launch_instance(launch_details).data
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'实例 {instance_name} 正在置备...', task_id))
             oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
             created_instances_info.append(instance_name)
+            instance_passwords[instance_name] = instance_password
             if i < details.get('instance_count', 1) - 1: time.sleep(5)
-        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 实例名: {', '.join(created_instances_info)}\n- 登陆用户名：ubuntu 密码：{instance_password}"
+            
+        passwords_str = "\n".join([f"- {name}: {pwd}" for name, pwd in instance_passwords.items()])
+        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 登陆用户名：ubuntu\n- 实例密码如下:\n{passwords_str}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
+
     except ServiceError as e:
         msg = f"❌ 实例创建失败! \n- 原因: 资源不足或请求过于频繁 ({e.code})，请更换区域或稍后再试。" if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code else f"❌ 实例创建失败! \n- OCI API 错误: {e.message}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
@@ -772,12 +823,9 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             except Exception as ip_e:
                 public_ip = "获取失败"
             
-            # 这是保存到数据库的结果文本
             db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
             
-            # <<< --- 这里是唯一的修改点 --- >>>
-            # 重新构建 tg_msg 变量，使其符合您截图中的格式
             task_name = instance.display_name
             result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
             tg_msg = (f"🔔 *任务完成通知*\n\n"
@@ -785,7 +833,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
                       f"*结果*:\n{result_for_tg}")
             
             send_tg_notification(tg_msg)
-            # <<< --- 修改结束 --- >>>
             
             return
         except ServiceError as e:
