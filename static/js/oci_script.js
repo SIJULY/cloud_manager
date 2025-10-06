@@ -51,6 +51,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const tgBotTokenInput = document.getElementById('tgBotToken');
     const tgChatIdInput = document.getElementById('tgChatId');
     const saveTgConfigBtn = document.getElementById('saveTgConfigBtn');
+    const getApiKeyBtn = document.getElementById('getApiKeyBtn');
+    const apiKeyInput = document.getElementById('apiKeyInput');
 
     const instanceActionButtons = {
         start: document.getElementById('startBtn'),
@@ -543,13 +545,13 @@ document.addEventListener('DOMContentLoaded', function() {
                             </div>`;
                     } else {
                         taskDetailsHTML = `
-                        <div class="d-flex w-100 align-items-center">
-                            <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
-                            <div class="ms-3 flex-grow-1">
-                                <strong><span class="badge bg-primary me-2">${task.account_alias || '未知账号'}</span>${task.name}</strong>
-                                <br><small class="text-muted">${task.result}</small>
-                            </div>
-                        </div>`;
+                            <div class="d-flex w-100 align-items-center">
+                                <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
+                                <div class="ms-3 flex-grow-1">
+                                    <strong><span class="badge bg-primary me-2">${task.account_alias || '未知账号'}</span>${task.name}</strong>
+                                    <br><small class="text-muted">${task.result}</small>
+                                </div>
+                            </div>`;
                     }
                     li.innerHTML = taskDetailsHTML;
                     runningSnatchTasksList.appendChild(li);
@@ -929,6 +931,29 @@ document.addEventListener('DOMContentLoaded', function() {
     saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
     saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
     applyNetBoostBtn.addEventListener('click', () => handleInstanceUpdateRequest('网络提速', { action: 'apply_net_boost', instance_id: selectedInstance.id }));
+
+    getApiKeyBtn.addEventListener('click', async () => {
+        addLog('正在获取API密钥...');
+        try {
+            const data = await apiRequest('/api/get-app-api-key');
+            if (data.api_key) {
+                apiKeyInput.value = data.api_key;
+                
+                // 尝试将密钥复制到剪贴板
+                navigator.clipboard.writeText(data.api_key).then(() => {
+                    addLog('API密钥已成功复制到剪贴板！', 'success');
+                    getApiKeyBtn.textContent = '已复制!';
+                    setTimeout(() => {
+                         getApiKeyBtn.textContent = '获取/复制密钥';
+                    }, 2000);
+                }).catch(err => {
+                    addLog('自动复制失败，请手动复制。', 'warning');
+                });
+            }
+        } catch (error) {
+             // apiRequest 函数已经处理了错误日志，这里无需额外操作
+        }
+    });
 
     loadProfiles();
     loadTgConfig();
