@@ -818,7 +818,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
-
+        
 def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     profiles = load_profiles()
     profile_config = profiles.get(alias, {})
@@ -858,9 +858,8 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     logging.info(f"Creating new network resources for {alias}...")
     vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
     
-    # --- 【最终关键修正】在创建 VCN 时直接启用 IPv6 ---
+    # --- 【关键修正 1】在创建 VCN 时直接启用 IPv6 ---
     vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid, is_ipv6_enabled=True)
-    # --- 修正结束 ---
 
     vcn = vnet_client.create_vcn(vcn_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/3) VCN 已创建，正在等待其生效...', task_id))
