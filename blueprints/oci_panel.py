@@ -724,7 +724,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         }
     }
     _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(status_data), task_id))
-
+    
     try:
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: raise Exception(error)
@@ -753,8 +753,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
 
-    # start_message = (f"*{alias}* 账户的抢占任务已开始！...")
-    # send_tg_notification(start_message) # 已被Bot端取代，此处禁用
     last_update_time = time.time()
     while True:
         status_data['attempt_count'] += 1
@@ -773,10 +771,22 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
                     public_ip = vnic.public_ip or "无"
             except Exception as ip_e:
                 public_ip = "获取失败"
+            
+            # 这是保存到数据库的结果文本
             db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
-            tg_msg = (f"🎉 *抢占成功!* 🎉\n\n账户: *{alias}*\n尝试次数: {status_data['attempt_count']}\n\n*--- 实例详情 ---*\n实例名称: {instance.display_name}\n公网 IP: {public_ip}\n用户名: ubuntu\n密  码: {instance_password}\n\n请尽快登录并检查实例状态。")
+            
+            # <<< --- 这里是唯一的修改点 --- >>>
+            # 重新构建 tg_msg 变量，使其符合您截图中的格式
+            task_name = instance.display_name
+            result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
+            tg_msg = (f"🔔 *任务完成通知*\n\n"
+                      f"*任务名称*: `{task_name}`\n\n"
+                      f"*结果*:\n{result_for_tg}")
+            
             send_tg_notification(tg_msg)
+            # <<< --- 修改结束 --- >>>
+            
             return
         except ServiceError as e:
             force_update = True
@@ -787,7 +797,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         except Exception as e:
             force_update = True
             status_data['last_message'] = f"未知错误 ({str(e)[:50]}...)"
-
+        
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if not task_record_check or task_record_check['status'] not in ['running', 'pending']:
             logging.info(f"Snatching task {task_id} has been stopped. Exiting loop.")
