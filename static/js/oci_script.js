@@ -41,7 +41,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const saveBootVolumeSizeBtn = document.getElementById('saveBootVolumeSizeBtn');
     const editVpus = document.getElementById('editVpus');
     const saveVpusBtn = document.getElementById('saveVpusBtn');
-    const applyNetBoostBtn = document.getElementById('applyNetBoostBtn');
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const confirmActionModalLabel = document.getElementById('confirmActionModalLabel');
     const confirmActionModalBody = document.getElementById('confirmActionModalBody');
@@ -930,7 +929,6 @@ document.addEventListener('DOMContentLoaded', function() {
     saveFlexConfigBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改CPU/内存', { action: 'update_shape', instance_id: selectedInstance.id, ocpus: parseInt(editOcpus.value, 10), memory_in_gbs: parseInt(editMemory.value, 10) }));
     saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
     saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
-    applyNetBoostBtn.addEventListener('click', () => handleInstanceUpdateRequest('网络提速', { action: 'apply_net_boost', instance_id: selectedInstance.id }));
 
     getApiKeyBtn.addEventListener('click', async () => {
         addLog('正在获取API密钥...');
