@@ -147,7 +147,7 @@
                 <button type="button" id="restartBtn" class="btn btn-success" disabled>重启</button>
                 <button type="button" id="editInstanceBtn" class="btn btn-success" disabled>修改实例</button>
                 <button type="button" id="changeIpBtn" class="btn btn-success" disabled>更换公网IP (IPV4)</button>
-                <button type="button" id="assignIpv6Btn" class="btn btn-success" disabled>分配IPV6</button>
+                <button type="button" id="assignIpv6Btn" class="btn btn-success" disabled>一键附加IPV6</button>
                 <button type="button" id="stopBtn" class="btn btn-danger" disabled>停止</button>
                 <button type="button" id="terminateBtn" class="btn btn-danger" disabled>终止</button>
             </div>
@@ -515,14 +515,15 @@
 </div>
 
 <div class="modal fade" id="taskResultModal" tabindex="-1" aria-labelledby="taskResultModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="taskResultModalLabel">任务结果详情</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <pre id="taskResultContent" style="white-space: pre-wrap; word-break: break-all;"></pre>
+                <div id="taskResultModalBody" style="white-space: pre-wrap; word-break: break-all; font-family: monospace; background-color: #f8f9fa; padding: 1rem; border-radius: 0.25rem;">
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
