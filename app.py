@@ -1,7 +1,7 @@
 import os
 import json
 import secrets # <<< 新增导入
-from flask import Flask, render_template, request, session, redirect, url_for
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify # 确保 jsonify 已导入
 from celery import Celery, bootsteps
 from kombu import Consumer, Exchange, Queue
 import logging
@@ -9,7 +9,7 @@ import logging
 # --- App Configuration ---
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
-PASSWORD = os.getenv("PANEL_PASSWORD", "050148Sq$")
+PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345")
 DEBUG_MODE = os.getenv("FLASK_DEBUG", "false").lower() in ['true', '1', 't']
 
 # <<< 新增：配置文件和密钥初始化 >>>
@@ -91,6 +91,27 @@ def index():
     if 'user_logged_in' not in session:
         return redirect(url_for('login'))
     return redirect(url_for('aws.aws_index')) # 默认跳转保持不变
+
+# --- 新增的API密钥获取接口 ---
+@app.route('/api/get-app-api-key')
+def get_app_api_key():
+    """为前端提供API密钥的接口"""
+    if 'user_logged_in' not in session:
+        return jsonify({"error": "用户未登录"}), 401
+    
+    api_key = None
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                api_key = config.get('api_secret_key')
+        except (IOError, json.JSONDecodeError):
+            pass # 如果文件有问题，则返回下面的错误
+    
+    if api_key:
+        return jsonify({"api_key": api_key})
+    else:
+        return jsonify({"error": "未能在服务器上找到或配置API密钥。"}), 500
 
 # --- Database Initialization ---
 with app.app_context():
