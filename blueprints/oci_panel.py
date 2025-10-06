@@ -11,6 +11,7 @@ from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateIntern
 from oci.exceptions import ServiceError
 from app import celery
 
+
 # --- Blueprint Setup ---
 oci_bp = Blueprint('oci', __name__, template_folder='../templates', static_folder='../static')
 
@@ -408,17 +409,18 @@ def get_instances():
             try:
                 if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
-                    if vnic_attachments:
-                        vnic_id = vnic_attachments[0].vnic_id
-                        data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
-                        vnic = vnet_client.get_vnic(vnic_id).data
-                        data.update({'public_ip': vnic.public_ip or "无"})
-                        ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
-                        if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
-                    boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-                    if boot_vol_attachments:
-                        boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-                        data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
+                _active_attachment = next((v for v in vnic_attachments if v.lifecycle_state == 'ATTACHED'), None)
+                if _active_attachment:
+                    vnic_id = _active_attachment.vnic_id
+                    data.update({'vnic_id': vnic_id, 'subnet_id': _active_attachment.subnet_id})
+                    vnic = vnet_client.get_vnic(vnic_id).data
+                    data.update({'public_ip': vnic.public_ip or "无"})
+                    ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
+                    if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
+                boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
+                if boot_vol_attachments:
+                    boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
+                    data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
             except ServiceError as se:
                 if se.status == 404: logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
                 else: logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
@@ -635,6 +637,8 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         compute_client, vnet_client = clients['compute'], clients['vnet']
         action_map = {"START": ("START", "RUNNING"), "STOP": ("STOP", "STOPPED"), "RESTART": ("SOFTRESET", "RUNNING")}
         action_upper = action.upper()
+        result_message = "" # --- MODIFICATION: Initialize result_message ---
+        
         if action_upper in action_map:
             oci_action, target_state = action_map[action_upper]
             compute_client.instance_action(instance_id=instance_id, action=oci_action)
@@ -662,17 +666,28 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
                 if e.status != 404: raise
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
+        
+        # --- MODIFICATION START ---
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
-            if not vnic_id: raise Exception("缺少 vnic_id")
-            try:
-                new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
-                result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
-            except ServiceError as e:
-                if "IPv6 is not enabled in this subnet" in str(e.message): raise Exception("您的IPv6网络模块尚未开启，请先在OCI官网后台为您的VCN和子网开启IPv6。")
-                else: raise e
+            if not vnic_id: 
+                raise Exception("缺少 vnic_id")
+            
+            # 直接调用新的智能任务，而不是简单的create_ipv6
+            _assign_ipv6_smart_task.delay(task_id, profile_config, vnic_id)
+            
+            # 直接返回，让Celery任务处理后续状态
+            return
+        # --- MODIFICATION END ---
+            
         else: raise Exception(f"未知的操作: {action}")
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+        
+        # --- MODIFICATION START ---
+        # 如果操作不是ASSIGNIPV6，才更新状态，因为ASSIGNIPV6任务会自己处理
+        if action_upper != "ASSIGNIPV6":
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+        # --- MODIFICATION END ---
+
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
@@ -779,7 +794,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
                 public_ip = "获取失败"
             db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
-            tg_msg = (f"🎉 *抢占成功!* 🎉\n\n账户: *{alias}*\n尝试次数: `{status_data['attempt_count']}`\n\n*--- 实例详情 ---*\n实例名称: `{instance.display_name}`\n公网 IP: `{public_ip}`\n用户名: `ubuntu`\n密   码: `{instance_password}`\n\n请尽快登录并检查实例状态。")
+            tg_msg = (f"🎉 *抢占成功!* 🎉\n\n账户: *{alias}*\n尝试次数: `{status_data['attempt_count']}`\n\n*--- 实例详情 ---*\n实例名称: `{instance.display_name}`\n公网 IP: `{public_ip}`\n用户名: `ubuntu`\n密  码: `{instance_password}`\n\n请尽快登录并检查实例状态。")
             send_tg_notification(tg_msg)
             return
         except ServiceError as e:
@@ -803,3 +818,128 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
+
+# --- 终极修正版函数 ---
+@celery.task
+def _assign_ipv6_smart_task(task_id, profile_config, vnic_id):
+    """
+    智能分配IPv6的Celery任务。
+    自动检查并配置VCN、子网、路由表和安全组。
+    """
+    def update_task_result(message):
+        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (message, task_id))
+
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在准备智能IPv6分配...', task_id))
+    
+    try:
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            raise Exception(error)
+        
+        vnet_client = clients['vnet']
+        compartment_id = profile_config['tenancy']
+
+        # --- 1. 获取必要的OCID ---
+        update_task_result('(1/6) 正在获取网络详情...')
+        vnic = vnet_client.get_vnic(vnic_id).data
+        subnet = vnet_client.get_subnet(vnic.subnet_id).data
+        vcn = vnet_client.get_vcn(subnet.vcn_id).data
+        logging.info(f"Task {task_id}: Operating on VCN={vcn.id}, Subnet={subnet.id}, VNIC={vnic.id}")
+
+        # --- 2. 检查并为VCN开启IPv6 ---
+        if not vcn.ipv6_cidr_blocks:
+            update_task_result('(2/6) VCN未开启IPv6，正在自动启用...')
+            
+            # --- 【关键修正】模仿Java代码，使用 add_ipv6_vcn_cidr 方法 ---
+            try:
+                add_details = oci.core.models.AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
+                vnet_client.add_ipv6_vcn_cidr(vcn_id=vcn.id, add_vcn_ipv6_cidr_details=add_details)
+            except AttributeError:
+                # 如果上述方法失败（说明库版本实在太老），则回退到 update_vcn 方案
+                update_vcn_details = oci.core.models.UpdateVcnDetails(is_ipv6_enabled=True)
+                vnet_client.update_vcn(vcn.id, update_vcn_details)
+            # --- 修正结束 ---
+
+            oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
+            
+            update_task_result('(2/6) VCN已启用IPv6，正在等待OCI分配地址段...')
+            vcn = vnet_client.get_vcn(vcn.id).data
+            for _ in range(20): # 最多等待100秒
+                if vcn.ipv6_cidr_blocks:
+                    break
+                time.sleep(5)
+                vcn = vnet_client.get_vcn(vcn.id).data
+            
+            if not vcn.ipv6_cidr_blocks:
+                raise Exception("等待超时，VCN未能获取到IPv6地址段。")
+
+            update_task_result('(2/6) VCN已成功获取IPv6地址段！')
+        else:
+            update_task_result('(2/6) VCN已开启IPv6，跳过。')
+
+        # --- 3. 检查并为子网开启IPv6 ---
+        if not subnet.ipv6_cidr_block:
+            update_task_result('(3/6) 子网未开启IPv6，正在自动分配地址段...')
+            vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
+            subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
+            
+            update_details = oci.core.models.UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
+            vnet_client.update_subnet(subnet.id, update_details)
+            oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
+            update_task_result('(3/6) 子网已成功分配IPv6地址段！')
+        else:
+            update_task_result('(3/6) 子网已开启IPv6，跳过。')
+
+        # --- 4. 更新路由表以允许IPv6流量 ---
+        update_task_result('(4/6) 正在检查并更新路由表...')
+        route_table_id = subnet.route_table_id
+        route_table = vnet_client.get_route_table(route_table_id).data
+        
+        ipv6_route_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
+        if not ipv6_route_exists:
+            igs = vnet_client.list_internet_gateways(compartment_id, vcn_id=vcn.id).data
+            if not igs:
+                raise Exception("未找到互联网网关，无法添加IPv6路由。")
+            
+            new_rules = list(route_table.route_rules)
+            new_rules.append(oci.core.models.RouteRule(destination='::/0', network_entity_id=igs[0].id, destination_type='CIDR_BLOCK'))
+            update_details = oci.core.models.UpdateRouteTableDetails(route_rules=new_rules)
+            vnet_client.update_route_table(route_table_id, update_details)
+            update_task_result('(4/6) 路由表已成功更新！')
+        else:
+            update_task_result('(4/6) IPv6路由规则已存在，跳过。')
+
+        # --- 5. 更新安全列表以放行IPv6流量 ---
+        update_task_result('(5/6) 正在检查并更新安全列表（防火墙）...')
+        if not subnet.security_list_ids:
+            raise Exception("子网未关联任何安全列表，无法更新防火墙规则。")
+        security_list_id = subnet.security_list_ids[0]
+        security_list = vnet_client.get_security_list(security_list_id).data
+
+        ipv6_ingress_rule_exists = any(hasattr(rule, 'source') and rule.source == '::/0' and rule.protocol == 'all' for rule in security_list.ingress_security_rules)
+        if not ipv6_ingress_rule_exists:
+            new_ingress_rules = list(security_list.ingress_security_rules)
+            new_ingress_rules.append(oci.core.models.IngressSecurityRule(
+                protocol='all', 
+                source='::/0',
+                source_type='CIDR_BLOCK'
+            ))
+            
+            update_details = oci.core.models.UpdateSecurityListDetails(ingress_security_rules=new_ingress_rules)
+            vnet_client.update_security_list(security_list_id, update_details)
+            update_task_result('(5/6) 安全列表已成功更新！')
+        else:
+            update_task_result('(5/6) IPv6安全规则已存在，跳过。')
+
+        # --- 6. 为VNIC分配IPv6地址 ---
+        update_task_result('(6/6) 正在为实例分配IPv6地址...')
+        create_ipv6_details = oci.core.models.CreateIpv6Details(vnic_id=vnic_id)
+        new_ipv6 = vnet_client.create_ipv6(create_ipv6_details=create_ipv6_details).data
+        
+        result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+
+    except Exception as e:
+        logging.error(f"智能IPv6分配任务 {task_id} 失败: {e}", exc_info=True)
+        error_message = f"❌ 操作失败: {getattr(e, 'message', str(e))}"
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
