@@ -819,127 +819,68 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             last_update_time = current_time
         time.sleep(delay)
 
-# --- 终极修正版函数 ---
-@celery.task
-def _assign_ipv6_smart_task(task_id, profile_config, vnic_id):
-    """
-    智能分配IPv6的Celery任务。
-    自动检查并配置VCN、子网、路由表和安全组。
-    """
-    def update_task_result(message):
-        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (message, task_id))
+def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
+    profiles = load_profiles()
+    profile_config = profiles.get(alias, {})
+    subnet_id = profile_config.get('default_subnet_ocid')
 
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在准备智能IPv6分配...', task_id))
-    
+    if subnet_id:
+        try:
+            if vnet_client.get_subnet(subnet_id).data.lifecycle_state == 'AVAILABLE':
+                logging.info(f"Using existing subnet {subnet_id} from profile for {alias}")
+                return subnet_id
+        except ServiceError as e:
+            if e.status != 404: raise
+            logging.warning(f"Saved subnet {subnet_id} not found, will try to auto-discover or create a new one.")
+
+    logging.info(f"No valid subnet configured for {alias}. Attempting to auto-discover an existing network...")
     try:
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error:
-            raise Exception(error)
-        
-        vnet_client = clients['vnet']
-        compartment_id = profile_config['tenancy']
-
-        # --- 1. 获取必要的OCID ---
-        update_task_result('(1/6) 正在获取网络详情...')
-        vnic = vnet_client.get_vnic(vnic_id).data
-        subnet = vnet_client.get_subnet(vnic.subnet_id).data
-        vcn = vnet_client.get_vcn(subnet.vcn_id).data
-        logging.info(f"Task {task_id}: Operating on VCN={vcn.id}, Subnet={subnet.id}, VNIC={vnic.id}")
-
-        # --- 2. 检查并为VCN开启IPv6 ---
-        if not vcn.ipv6_cidr_blocks:
-            update_task_result('(2/6) VCN未开启IPv6，正在自动启用...')
-            
-            # --- 【关键修正】模仿Java代码，使用 add_ipv6_vcn_cidr 方法 ---
-            try:
-                add_details = oci.core.models.AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
-                vnet_client.add_ipv6_vcn_cidr(vcn_id=vcn.id, add_vcn_ipv6_cidr_details=add_details)
-            except AttributeError:
-                # 如果上述方法失败（说明库版本实在太老），则回退到 update_vcn 方案
-                update_vcn_details = oci.core.models.UpdateVcnDetails(is_ipv6_enabled=True)
-                vnet_client.update_vcn(vcn.id, update_vcn_details)
-            # --- 修正结束 ---
-
-            oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
-            
-            update_task_result('(2/6) VCN已启用IPv6，正在等待OCI分配地址段...')
-            vcn = vnet_client.get_vcn(vcn.id).data
-            for _ in range(20): # 最多等待100秒
-                if vcn.ipv6_cidr_blocks:
-                    break
-                time.sleep(5)
-                vcn = vnet_client.get_vcn(vcn.id).data
-            
-            if not vcn.ipv6_cidr_blocks:
-                raise Exception("等待超时，VCN未能获取到IPv6地址段。")
-
-            update_task_result('(2/6) VCN已成功获取IPv6地址段！')
+        vcns = vnet_client.list_vcns(compartment_id=tenancy_ocid).data
+        if vcns:
+            default_vcn = vcns[0]
+            logging.info(f"Auto-discovered VCN: {default_vcn.display_name} ({default_vcn.id})")
+            subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
+            if subnets:
+                default_subnet = subnets[0]
+                logging.info(f"Auto-discovered Subnet: {default_subnet.display_name} ({default_subnet.id})")
+                profiles[alias]['default_subnet_ocid'] = default_subnet.id
+                save_profiles(profiles)
+                logging.info(f"Discovered subnet has been saved to profile for {alias}.")
+                return default_subnet.id
+            else:
+                logging.warning(f"Discovered VCN {default_vcn.display_name} has no subnets. Proceeding to creation.")
         else:
-            update_task_result('(2/6) VCN已开启IPv6，跳过。')
-
-        # --- 3. 检查并为子网开启IPv6 ---
-        if not subnet.ipv6_cidr_block:
-            update_task_result('(3/6) 子网未开启IPv6，正在自动分配地址段...')
-            vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
-            subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
-            
-            update_details = oci.core.models.UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
-            vnet_client.update_subnet(subnet.id, update_details)
-            oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
-            update_task_result('(3/6) 子网已成功分配IPv6地址段！')
-        else:
-            update_task_result('(3/6) 子网已开启IPv6，跳过。')
-
-        # --- 4. 更新路由表以允许IPv6流量 ---
-        update_task_result('(4/6) 正在检查并更新路由表...')
-        route_table_id = subnet.route_table_id
-        route_table = vnet_client.get_route_table(route_table_id).data
-        
-        ipv6_route_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
-        if not ipv6_route_exists:
-            igs = vnet_client.list_internet_gateways(compartment_id, vcn_id=vcn.id).data
-            if not igs:
-                raise Exception("未找到互联网网关，无法添加IPv6路由。")
-            
-            new_rules = list(route_table.route_rules)
-            new_rules.append(oci.core.models.RouteRule(destination='::/0', network_entity_id=igs[0].id, destination_type='CIDR_BLOCK'))
-            update_details = oci.core.models.UpdateRouteTableDetails(route_rules=new_rules)
-            vnet_client.update_route_table(route_table_id, update_details)
-            update_task_result('(4/6) 路由表已成功更新！')
-        else:
-            update_task_result('(4/6) IPv6路由规则已存在，跳过。')
-
-        # --- 5. 更新安全列表以放行IPv6流量 ---
-        update_task_result('(5/6) 正在检查并更新安全列表（防火墙）...')
-        if not subnet.security_list_ids:
-            raise Exception("子网未关联任何安全列表，无法更新防火墙规则。")
-        security_list_id = subnet.security_list_ids[0]
-        security_list = vnet_client.get_security_list(security_list_id).data
-
-        ipv6_ingress_rule_exists = any(hasattr(rule, 'source') and rule.source == '::/0' and rule.protocol == 'all' for rule in security_list.ingress_security_rules)
-        if not ipv6_ingress_rule_exists:
-            new_ingress_rules = list(security_list.ingress_security_rules)
-            new_ingress_rules.append(oci.core.models.IngressSecurityRule(
-                protocol='all', 
-                source='::/0',
-                source_type='CIDR_BLOCK'
-            ))
-            
-            update_details = oci.core.models.UpdateSecurityListDetails(ingress_security_rules=new_ingress_rules)
-            vnet_client.update_security_list(security_list_id, update_details)
-            update_task_result('(5/6) 安全列表已成功更新！')
-        else:
-            update_task_result('(5/6) IPv6安全规则已存在，跳过。')
-
-        # --- 6. 为VNIC分配IPv6地址 ---
-        update_task_result('(6/6) 正在为实例分配IPv6地址...')
-        create_ipv6_details = oci.core.models.CreateIpv6Details(vnic_id=vnic_id)
-        new_ipv6 = vnet_client.create_ipv6(create_ipv6_details=create_ipv6_details).data
-        
-        result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
-
+            logging.info("No existing VCNs found in the compartment. Proceeding to creation.")
     except Exception as e:
-        logging.error(f"智能IPv6分配任务 {task_id} 失败: {e}", exc_info=True)
-        error_message = f"❌ 操作失败: {getattr(e, 'message', str(e))}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
+        logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
+
+    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('首次运行，正在自动创建网络资源 (VCN, 子网等)，预计需要2-3分钟...', task_id))
+    logging.info(f"Creating new network resources for {alias}...")
+    vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
+    
+    # --- 【最终关键修正】在创建 VCN 时直接启用 IPv6 ---
+    vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid, is_ipv6_enabled=True)
+    # --- 修正结束 ---
+
+    vcn = vnet_client.create_vcn(vcn_details).data
+    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/3) VCN 已创建，正在等待其生效...', task_id))
+    oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE')
+    ig_name = f"ig-autocreated-{alias}-{random.randint(100, 999)}"
+    ig_details = CreateInternetGatewayDetails(display_name=ig_name, compartment_id=tenancy_ocid, is_enabled=True, vcn_id=vcn.id)
+    ig = vnet_client.create_internet_gateway(ig_details).data
+    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/3) 互联网网关已创建并添加路由...', task_id))
+    oci.wait_until(vnet_client, vnet_client.get_internet_gateway(ig.id), 'lifecycle_state', 'AVAILABLE')
+    route_table_id = vcn.default_route_table_id
+    rt_rules = vnet_client.get_route_table(route_table_id).data.route_rules
+    rt_rules.append(RouteRule(destination="0.0.0.0/0", network_entity_id=ig.id))
+    vnet_client.update_route_table(route_table_id, UpdateRouteTableDetails(route_rules=rt_rules))
+    subnet_name = f"subnet-autocreated-{alias}-{random.randint(100, 999)}"
+    subnet_details = CreateSubnetDetails(compartment_id=tenancy_ocid, vcn_id=vcn.id, cidr_block="10.0.1.0/24", display_name=subnet_name)
+    subnet = vnet_client.create_subnet(subnet_details).data
+    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
+    oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
+    
+    profiles[alias]['default_subnet_ocid'] = subnet.id
+    save_profiles(profiles)
+    logging.info(f"New subnet {subnet.id} created and saved for {alias}")
+    return subnet.id
