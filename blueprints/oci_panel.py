@@ -4,11 +4,11 @@ from functools import wraps
 from datetime import timezone
 import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
-                             UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
-                             LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
-                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
-                             AddVcnIpv6CidrDetails, UpdateSubnetDetails)
+                                 UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
+                                 LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
+                                 LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
+                                 UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
+                                 AddVcnIpv6CidrDetails, UpdateSubnetDetails)
 from oci.exceptions import ServiceError
 from app import celery
 
@@ -530,8 +530,7 @@ def update_instance():
         if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
         task_name = f"{action} on instance {instance_id[-6:]}"
         task_id = _create_task_entry('action', task_name)
-        if action == 'apply_net_boost': _apply_net_boost_task.delay(task_id, g.oci_config, instance_id)
-        else: _update_instance_details_task.delay(task_id, g.oci_config, data)
+        _update_instance_details_task.delay(task_id, g.oci_config, data)
         return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
     except (sqlite3.OperationalError, TimeoutException) as e:
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
@@ -654,15 +653,6 @@ def _update_instance_details_task(task_id, profile_config, data):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
-
-@celery.task
-def _apply_net_boost_task(task_id, profile_config, instance_id):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在应用网络优化...', task_id))
-    try:
-        time.sleep(10)
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', "✅ 网络优化脚本已成功执行！", task_id))
-    except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 网络优化失败: {e}", task_id))
 
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
