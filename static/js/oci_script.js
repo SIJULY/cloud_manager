@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', function() {
         spinner.classList.remove('d-none');
         try {
             const payload = { bot_token: token, chat_id: chatId };
-           ('/oci/api/tg-config', {
+            const response = await apiRequest('/oci/api/tg-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -202,7 +202,7 @@ document.addEventListener('DOMContentLoaded', function() {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
         try {
             // 请求特定页的数据，每页10条
-           (`/oci/api/profiles?page=${page}&per_page=9`);
+            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=9`);
             const profileNames = response.items;
             
             profileList.innerHTML = '';
@@ -905,7 +905,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const egress_security_rules = collectRulesFromTable(egressRulesTable, 'egress');
             const payload = { security_list_id: currentSecurityList.id, rules: { ingress_security_rules, egress_security_rules }};
             addLog("正在保存网络规则...");
-           ('/oci/api/network/update-security-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const response = await apiRequest('/oci/api/network/update-security-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             addLog(response.message, 'success');
             networkSettingsModal.hide();
         } catch (error) {
