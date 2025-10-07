@@ -515,7 +515,7 @@ document.addEventListener('DOMContentLoaded', function() {
             confirmActionModalTerminateOptions.classList.add('d-none');
         }
         if (action === 'changeip') message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
-        if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配一个 IPV6 地址吗？\n请确保子网已启用IPv6。`;
+        if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配/更换一个 IPV6 地址吗？`;
         confirmActionModalLabel.textContent = title;
         confirmActionModalBody.textContent = message;
         confirmActionModalConfirmBtn.dataset.action = action; 
