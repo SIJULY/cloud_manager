@@ -183,7 +183,7 @@ document.addEventListener('DOMContentLoaded', function() {
         spinner.classList.remove('d-none');
         try {
             const payload = { bot_token: token, chat_id: chatId };
-            const response = await apiRequest('/oci/api/tg-config', {
+           ('/oci/api/tg-config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -197,16 +197,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    async function loadProfiles() {
+    // --- 已修改：loadProfiles 函数增加了翻页逻辑 ---
+    async function loadProfiles(page = 1) {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
         try {
-            const profileNames = await apiRequest('/oci/api/profiles');
-            
-            // --- 核心修改：对账户列表进行自然排序 ---
-            profileNames.sort((a, b) => a.localeCompare(b, 'zh-Hans-CN', { numeric: true }));
+            // 请求特定页的数据，每页10条
+           (`/oci/api/profiles?page=${page}&per_page=9`);
+            const profileNames = response.items;
             
             profileList.innerHTML = '';
-            if (profileNames.length === 0) {
+            if (profileNames.length === 0 && page === 1) {
                 profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
             } else {
                 profileNames.forEach(name => {
@@ -222,11 +222,64 @@ document.addEventListener('DOMContentLoaded', function() {
                     profileList.appendChild(tr);
                 });
             }
+            // 渲染翻页控件
+            renderPagination(response.page, response.total_pages);
             checkSession(); 
         } catch (error) {
             profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
+            renderPagination(0, 0); // 加载失败时清空翻页
         }
     }
+
+    // --- 新增函数：渲染翻页控件 ---
+    function renderPagination(currentPage, totalPages) {
+        const paginationContainer = document.getElementById('profilePagination');
+        paginationContainer.innerHTML = ''; // 清空旧的控件
+
+        if (totalPages <= 1) {
+            return; // 如果只有一页或没有，则不显示翻页
+        }
+
+        let paginationHtml = '<nav><ul class="pagination pagination-sm">';
+
+        // 上一页按钮
+        paginationHtml += `
+            <li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
+                <a class="page-link" href="#" data-page="${currentPage - 1}">&laquo;</a>
+            </li>
+        `;
+
+        // 页码按钮
+        for (let i = 1; i <= totalPages; i++) {
+            paginationHtml += `
+                <li class="page-item ${i === currentPage ? 'active' : ''}">
+                    <a class="page-link" href="#" data-page="${i}">${i}</a>
+                </li>
+            `;
+        }
+
+        // 下一页按钮
+        paginationHtml += `
+            <li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
+                <a class="page-link" href="#" data-page="${currentPage + 1}">&raquo;</a>
+            </li>
+        `;
+
+        paginationHtml += '</ul></nav>';
+        paginationContainer.innerHTML = paginationHtml;
+    }
+
+    // --- 新增事件监听：处理翻页点击 ---
+    document.getElementById('profilePagination').addEventListener('click', function(e) {
+        e.preventDefault();
+        const target = e.target;
+        if (target.tagName === 'A' && target.dataset.page) {
+            const page = parseInt(target.dataset.page, 10);
+            if (page > 0) {
+                loadProfiles(page);
+            }
+        }
+    });
     
     addNewProfileBtn.addEventListener('click', async () => {
         const alias = newProfileAlias.value.trim();
@@ -252,7 +305,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 addLog(`账号 ${alias} 添加成功!`, 'success');
                 [newProfileAlias, newProfileConfigText, newProfileSshKey].forEach(el => el.value = '');
                 newProfileKeyFile.value = '';
-                loadProfiles();
+                loadProfiles(); // 重新加载第一页
             };
             reader.readAsText(keyFile);
         } catch (error) {
@@ -297,7 +350,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 try {
                     await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
                     addLog('删除成功!', 'success');
-                    loadProfiles();
+                    loadProfiles(); // 重新加载第一页
                 } catch (error) {}
                 confirmActionModalConfirmBtn.removeEventListener('click', confirmDelete);
             };
@@ -333,7 +386,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 await apiRequest('/oci/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 addLog(`账号 ${newAlias} 保存成功!`, 'success');
                 editProfileModal.hide();
-                loadProfiles();
+                loadProfiles(); // 重新加载第一页
             };
             if (keyFile) {
                 addLog('检测到新的私钥文件，将进行更新。');
@@ -852,7 +905,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const egress_security_rules = collectRulesFromTable(egressRulesTable, 'egress');
             const payload = { security_list_id: currentSecurityList.id, rules: { ingress_security_rules, egress_security_rules }};
             addLog("正在保存网络规则...");
-            const response = await apiRequest('/oci/api/network/update-security-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+           ('/oci/api/network/update-security-rules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             addLog(response.message, 'success');
             networkSettingsModal.hide();
         } catch (error) {
