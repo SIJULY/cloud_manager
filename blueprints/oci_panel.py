@@ -336,7 +336,30 @@ def tg_config_handler():
 def manage_profiles():
     profiles = load_profiles()
     if request.method == "GET":
-        return jsonify(list(profiles.keys()))
+        # --- 翻页逻辑开始 ---
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 9, type=int)
+        
+        # 获取并排序所有账号名称，确保翻页顺序稳定
+        # 使用 localeCompare 进行自然排序
+        profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
+
+        total_items = len(profile_names)
+        start = (page - 1) * per_page
+        end = start + per_page
+        
+        paginated_items = profile_names[start:end]
+        total_pages = (total_items + per_page - 1) // per_page
+
+        return jsonify({
+            'items': paginated_items,
+            'total_items': total_items,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': total_pages
+        })
+        # --- 翻页逻辑结束 ---
+
     if request.method == "POST":
         data = request.json
         alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
@@ -346,7 +369,6 @@ def manage_profiles():
         profiles[alias].update(new_profile_data)
         save_profiles(profiles)
         return jsonify({"success": True, "alias": alias})
-
 @oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
 @login_required
 def handle_single_profile(alias):
