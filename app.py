@@ -1,18 +1,30 @@
 import os
 import json
-import secrets # <<< 新增导入
+import secrets 
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify # 确保 jsonify 已导入
 from celery import Celery, bootsteps
 from kombu import Consumer, Exchange, Queue
 import logging
+from datetime import timedelta
 
 # --- App Configuration ---
 app = Flask(__name__)
+
+# --- 2. 会话过期设置 ---
+# 设置会话的生命周期为2小时
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
+
+@app.before_request
+def make_session_permanent():
+    """让会话在每次请求后都重置计时器 (滑动窗口)"""
+    session.permanent = True
+# --- 新增设置结束 ---
+
 app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
 PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345")
 DEBUG_MODE = os.getenv("FLASK_DEBUG", "false").lower() in ['true', '1', 't']
 
-# <<< 新增：配置文件和密钥初始化 >>>
+# <<< 配置文件和密钥初始化 >>>
 CONFIG_FILE = 'config.json'
 
 def initialize_app_config():
@@ -26,13 +38,13 @@ def initialize_app_config():
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 config = json.load(f)
         except (json.JSONDecodeError, IOError):
-            pass 
+            pass
 
     if 'api_secret_key' not in config or not config.get('api_secret_key'):
         print("首次启动或API密钥不存在，正在生成新的API密钥...")
         new_key = secrets.token_hex(32) # 生成一个64位的安全随机字符串
         config['api_secret_key'] = new_key
-        
+
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4)
@@ -98,7 +110,7 @@ def get_app_api_key():
     """为前端提供API密钥的接口"""
     if 'user_logged_in' not in session:
         return jsonify({"error": "用户未登录"}), 401
-    
+
     api_key = None
     if os.path.exists(CONFIG_FILE):
         try:
@@ -107,7 +119,7 @@ def get_app_api_key():
                 api_key = config.get('api_secret_key')
         except (IOError, json.JSONDecodeError):
             pass # 如果文件有问题，则返回下面的错误
-    
+
     if api_key:
         return jsonify({"api_key": api_key})
     else:
