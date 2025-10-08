@@ -671,6 +671,9 @@ document.addEventListener('DOMContentLoaded', function() {
         confirmActionModalLabel.textContent = '确认停止任务';
         confirmActionModalBody.textContent = `确定要停止选中的 ${taskIds.length} 个任务吗？`;
         confirmActionModalTerminateOptions.classList.add('d-none');
+
+        confirmActionModalConfirmBtn.removeAttribute('data-action');
+
         const confirmStop = async () => {
             confirmActionModal.hide();
             addLog(`正在发送停止 ${taskIds.length} 个任务的请求...`);
@@ -681,7 +684,6 @@ document.addEventListener('DOMContentLoaded', function() {
             } catch(e) {
                  addLog(`停止任务时出错: ${e.message}`, 'error');
             }
-            confirmActionModalConfirmBtn.removeEventListener('click', confirmStop);
         };
         confirmActionModalConfirmBtn.addEventListener('click', confirmStop, { once: true });
         confirmActionModal.show();
