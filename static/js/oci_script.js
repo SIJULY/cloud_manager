@@ -224,7 +224,8 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             // 渲染翻页控件
             renderPagination(response.page, response.total_pages);
-            checkSession(); 
+            // 调用 checkSession 并告知它不要刷新实例列表 (传入 false)
+            checkSession(false); 
         } catch (error) {
             profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
             renderPagination(0, 0); // 加载失败时清空翻页
@@ -402,7 +403,7 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {}
     });
 
-    async function checkSession() {
+    async function checkSession(shouldRefreshInstances = true) { // 增加一个带默认值的参数
         try {
             const data = await apiRequest('/oci/api/session');
             document.querySelectorAll('.connect-btn').forEach(btn => {
@@ -416,7 +417,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionAreaProfile.textContent = `当前账号: ${data.alias}`;
                 actionAreaProfile.classList.remove('d-none');
                 enableMainControls(true, data.can_create, data.can_snatch);
-                refreshInstances();
+                
+                // 只有在需要时才刷新实例列表
+                if (shouldRefreshInstances) {
+                    refreshInstances();
+                }
+
                 const activeButton = document.querySelector(`.connect-btn[data-alias="${data.alias}"]`);
                 if (activeButton) {
                     activeButton.textContent = '已连接';
@@ -1008,7 +1014,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // 首先加载账户列表 (这会调用 checkSession(false) 来更新按钮状态，但不会刷新实例)
     loadProfiles();
+    
+    // 然后，我们独立调用一次 checkSession() (默认参数为 true)，来确保如果已登录，就刷新实例列表
+    checkSession();
+
+    // 最后加载其他配置
     loadTgConfig();
     var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'))
     var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
