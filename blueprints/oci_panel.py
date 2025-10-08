@@ -840,9 +840,13 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             
             task_name = instance.display_name
             result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
+            
+            # ---【修改部分】---
             tg_msg = (f"🔔 *任务完成通知*\n\n"
+                      f"*账户*: `{alias}`\n"
                       f"*任务名称*: `{task_name}`\n\n"
                       f"*结果*:\n{result_for_tg}")
+            # ---【修改结束】---
             
             send_tg_notification(tg_msg)
             
