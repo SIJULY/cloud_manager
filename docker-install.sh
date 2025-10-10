@@ -118,9 +118,9 @@ install_existing_server() {
     # <<< 修改：密码输入可见且可编辑 >>>
     read -p "请输入新的面板登录密码: " new_password
     
-    # <<< 新增：自定义端口，默认为800 >>>
-    read -p "请输入要映射到主机的端口 [默认: 800]: " host_port
-    host_port=${host_port:-800}
+    # <<< 新增：自定义端口，默认为8000 >>>
+    read -p "请输入要映射到主机的端口 [默认: 8000]: " host_port
+    host_port=${host_port:-8000}
 
     # 修改 docker-compose.yml 来暴露用户指定的端口
     sed -i "/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - \"${host_port}:5000\"/" docker-compose.yml
