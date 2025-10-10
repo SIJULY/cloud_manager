@@ -2,6 +2,7 @@
 
 # ==============================================================================
 # Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
+# 版本: 经过Gemini修改
 # ==============================================================================
 
 # --- 配置 ---
@@ -81,7 +82,10 @@ install_clean_server() {
     read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
     if [ -z "$domain_name" ]; then ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip); if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
     else ACCESS_ADDRESS=$domain_name; fi
-    read -s -p "请输入新的面板登录密码: " new_password; echo
+    
+    # <<< 修改：密码输入可见且可编辑 >>>
+    read -p "请输入新的面板登录密码: " new_password
+    
     CADDY_ADDRESS=$([[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "http://${ACCESS_ADDRESS}" || echo "$ACCESS_ADDRESS")
     sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
     sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
@@ -100,7 +104,9 @@ install_clean_server() {
 install_existing_server() {
     prepare_files
     print_info "步骤 5: 配置面板 (已有服务模式)..."
-    print_info "将禁用内置Caddy并暴露8000端口。"
+    print_info "将禁用内置Caddy并暴露指定端口。"
+    
+    # 修改 docker-compose.yml 来禁用 caddy
     START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
     if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
         COMMENT_END_LINE=$((END_LINE - 1)); sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
@@ -108,9 +114,18 @@ install_existing_server() {
     else
         print_error "无法在 docker-compose.yml 中定位 Caddy 服务块，自动化修改失败。"
     fi
-    sed -i -e '/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - "8000:5000"/' docker-compose.yml
+    
+    # <<< 修改：密码输入可见且可编辑 >>>
+    read -p "请输入新的面板登录密码: " new_password
+    
+    # <<< 新增：自定义端口，默认为800 >>>
+    read -p "请输入要映射到主机的端口 [默认: 800]: " host_port
+    host_port=${host_port:-800}
+
+    # 修改 docker-compose.yml 来暴露用户指定的端口
+    sed -i "/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - \"${host_port}:5000\"/" docker-compose.yml
+    
     cp .env.example .env
-    read -s -p "请输入新的面板登录密码: " new_password; echo
     sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
     print_success "配置已保存。"
 
@@ -119,15 +134,15 @@ install_existing_server() {
     SERVER_IP=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
     echo "------------------------------------------------------------"
     print_info "核心服务已启动！"
-    print_info "您现在可以通过IP地址访问: http://${SERVER_IP}:8000"
+    # <<< 修改：输出信息使用用户指定的端口 >>>
+    print_info "您现在可以通过IP地址访问: http://${SERVER_IP}:${host_port}"
     print_info "登陆密码为安装过程中您设置的密码"
     
     print_warning "如果您想使用域名访问，请手动将您的域名解析到此服务器IP，然后在您现有的Web服务器（Nginx, Caddy等）中添加以下反向代理配置："
-    echo "--- Caddy 配置示例 ---"
+    echo "--- Caddy 配置示例 (请将 your_domain.com 和 ${host_port} 替换为您的配置) ---"
     echo "your_domain.com {"
-    echo "    reverse_proxy localhost:8000"
+    echo "    reverse_proxy localhost:${host_port}"
     echo "}"
-    echo "----------------------"
     echo "------------------------------------------------------------"
 }
 
