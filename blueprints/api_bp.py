@@ -1,27 +1,31 @@
-# 文件名: blueprints/api_bp.py (已修正)
+# /app/blueprints/api_bp.py (完整替换代码)
 
 import os
 import json
 import sqlite3
 import uuid
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from functools import wraps
 from app import celery
 
+# 导入需要暴露给API的任务
 from .oci_panel import (
     load_profiles, 
     get_oci_clients, 
     _instance_action_task, 
-    _create_instance_task, 
     _snatch_instance_task,
     _create_task_entry,
     _ensure_subnet_in_profile,
     oci
 )
+from .azure_panel import (
+    _create_vm_task,
+    _vm_action_task,
+    _change_ip_task
+)
 
 api_bp = Blueprint('api', __name__)
 
-API_SECRET_KEY = "CHANGE_THIS_TO_A_VERY_STRONG_AND_RANDOM_SECRET_KEY"
 DATABASE = 'oci_tasks.db'
 CONFIG_FILE = 'config.json'
 
@@ -51,7 +55,9 @@ def require_api_key(f):
         if not auth_header or not auth_header.startswith('Bearer '):
             return jsonify({"error": "Missing or invalid Authorization header"}), 401
         provided_key = auth_header.split(' ')[1]
-        if provided_key != api_key:
+        
+        import secrets
+        if not secrets.compare_digest(provided_key, api_key):
             return jsonify({"error": "Invalid API Key"}), 403
         return f(*args, **kwargs)
     return decorated_function
@@ -59,6 +65,11 @@ def require_api_key(f):
 @api_bp.route('/status', methods=['GET'])
 def status():
     return jsonify({"status": "ok", "message": "Cloud Manager OCI API is running"})
+
+@api_bp.route('/get-app-api-key', methods=['GET'])
+def get_api_key_route():
+    # 注意：在生产环境中，应保护此端点
+    return jsonify({"api_key": current_app.config.get('API_KEY')})
 
 @api_bp.route('/profiles', methods=['GET'])
 @require_api_key
@@ -151,19 +162,6 @@ def instance_action_for_alias(alias):
     _instance_action_task.delay(task_id, profile_config, action, instance_id, data)
     return jsonify({"success": True, "message": f"Action '{action}' for instance '{instance_id}' has been queued.", "task_id": task_id}), 202
 
-@api_bp.route('/<string:alias>/create-instance', methods=['POST'])
-@require_api_key
-def create_instance_for_alias(alias):
-    data = request.json
-    profiles = load_profiles()
-    profile_config = profiles.get(alias)
-    if not profile_config:
-        return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
-    task_name = data.get('display_name_prefix', 'create-instance')
-    task_id = _create_task_entry('create', task_name, alias)
-    _create_instance_task.delay(task_id, profile_config, alias, data)
-    return jsonify({"success": True, "message": "创建实例请求已提交...", "task_id": task_id}), 202
-
 @api_bp.route('/<string:alias>/snatch-instance', methods=['POST'])
 @require_api_key
 def snatch_instance_for_alias(alias):
@@ -183,7 +181,6 @@ def get_task_status(task_id):
     try:
         task = query_db_api('SELECT id, type, name, status, result, created_at, account_alias FROM tasks WHERE id = ?', [task_id], one=True)
         if task:
-            # 在这里也做一次转换，确保单个任务查询也能正确显示
             task_dict = dict(task)
             if 'account_alias' in task_dict:
                 task_dict['alias'] = task_dict.pop('account_alias')
@@ -203,12 +200,10 @@ def get_tasks_by_type_and_status(task_type, task_status):
         if task_status == 'running':
             tasks = query_db_api("SELECT id, name, result, account_alias FROM tasks WHERE type = ? AND status IN ('running', 'pending') ORDER BY created_at DESC", [task_type])
         elif task_status == 'completed':
-            tasks = query_db_api("SELECT id, name, status, result, account_alias, created_at FROM tasks WHERE type = ? AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 20", [task_type])
+            tasks = query_db_api("SELECT id, name, status, result, account_alias, created_at FROM tasks WHERE type = ? AND (status = 'success' OR 'failure') ORDER BY created_at DESC LIMIT 20", [task_type])
         else:
             return jsonify({"error": "Invalid task status"}), 400
         
-        # --- 核心修正 ---
-        # 在返回给机器人前，将'account_alias'重命名为'alias'
         tasks_list = [dict(task) for task in tasks]
         for task_dict in tasks_list:
             if 'account_alias' in task_dict:
