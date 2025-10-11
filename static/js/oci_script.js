@@ -1,7 +1,5 @@
-// static/js/oci_script.js (完整替换代码)
-
 document.addEventListener('DOMContentLoaded', function() {
-    // --- 1. DOM 元素获取 ---
+    // --- 1. DOM 元素获取 (已更新) ---
     const profileList = document.getElementById('profileList');
     const currentProfileStatus = document.getElementById('currentProfileStatus');
     const addNewProfileBtn = document.getElementById('addNewProfileBtn');
@@ -15,7 +13,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const instanceList = document.getElementById('instanceList');
     const logOutput = document.getElementById('logOutput');
     const clearLogBtn = document.getElementById('clearLogBtn');
-
+    
     // Modals
     const launchInstanceModal = new bootstrap.Modal(document.getElementById('createLaunchInstanceModal'));
     const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
@@ -24,6 +22,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const editInstanceModal = new bootstrap.Modal(document.getElementById('editInstanceModal'));
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
+    const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
 
     // Launch Instance Modal Elements
     const instanceCountInput = document.getElementById('instanceCount');
@@ -31,12 +30,18 @@ document.addEventListener('DOMContentLoaded', function() {
     const launchFlexConfig = document.getElementById('flexShapeConfig');
     const submitLaunchInstanceBtn = document.getElementById('submitLaunchInstanceBtn');
 
+    // Proxy Modal Elements
+    const proxySettingsAlias = document.getElementById('proxySettingsAlias');
+    const proxyUrlInput = document.getElementById('proxyUrl');
+    const saveProxyBtn = document.getElementById('saveProxyBtn');
+    const removeProxyBtn = document.getElementById('removeProxyBtn');
+
     // Snatch Task View Elements
     const stopSnatchTaskBtn = document.getElementById('stopSnatchTaskBtn');
     const deleteSnatchTaskBtn = document.getElementById('deleteSnatchTaskBtn');
     const runningSnatchTasksList = document.getElementById('runningSnatchTasksList');
     const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
-
+    
     // Other UI Elements
     const actionAreaProfile = document.getElementById('actionAreaProfile');
     const ingressRulesTable = document.getElementById('ingressRulesTable');
@@ -75,12 +80,11 @@ document.addEventListener('DOMContentLoaded', function() {
         terminate: document.getElementById('terminateBtn'),
     };
 
-    // 全局变量，用于存储当前实例列表以供检查
     let currentInstances = [];
     let selectedInstance = null;
     let currentSecurityList = null;
-
-    // --- 2. Event Listeners for Launch Modal (已更新) ---
+    
+    // --- Event Listeners ---
 
     launchInstanceShapeSelect.addEventListener('change', () => {
         const isFlex = launchInstanceShapeSelect.value.includes('Flex');
@@ -92,10 +96,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const shape = launchInstanceShapeSelect.value;
         const requestedCount = parseInt(instanceCountInput.value, 10);
         const requestedBootVolumeSize = parseInt(document.getElementById('bootVolumeSize').value, 10);
-
-        // <<< 新增：前端配额双重检查 >>>
-
-        // 1. 检查总磁盘容量
+        
+        // Frontend quota checks
         const newRequestedTotalSize = requestedCount * requestedBootVolumeSize;
         const currentTotalBootVolumeSize = currentInstances.reduce((total, inst) => {
             const sizeInGb = parseInt(inst.boot_volume_size_gb, 10);
@@ -105,19 +107,17 @@ document.addEventListener('DOMContentLoaded', function() {
         if ((currentTotalBootVolumeSize + newRequestedTotalSize) > 200) {
             const errorMsg = `总磁盘容量将超出200 GB免费额度。您当前已使用 ${currentTotalBootVolumeSize} GB，本次请求将导致总量达到 ${currentTotalBootVolumeSize + newRequestedTotalSize} GB。`;
             addLog(errorMsg, 'error');
-            return; // 阻止提交
+            return;
         }
 
-        // 2. 检查AMD实例数量
         if (shape === 'VM.Standard.E2.1.Micro') {
             const existingAMDCount = currentInstances.filter(inst => inst.shape === shape).length;
             if ((existingAMDCount + requestedCount) > 2) {
-                const errorMsg = `最多只能创建2个免费的AMD实例，您账户下已有 ${existingAMDCount} 个免费的AMD实例，无法再创建。`;
+                const errorMsg = `免费账户最多只能创建2个AMD实例，您已有 ${existingAMDCount} 个，无法再创建 ${requestedCount} 个。`;
                 addLog(errorMsg, 'error');
-                return; // 阻止提交
+                return;
             }
         }
-        // <<< 检查结束 >>>
 
         const details = {
             display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
@@ -125,7 +125,6 @@ document.addEventListener('DOMContentLoaded', function() {
             os_name_version: document.getElementById('instanceOS').value,
             shape: shape,
             boot_volume_size: requestedBootVolumeSize,
-            availabilityDomain: document.getElementById('availabilityDomain').value.trim() || null,
             min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
             max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90
         };
@@ -152,12 +151,11 @@ document.addEventListener('DOMContentLoaded', function() {
             if (response.task_ids && Array.isArray(response.task_ids)) {
                 response.task_ids.forEach(pollTaskStatus);
             }
-        } catch (error) {
-            // apiRequest function already logs errors
-        }
+        } catch (error) {}
     });
 
-    // --- 3. Core and Helper Functions (refreshInstances 已更新) ---
+
+    // --- Core and Helper Functions ---
     
     function addLog(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
@@ -193,10 +191,7 @@ document.addEventListener('DOMContentLoaded', function() {
         instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div> 正在加载...</td></tr>`;
         try {
             const instances = await apiRequest('/oci/api/instances');
-            
-            // <<< 新增：保存实例数据到全局变量 >>>
             currentInstances = instances; 
-            
             instanceList.innerHTML = '';
             if (instances.length === 0) {
                  instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">未找到任何实例</td></tr>`;
@@ -219,7 +214,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             addLog('实例列表刷新成功!', 'success');
         } catch (error) {
-            currentInstances = []; // 出错时清空
+            currentInstances = [];
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-5">加载实例列表失败</td></tr>`;
         } finally {
             refreshInstancesBtn.disabled = false;
@@ -311,6 +306,36 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 5000);
     }
 
+    async function loadProfiles(page = 1) {
+        profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
+        try {
+            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=9`);
+            profileList.innerHTML = '';
+            if (response.items.length === 0 && page === 1) {
+                profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
+            } else {
+                response.items.forEach(name => {
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${name}</td>
+                        <td class="text-end action-buttons" style="min-width: 380px;">
+                            <button class="btn btn-success btn-sm connect-btn profile-action-btn" data-alias="${name}">连接</button>
+                            <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
+                            <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
+                            <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
+                        </td>
+                    `;
+                    profileList.appendChild(tr);
+                });
+            }
+            renderPagination(response.page, response.total_pages);
+            checkSession(false); 
+        } catch (error) {
+            profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
+            renderPagination(0, 0);
+        }
+    }
+    
     function formatElapsedTime(startTimeString) {
         const startTime = new Date(startTimeString);
         const now = new Date();
@@ -362,7 +387,7 @@ document.addEventListener('DOMContentLoaded', function() {
     getApiKeyBtn.addEventListener('click', async () => {
         addLog('正在获取API密钥...');
         try {
-            const data = await apiRequest('/api/get-app-api-key');
+            const data = await apiRequest('/api/get-app-api-key'); 
             if (data.api_key) {
                 apiKeyInput.value = data.api_key;
                 navigator.clipboard.writeText(data.api_key).then(() => {
@@ -373,34 +398,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (error) {}
     });
-
-    async function loadProfiles(page = 1) {
-        profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
-        try {
-            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=9`);
-            profileList.innerHTML = '';
-            if (response.items.length === 0 && page === 1) {
-                profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
-            } else {
-                response.items.forEach(name => {
-                    const tr = document.createElement('tr');
-                    tr.innerHTML = `
-                        <td>${name}</td>
-                        <td class="text-end action-buttons">
-                            <button class="btn btn-success btn-sm connect-btn profile-action-btn" data-alias="${name}">连接</button>
-                            <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
-                            <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
-                        </td>`;
-                    profileList.appendChild(tr);
-                });
-            }
-            renderPagination(response.page, response.total_pages);
-            checkSession(false); 
-        } catch (error) {
-            profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
-            renderPagination(0, 0);
-        }
-    }
 
     function renderPagination(currentPage, totalPages) {
         const paginationContainer = document.getElementById('profilePagination');
@@ -465,8 +462,8 @@ document.addEventListener('DOMContentLoaded', function() {
         if (button.classList.contains('connect-btn')) {
             addLog(`正在连接到 ${alias}...`);
             try {
-                await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
-                addLog(`连接成功! 当前账号: ${alias}`, 'success');
+                const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
+                addLog(response.message, 'success');
                 checkSession();
             } catch (error) {}
         }
@@ -476,11 +473,20 @@ document.addEventListener('DOMContentLoaded', function() {
                 const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
                 document.getElementById('editProfileOriginalAlias').value = alias;
                 document.getElementById('editProfileAlias').value = alias;
-                const { default_ssh_public_key, key_content, ...configParts } = profileData;
+                const { default_ssh_public_key, key_content, proxy, ...configParts } = profileData;
                 document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
                 document.getElementById('editProfileSshKey').value = default_ssh_public_key || '';
                 document.getElementById('editProfileKeyFile').value = '';
                 editProfileModal.show();
+            } catch (error) {}
+        }
+        else if (button.classList.contains('proxy-btn')) {
+            try {
+                addLog(`加载 ${alias} 的代理设置...`);
+                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                proxySettingsAlias.value = alias;
+                proxyUrlInput.value = profileData.proxy || '';
+                proxySettingsModal.show();
             } catch (error) {}
         }
         else if (button.classList.contains('delete-btn')) {
@@ -518,12 +524,15 @@ document.addEventListener('DOMContentLoaded', function() {
             profileData['default_ssh_public_key'] = sshKey;
 
             const saveChanges = async () => {
+                const { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy } = profileData;
+                const cleanProfileData = { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy };
+
                 if (originalAlias !== newAlias) {
                     await apiRequest(`/oci/api/profiles/${originalAlias}`, { method: 'DELETE' });
                 }
                 await apiRequest('/oci/api/profiles', { 
                     method: 'POST', headers: { 'Content-Type': 'application/json' }, 
-                    body: JSON.stringify({ alias: newAlias, profile_data: profileData }) 
+                    body: JSON.stringify({ alias: newAlias, profile_data: cleanProfileData }) 
                 });
                 addLog(`账号 ${newAlias} 保存成功!`, 'success');
                 editProfileModal.hide();
@@ -540,6 +549,28 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {}
     });
     
+    async function saveProxy(remove = false) {
+        const alias = proxySettingsAlias.value;
+        const proxyUrl = remove ? "" : proxyUrlInput.value.trim();
+        
+        if (!alias) return;
+        
+        addLog(`正在为账号 ${alias} ${remove ? '移除' : '保存'} 代理...`);
+        try {
+            const payload = { alias: alias, profile_data: { proxy: proxyUrl } };
+            await apiRequest('/oci/api/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            addLog(`账号 ${alias} 的代理设置已${remove ? '移除' : '更新'}！`, 'success');
+            proxySettingsModal.hide();
+        } catch (error) {}
+    }
+
+    saveProxyBtn.addEventListener('click', () => saveProxy(false));
+    removeProxyBtn.addEventListener('click', () => saveProxy(true));
+
     instanceList.addEventListener('click', (e) => {
         const row = e.target.closest('tr');
         if (!row || !row.dataset.instanceId) return;
@@ -834,3 +865,4 @@ document.addEventListener('DOMContentLoaded', function() {
     checkSession();
     loadTgConfig();
 });
+
