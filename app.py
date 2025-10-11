@@ -1,16 +1,16 @@
 import os
 import json
-import secrets 
+import secrets # <<< 新增导入
 from flask import Flask, render_template, request, session, redirect, url_for, jsonify # 确保 jsonify 已导入
 from celery import Celery, bootsteps
 from kombu import Consumer, Exchange, Queue
 import logging
-from datetime import timedelta
+from datetime import timedelta # <<< 1. 新增导入
 
 # --- App Configuration ---
 app = Flask(__name__)
 
-# --- 2. 会话过期设置 ---
+# --- 2. 新增会话过期设置 ---
 # 设置会话的生命周期为2小时
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 
@@ -24,7 +24,7 @@ app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
 PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345")
 DEBUG_MODE = os.getenv("FLASK_DEBUG", "false").lower() in ['true', '1', 't']
 
-# <<< 配置文件和密钥初始化 >>>
+# <<< 新增：配置文件和密钥初始化 >>>
 CONFIG_FILE = 'config.json'
 
 def initialize_app_config():
