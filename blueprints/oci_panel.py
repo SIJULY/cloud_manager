@@ -1,5 +1,3 @@
-# /app/blueprints/oci_panel.py (或 oci_bp.py，完整替换代码)
-
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
@@ -149,18 +147,32 @@ def get_oci_clients(profile_config, validate=True):
     key_file_path = None
     try:
         config_for_sdk = profile_config.copy()
+        
+        if 'proxy' in profile_config and profile_config['proxy']:
+            config_for_sdk['proxy'] = profile_config['proxy']
+            logging.info(f"Using proxy: {profile_config['proxy']} for OCI client.")
+
         if 'key_content' in profile_config:
             key_file_path = f"/tmp/{uuid.uuid4()}.pem"
-            with open(key_file_path, 'w') as key_file: key_file.write(profile_config['key_content'])
+            with open(key_file_path, 'w') as key_file:
+                key_file.write(profile_config['key_content'])
             os.chmod(key_file_path, 0o600)
             config_for_sdk['key_file'] = key_file_path
+        
         if validate:
             oci.config.validate_config(config_for_sdk)
-        return {"identity": oci.identity.IdentityClient(config_for_sdk), "compute": oci.core.ComputeClient(config_for_sdk), "vnet": oci.core.VirtualNetworkClient(config_for_sdk), "bs": oci.core.BlockstorageClient(config_for_sdk)}, None
+            
+        return {
+            "identity": oci.identity.IdentityClient(config_for_sdk),
+            "compute": oci.core.ComputeClient(config_for_sdk),
+            "vnet": oci.core.VirtualNetworkClient(config_for_sdk),
+            "bs": oci.core.BlockstorageClient(config_for_sdk)
+        }, None
     except Exception as e:
         return None, f"创建OCI客户端失败: {e}"
     finally:
-        if key_file_path and os.path.exists(key_file_path): os.remove(key_file_path)
+        if key_file_path and os.path.exists(key_file_path):
+            os.remove(key_file_path)
 
 def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     profiles = load_profiles()
@@ -398,13 +410,28 @@ def oci_session_route():
             alias = request.json.get("alias")
             profiles = load_profiles()
             if not alias or alias not in profiles: return jsonify({"error": "无效的账号别名"}), 400
+            
+            profile_config = profiles.get(alias)
             session['oci_profile_alias'] = alias
-            _, error = get_oci_clients(profiles.get(alias), validate=True)
+            
+            _, error = get_oci_clients(profile_config, validate=True)
             if error:
                 session.pop('oci_profile_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
-            can_create = bool(profiles.get(alias, {}).get('default_ssh_public_key'))
-            return jsonify({"success": True, "alias": alias, "can_create": can_create})
+            
+            proxy_info = profile_config.get('proxy')
+            success_message = f"连接成功! 当前账号: {alias}"
+            if proxy_info:
+                success_message += f" (通过代理: {proxy_info})"
+
+            can_create = bool(profile_config.get('default_ssh_public_key'))
+            return jsonify({
+                "success": True, 
+                "alias": alias, 
+                "can_create": can_create,
+                "message": success_message
+            })
+
         if request.method == "GET":
             alias = session.get('oci_profile_alias')
             if alias:
@@ -582,10 +609,8 @@ def launch_instance():
         compartment_id = g.oci_config['tenancy']
 
         try:
-            # 统一获取实例列表一次，供后续所有检查使用
             all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
             
-            # <<< 总磁盘容量检查 >>>
             requested_boot_volume_size = data.get('boot_volume_size', 50)
             new_requested_total_size = instance_count * requested_boot_volume_size
             current_total_boot_volume_size = 0
@@ -611,7 +636,6 @@ def launch_instance():
                 error_msg = f"总磁盘容量超出200 GB的免费额度。您当前已使用 {current_total_boot_volume_size} GB，本次请求将导致总量达到 {current_total_boot_volume_size + new_requested_total_size} GB。"
                 return jsonify({"error": error_msg}), 400
 
-            # <<< AMD实例数量检查 >>>
             if shape == 'VM.Standard.E2.1.Micro':
                 existing_amd_count = sum(1 for inst in all_instances if inst.shape == shape and inst.lifecycle_state not in ['TERMINATED', 'TERMINATING'])
                 if (existing_amd_count + instance_count) > 2:
@@ -751,7 +775,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             "ocpus": details.get('ocpus', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
             "memory": details.get('memory_in_gbs', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
             "os": details.get('os_name_version', 'N/A'),
-            "ad": "自动选择",
+            "ad": "自动轮询中...",
             "boot_volume_size": details.get('boot_volume_size', 50)
         }
     }
@@ -763,57 +787,82 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
         if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
+
+        ad_objects = identity_client.list_availability_domains(tenancy_ocid).data
+        if not ad_objects:
+            raise Exception("无法获取可用性域列表。")
+        availability_domains = [ad.name for ad in ad_objects]
+        
         subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-        ad_name = details.get('availabilityDomain') or identity_client.list_availability_domains(tenancy_ocid).data[0].name
-        status_data['details']['ad'] = ad_name
+        
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
         status_data['last_message'] = "正在查找兼容的系统镜像..."
         _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
+        
         instance_password = generate_oci_password()
         user_data_encoded = get_user_data(instance_password)
-        launch_details = LaunchInstanceDetails(
-            compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, 
-            display_name=details.get('display_name_prefix', 'snatch-instance'),
-            create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
-            metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
-            source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
-            shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
-        )
+        
+        base_launch_details = {
+            "compartment_id": tenancy_ocid,
+            "shape": shape, 
+            "display_name": details.get('display_name_prefix', 'snatch-instance'),
+            "create_vnic_details": CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
+            "metadata": {"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
+            "source_details": InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
+            "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
+        }
+
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
 
     last_update_time = time.time()
+    attempt_count = 0
     while True:
-        status_data['attempt_count'] += 1
+        attempt_count += 1
+        status_data['attempt_count'] = attempt_count
         force_update = False
+        
+        current_ad_index = (attempt_count - 1) % len(availability_domains)
+        current_ad_name = availability_domains[current_ad_index]
+        
+        status_data['details']['ad'] = current_ad_name
+        
         try:
+            launch_details_dict = base_launch_details.copy()
+            launch_details_dict['availability_domain'] = current_ad_name
+            launch_details = LaunchInstanceDetails(**launch_details_dict)
+            
+            status_data['last_message'] = f"正在 {current_ad_name} 中尝试..."
+            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
+            force_update = True 
+            
             instance = compute_client.launch_instance(launch_details).data
+            
             status_data['last_message'] = f"第 {status_data['attempt_count']} 次尝试成功！实例 {instance.display_name} 正在置备..."
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
+            
             public_ip = "获取中..."
             try:
                 vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=tenancy_ocid, instance_id=instance.id).data
                 if vnic_attachments:
-                    vnic_id = vnic_attachments[0].vnic_id
-                    vnic = vnet_client.get_vnic(vnic_id).data
+                    vnic = vnet_client.get_vnic(vnic_attachments[0].vnic_id).data
                     public_ip = vnic.public_ip or "无"
             except Exception as ip_e:
                 public_ip = "获取失败"
             
-            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
+            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
             
-            task_name = instance.display_name
-            result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
+            result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
             
             tg_msg = (f"🔔 *任务完成通知*\n\n"
                       f"*账户*: `{alias}`\n"
-                      f"*任务名称*: `{task_name}`\n\n"
+                      f"*任务名称*: `{details.get('display_name_prefix', 'snatch-instance')}`\n\n"
                       f"*结果*:\n{result_for_tg}")
             
             send_tg_notification(tg_msg)
@@ -822,12 +871,12 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         except ServiceError as e:
             force_update = True
             if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
-                status_data['last_message'] = f"资源不足或请求频繁 ({e.code})"
+                status_data['last_message'] = f"在 {current_ad_name} 中资源不足 ({e.code})"
             else:
-                status_data['last_message'] = f"API错误 ({e.code})"
+                status_data['last_message'] = f"在 {current_ad_name} 中遇到API错误 ({e.code})"
         except Exception as e:
             force_update = True
-            status_data['last_message'] = f"未知错误 ({str(e)[:50]}...)"
+            status_data['last_message'] = f"在 {current_ad_name} 中遇到未知错误 ({str(e)[:50]}...)"
         
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if not task_record_check or task_record_check['status'] not in ['running', 'pending']:
@@ -841,3 +890,4 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
+
