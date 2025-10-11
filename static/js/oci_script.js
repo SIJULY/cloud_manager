@@ -465,14 +465,14 @@ document.addEventListener('DOMContentLoaded', function() {
         const button = e.target.closest('button');
         const alias = row.dataset.alias;
 
-        // 如果点击的是已禁用的行，并且点击的不是行内的按钮，则阻止操作
+        // 如果点击的是已经处于禁用状态的行，则不执行任何操作（除非是点击行内的按钮）
         if (row.classList.contains('profile-disabled') && !button) {
-            addLog(`账号 ${alias} 已连接，无需重复操作。`, 'warning');
+            addLog(`账号 ${alias} 已连接或正在连接中，请稍候。`, 'warning');
             return; 
         }
 
         if (button) {
-            // 处理行内按钮（代理、编辑、删除）的点击事件
+            // --- 这部分处理行内按钮（代理、编辑、删除）的逻辑保持不变 ---
             if (button.classList.contains('proxy-btn')) {
                 try {
                     addLog(`加载 ${alias} 的代理设置...`);
@@ -511,13 +511,29 @@ document.addEventListener('DOMContentLoaded', function() {
                 confirmActionModal.show();
             }
         } else {
-            // 如果点击的不是按钮，则执行连接操作
+            // --- 当点击行本身（即连接操作）时 ---
+
             addLog(`正在连接到 ${alias}...`);
+            
+            // 1. 立即禁用所有其他账户行
+            document.querySelectorAll('#profileList tr').forEach(otherRow => {
+                if (otherRow.dataset.alias !== alias) {
+                    otherRow.classList.add('profile-disabled');
+                }
+            });
+
+            // 2. 使用 try...finally 结构来确保状态总能恢复
             try {
                 const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
                 addLog(response.message, 'success');
-                checkSession();
-            } catch (error) {}
+            } catch (error) {
+                // apiRequest函数内部已经处理了错误日志的打印
+            } finally {
+                // 3. 无论成功或失败，等待2秒后都调用 checkSession() 来重绘画布
+                setTimeout(() => {
+                    checkSession();
+                }, 2000); // 这里的 2000 就是您要调整的数字 (2000毫秒 = 2秒)
+            }
         }
     });
 
