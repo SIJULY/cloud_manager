@@ -32,7 +32,7 @@
         white-space: nowrap;
     }
     .profile-list-card-body {
-        min-height: 580px; /* 设定一个足以容纳9行+表头+翻页按钮的固定高度 */
+        min-height: 580px;
     }
 </style>
 {% endblock %}
@@ -101,14 +101,11 @@
         </div>
         <div class="card-body">
             <div class="action-group">
-                <button id="createInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#createInstanceModal">
-                    <i class="bi bi-plus-circle"></i> 创建实例
-                </button>
-                <button id="snatchInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#snatchInstanceModal">
-                    <i class="bi bi-robot"></i> 自动抢占实例
+                <button id="createInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#createLaunchInstanceModal">
+                    <i class="bi bi-plus-circle"></i> 创建 / 抢占实例
                 </button>
                 <button id="viewSnatchTasksBtn" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
-                    <i class="bi bi-list-task"></i> 查看抢机任务
+                    <i class="bi bi-list-task"></i> 查看抢占任务
                 </button>
                 <button id="networkSettingsBtn" class="btn btn-info" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
                     <i class="bi bi-shield-gear"></i> 网络设置
@@ -167,6 +164,85 @@
                 <div class="card-body p-2">
                     <div id="logOutput" class="form-control" style="height: 200px; overflow-y: auto;"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="createLaunchInstanceModal" tabindex="-1" aria-labelledby="createLaunchInstanceModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="createLaunchInstanceModalLabel">创建 / 抢占新实例</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted small">创建实例将以**抢占模式**执行（资源不足时自动重试）。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
+                <form id="createLaunchInstanceForm">
+                    <div class="row">
+                        <div class="col-md-8 mb-3">
+                            <label for="instanceNamePrefix" class="form-label">实例名称 / 前缀</label>
+                            <input type="text" class="form-control" id="instanceNamePrefix" value="instance" required>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                            <label for="instanceCount" class="form-label">创建数量</label>
+                            <input type="number" class="form-control" id="instanceCount" value="1" min="1" max="10" required>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-8 mb-3">
+                            <label for="instanceOS" class="form-label">操作系统</label>
+                            <select class="form-select" id="instanceOS">
+                                <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
+                                <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
+                                <option value="Oracle Linux-9">Oracle Linux 9</option>
+                            </select>
+                        </div>
+                        <div class="col-md-4 mb-3">
+                           <label for="bootVolumeSize" class="form-label">磁盘大小 (GB)</label>
+                           <input type="number" class="form-control" id="bootVolumeSize" value="50" min="50">
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="instanceShape" class="form-label">实例规格 (Shape)</label>
+                        <select class="form-select" id="instanceShape">
+                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
+                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
+                        </select>
+                    </div>
+                    <div id="flexShapeConfig" class="row">
+                        <div class="col-md-6 mb-3">
+                            <label for="instanceOcpus" class="form-label">OCPU 数量</label>
+                            <input type="number" class="form-control" id="instanceOcpus" value="4" min="1" max="4">
+                        </div>
+                        <div class="col-md-6 mb-3">
+                            <label for="instanceMemory" class="form-label">内存 (GB)</label>
+                            <input type="number" class="form-control" id="instanceMemory" value="24" min="1" max="24">
+                        </div>
+                    </div>
+                    <div id="snatchModeOptions">
+                        <hr>
+                        <h6>抢占模式设置</h6>
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label for="availabilityDomain" class="form-label">可用性域 (可选)</label>
+                                <input type="text" class="form-control" id="availabilityDomain" placeholder="留空则自动选择">
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="minDelay" class="form-label">最短重试间隔 (秒)</label>
+                                <input type="number" class="form-control" id="minDelay" value="30">
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label for="maxDelay" class="form-label">最长重试间隔 (秒)</label>
+                                <input type="number" class="form-control" id="maxDelay" value="90">
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="submitLaunchInstanceBtn">确认</button>
             </div>
         </div>
     </div>
@@ -299,65 +375,6 @@
     </div>
 </div>
 
-<div class="modal fade" id="createInstanceModal" tabindex="-1" aria-labelledby="createInstanceModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="createInstanceModalLabel">创建新实例 (单次)</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted">此模式将自动查找或创建网络，并只尝试创建一次。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
-                <form id="createInstanceForm">
-                    <div class="row">
-                        <div class="col-md-8 mb-3">
-                            <label for="instanceNamePrefix" class="form-label">实例名称前缀</label>
-                            <input type="text" class="form-control" id="instanceNamePrefix" value="instance" required>
-                        </div>
-                        <div class="col-md-4 mb-3">
-                            <label for="instanceCount" class="form-label">创建数量</label>
-                            <input type="number" class="form-control" id="instanceCount" value="1" min="1" max="10" required>
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="instanceOS" class="form-label">操作系统</label>
-                        <select class="form-select" id="instanceOS">
-                            <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
-                            <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
-                            <option value="Oracle Linux-9">Oracle Linux 9</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="instanceShape" class="form-label">实例规格 (Shape)</label>
-                        <select class="form-select" id="instanceShape">
-                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
-                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
-                        </select>
-                    </div>
-                    <div id="flexShapeConfig" class="row">
-                        <div class="col-md-4 mb-3">
-                            <label for="instanceOcpus" class="form-label">OCPU 数量</label>
-                            <input type="number" class="form-control" id="instanceOcpus" value="4" min="1" max="4">
-                        </div>
-                        <div class="col-md-4 mb-3">
-                            <label for="instanceMemory" class="form-label">内存 (GB)</label>
-                            <input type="number" class="form-control" id="instanceMemory" value="24" min="1" max="24">
-                        </div>
-                        <div class="col-md-4 mb-3">
-                           <label for="bootVolumeSize" class="form-label">磁盘大小 (GB)</label>
-                           <input type="number" class="form-control" id="bootVolumeSize" value="50" min="50">
-                        </div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
-                <button type="button" class="btn btn-primary" id="submitCreateInstance">确认创建</button>
-            </div>
-        </div>
-    </div>
-</div>
-
 <div class="modal fade" id="editProfileModal" tabindex="-1" aria-labelledby="editProfileModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content">
@@ -390,75 +407,6 @@
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
                 <button type="button" class="btn btn-primary" id="saveProfileChangesBtn">保存更改</button>
-            </div>
-        </div>
-    </div>
-</div>
-
-<div class="modal fade" id="snatchInstanceModal" tabindex="-1" aria-labelledby="snatchInstanceModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-centered modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="snatchInstanceModalLabel">自动抢占实例 (循环重试)</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <p class="text-muted">此模式将自动查找或创建网络并持续尝试创建，直到成功。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
-                <form id="snatchInstanceForm">
-                    <div class="row">
-                        <div class="col-md-8 mb-3">
-                            <label for="snatchInstanceNamePrefix" class="form-label">实例名称</label>
-                            <input type="text" class="form-control" id="snatchInstanceNamePrefix" value="snatch-instance" required>
-                        </div>
-                         <div class="col-md-4 mb-3">
-                            <label for="snatchAvailabilityDomain" class="form-label">可用性域 (可选)</label>
-                            <input type="text" class="form-control" id="snatchAvailabilityDomain" placeholder="留空则自动选择第一个">
-                        </div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="snatchInstanceOS" class="form-label">操作系统</label>
-                        <select class="form-select" id="snatchInstanceOS">
-                            <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
-                            <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
-                            <option value="Oracle Linux-9">Oracle Linux 9</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="snatchInstanceShape" class="form-label">实例规格 (Shape)</label>
-                        <select class="form-select" id="snatchInstanceShape">
-                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
-                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
-                        </select>
-                    </div>
-                    <div id="snatchFlexShapeConfig" class="row">
-                        <div class="col-md-4 mb-3">
-                            <label for="snatchInstanceOcpus" class="form-label">OCPU 数量</label>
-                            <input type="number" class="form-control" id="snatchInstanceOcpus" value="4" min="1" max="4">
-                        </div>
-                        <div class="col-md-4 mb-3">
-                            <label for="snatchInstanceMemory" class="form-label">内存 (GB)</label>
-                            <input type="number" class="form-control" id="snatchInstanceMemory" value="24" min="1" max="24">
-                        </div>
-                        <div class="col-md-4 mb-3">
-                           <label for="snatchBootVolumeSize" class="form-label">磁盘大小 (GB)</label>
-                           <input type="number" class="form-control" id="snatchBootVolumeSize" value="50" min="50">
-                        </div>
-                    </div>
-                    <div class="row">
-                        <div class="col-6">
-                            <label for="snatchMinDelay" class="form-label">最短重试间隔 (秒)</label>
-                            <input type="number" class="form-control" id="snatchMinDelay" value="30">
-                        </div>
-                        <div class="col-6">
-                            <label for="snatchMaxDelay" class="form-label">最长重试间隔 (秒)</label>
-                            <input type="number" class="form-control" id="snatchMaxDelay" value="90">
-                        </div>
-                    </div>
-                </form>
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-                <button type="button" class="btn btn-primary" id="submitSnatchInstanceBtn">开始抢占</button>
             </div>
         </div>
     </div>
