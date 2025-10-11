@@ -146,9 +146,9 @@ update_panel() {
     fi
     cd "${INSTALL_DIR}"
 
-    print_info "步骤 1: 暂存您对 docker-compose.yml 的本地修改..."
-    # 使用 git stash 保存对 docker-compose.yml 的修改，以防更新时被覆盖
-    git stash push -- docker-compose.yml
+    print_info "步骤 1: 暂存所有本地修改..."
+    # 使用 git stash 保存所有本地修改，以防更新时被覆盖
+    git stash
 
     print_info "步骤 2: 正在从 Git 拉取最新代码..."
     if ! git pull origin main; then
@@ -158,7 +158,7 @@ update_panel() {
         exit 1
     fi
     
-    print_info "步骤 3: 正在恢复您对 docker-compose.yml 的修改..."
+    print_info "步骤 3: 正在恢复您的本地修改..."
     # 尝试恢复暂存，' || true ' 会在没有暂存内容时防止脚本出错
     git stash pop || true
     
@@ -209,3 +209,4 @@ case $choice in
         print_error "无效的选项。"
         ;;
 esac
+
