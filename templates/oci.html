@@ -6,7 +6,7 @@
 <style>
     body { padding-bottom: 20px; background-color: #f8f9fa; }
     .table-hover tbody tr { cursor: pointer; }
-    .table-hover tbody tr.table-active { background-color: #ffe5d0 !important; }
+    .table-hover tbody tr.table-active { background-color: #d2e5ff !important; font-weight: bold; }
     .form-label { font-weight: 500; }
     .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
     .status-running { background-color: #198754; }
@@ -33,6 +33,15 @@
     }
     .profile-list-card-body {
         min-height: 580px;
+    }
+    /* --- 修改后的样式：用于禁用状态的账户行 --- */
+    .table-hover tbody tr.profile-disabled {
+        opacity: 0.65; /* 降低透明度，产生禁用的视觉效果 */
+        cursor: not-allowed; /* 显示禁止光标 */
+        pointer-events: none; /* 禁用该行上的所有鼠标事件 */
+    }
+    .table-hover tbody tr.profile-disabled .action-buttons {
+        pointer-events: auto; /* 但允许其内部的操作按钮可以被点击 */
     }
 </style>
 {% endblock %}
@@ -81,8 +90,8 @@
                         <table class="table table-hover">
                             <thead>
                                 <tr>
-                                    <th class="text-end" style="padding-right: 190px;">账户名称</th>
-                                    <th class="text-end" style="padding-right: 180px;">操作</th>
+                                    <th class="text-end" style="padding-right: 320px;">选择账户</th>
+                                    <th class="text-end" style="padding-right: 130px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="profileList">
@@ -168,8 +177,6 @@
         </div>
     </div>
 </div>
-
-<!-- ####################  MODAL SECTION #################### -->
 
 <div class="modal fade" id="createLaunchInstanceModal" tabindex="-1" aria-labelledby="createLaunchInstanceModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
@@ -584,4 +591,3 @@
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/oci_script.js') }}"></script>
 {% endblock %}
-
