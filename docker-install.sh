@@ -145,25 +145,50 @@ update_panel() {
     fi
     cd "${INSTALL_DIR}"
 
-    print_info "步骤 1: 暂存所有本地修改..."
-    # 使用 git stash 保存所有本地修改，以防更新时被覆盖
-    git stash
+    print_info "步骤 1: 检查当前安装模式..."
+    is_existing_server_mode=false
+    # 通过检查 caddy 服务是否被注释来判断模式
+    if grep -q '^#  caddy:' docker-compose.yml; then
+        is_existing_server_mode=true
+        # 获取用户设置的端口
+        host_port=$(grep -A 2 'ports:' docker-compose.yml | tail -n 1 | awk -F'"' '{print $2}' | cut -d: -f1)
+        print_info "检测到“已有服务模式”，将保留端口 ${host_port} 并禁用 Caddy。"
+    else
+        print_info "检测到“全新服务器模式”，将更新 Caddy。"
+    fi
 
-    print_info "步骤 2: 正在从 Git 拉取最新代码..."
+    print_info "步骤 2: 强制重置本地代码以同步远程仓库..."
+    git fetch origin
+    git reset --hard origin/main
+    
+    print_info "步骤 3: 正在从 Git 拉取最新代码..."
     if ! git pull origin main; then
-        # 如果拉取失败，恢复暂存的修改
-        print_error "Git 拉取失败。可能是网络问题或复杂的合并冲突。正在恢复您的本地修改..."
-        git stash pop
+        print_error "Git 拉取失败。可能是网络问题。"
         exit 1
     fi
-    
-    print_info "步骤 3: 正在恢复您的本地修改..."
-    # 尝试恢复暂存，' || true ' 会在没有暂存内容时防止脚本出错
-    git stash pop || true
-    
     print_success "代码更新完毕。"
 
-    print_info "步骤 4: 正在重新构建并启动服务..."
+    # 如果是“已有服务模式”，则在更新后的文件上重新应用修改
+    if [ "$is_existing_server_mode" = true ]; then
+        print_info "步骤 4: 正在为“已有服务模式”重新应用配置..."
+        START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
+        if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
+            COMMENT_END_LINE=$((END_LINE - 1)); sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
+            sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
+        else
+            print_warning "无法在新的 docker-compose.yml 中定位 Caddy，跳过禁用步骤。"
+        fi
+        
+        # 确保端口号有效
+        if [ -z "$host_port" ]; then 
+            host_port=8000
+            print_warning "无法检测到旧端口，将使用默认端口 8000。"
+        fi
+        sed -i "/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - \"${host_port}:5000\"/" docker-compose.yml
+        print_success "配置重新应用完成。"
+    fi
+
+    print_info "步骤 5: 正在重新构建并启动服务..."
     if ! docker compose up -d --build; then
         print_error "Docker Compose 更新失败！请检查日志。"
     fi
