@@ -169,6 +169,8 @@
     </div>
 </div>
 
+<!-- ####################  MODAL SECTION #################### -->
+
 <div class="modal fade" id="createLaunchInstanceModal" tabindex="-1" aria-labelledby="createLaunchInstanceModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-lg">
         <div class="modal-content">
@@ -177,7 +179,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted small">创建实例将以**抢占模式**执行（资源不足时自动重试）。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
+                <p class="text-muted small">创建将以**抢占模式**执行（资源不足时自动重试）。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
                 <form id="createLaunchInstanceForm">
                     <div class="row">
                         <div class="col-md-8 mb-3">
@@ -224,19 +226,16 @@
                         <hr>
                         <h6>抢占模式设置</h6>
                         <div class="row">
-                            <div class="col-md-4 mb-3">
-                                <label for="availabilityDomain" class="form-label">可用性域 (可选)</label>
-                                <input type="text" class="form-control" id="availabilityDomain" placeholder="留空则自动选择">
-                            </div>
-                            <div class="col-md-4 mb-3">
+                            <div class="col-md-6 mb-3">
                                 <label for="minDelay" class="form-label">最短重试间隔 (秒)</label>
                                 <input type="number" class="form-control" id="minDelay" value="30">
                             </div>
-                            <div class="col-md-4 mb-3">
+                            <div class="col-md-6 mb-3">
                                 <label for="maxDelay" class="form-label">最长重试间隔 (秒)</label>
                                 <input type="number" class="form-control" id="maxDelay" value="90">
                             </div>
                         </div>
+                         <div class="form-text">可用性域将由程序自动轮询，无需手动指定。</div>
                     </div>
                 </form>
             </div>
@@ -557,8 +556,32 @@
         </div>
     </div>
 </div>
+
+<div class="modal fade" id="proxySettingsModal" tabindex="-1" aria-labelledby="proxySettingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="proxySettingsModalLabel">设置账户代理</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="proxySettingsAlias">
+                <div class="mb-3">
+                    <label for="proxyUrl" class="form-label">代理服务器地址</label>
+                    <input type="text" class="form-control" id="proxyUrl" placeholder="例如: http://user:pass@host:port">
+                    <div class="form-text">支持 http, https, socks5 协议。留空并保存即为移除代理。</div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-danger" id="removeProxyBtn">移除代理</button>
+                <button type="button" class="btn btn-primary" id="saveProxyBtn">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script src="{{ url_for('static', filename='js/oci_script.js') }}"></script>
 {% endblock %}
+
