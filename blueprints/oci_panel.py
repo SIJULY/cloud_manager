@@ -401,6 +401,9 @@ def stop_task(task_id):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ?, created_at = ? WHERE id = ?', ('failure', '任务已被用户手动停止。', utc_time, task_id))
     return jsonify({"success": True, "message": f"停止任务 {task_id} 的请求已发送。"})
 
+# ##################################################################
+# ##               【核心修改区域】 START                         ##
+# ##################################################################
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
 @timeout(20)
@@ -419,17 +422,21 @@ def oci_session_route():
                 session.pop('oci_profile_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
+            # --- 修改开始 ---
+            # 检查代理信息并构建更详细的成功消息
             proxy_info = profile_config.get('proxy')
-            success_message = f"连接成功! 当前账号: {alias}"
             if proxy_info:
-                success_message += f" (通过代理: {proxy_info})"
+                success_message = f"连接成功! 当前账号: {alias} (通过代理: {proxy_info})"
+            else:
+                success_message = f"连接成功! 当前账号: {alias} (未使用代理)"
+            # --- 修改结束 ---
 
             can_create = bool(profile_config.get('default_ssh_public_key'))
             return jsonify({
                 "success": True, 
                 "alias": alias, 
                 "can_create": can_create,
-                "message": success_message
+                "message": success_message  # 返回包含代理信息的消息
             })
 
         if request.method == "GET":
@@ -447,6 +454,9 @@ def oci_session_route():
     except Exception as e:
         session.pop('oci_profile_alias', None)
         return jsonify({"error": str(e)}), 500
+# ##################################################################
+# ##               【核心修改区域】 END                           ##
+# ##################################################################
 
 @oci_bp.route('/api/instances')
 @login_required
@@ -890,4 +900,3 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
-
