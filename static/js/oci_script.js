@@ -223,13 +223,16 @@ document.addEventListener('DOMContentLoaded', function() {
     
     refreshInstancesBtn.addEventListener('click', refreshInstances);
     
+    // ##################################################################
+    // ##               【核心修改区域 1】 START                       ##
+    // ##################################################################
     async function checkSession(shouldRefreshInstances = true) {
         try {
             const data = await apiRequest('/oci/api/session');
-            document.querySelectorAll('.connect-btn').forEach(btn => {
-                btn.textContent = '连接';
-                btn.classList.replace('btn-secondary', 'btn-success');
-                btn.disabled = false;
+            
+            // 每次检查前，先重置所有行的状态
+            document.querySelectorAll('#profileList tr').forEach(r => {
+                r.classList.remove('table-active', 'profile-disabled');
             });
 
             if (data.logged_in && data.alias) {
@@ -238,11 +241,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionAreaProfile.classList.remove('d-none');
                 enableMainControls(true, data.can_create);
                 if (shouldRefreshInstances) refreshInstances();
-                const activeButton = document.querySelector(`.connect-btn[data-alias="${data.alias}"]`);
-                if (activeButton) {
-                    activeButton.textContent = '已连接';
-                    activeButton.classList.replace('btn-success', 'btn-secondary');
-                    activeButton.disabled = true;
+                
+                // 找到当前连接的账户行，并同时添加高亮和禁用样式
+                const activeRow = document.querySelector(`#profileList tr[data-alias="${data.alias}"]`);
+                if (activeRow) {
+                    activeRow.classList.add('table-active', 'profile-disabled');
                 }
             } else {
                 currentProfileStatus.textContent = '未连接';
@@ -255,6 +258,9 @@ document.addEventListener('DOMContentLoaded', function() {
              enableMainControls(false, false);
         }
     }
+    // ##################################################################
+    // ##               【核心修改区域 1】 END                         ##
+    // ##################################################################
     
     function enableMainControls(enabled, canCreate) {
         refreshInstancesBtn.disabled = !enabled;
@@ -316,14 +322,14 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 response.items.forEach(name => {
                     const tr = document.createElement('tr');
+                    tr.dataset.alias = name; // Add data-alias to the row
                     tr.innerHTML = `
                         <td>
                             <span class="badge bg-primary" style="min-width: 8em; display: inline-block; text-align: center; font-size: 0.9em; padding: 0.5em 0.75em;">
                                 ${name}
                             </span>
                         </td>
-                        <td class="text-end action-buttons" style="min-width: 380px;">
-                            <button class="btn btn-success btn-sm connect-btn profile-action-btn" data-alias="${name}">连接</button>
+                        <td class="text-end action-buttons" style="min-width: 295px;">
                             <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
                             <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
                             <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
@@ -458,12 +464,63 @@ document.addEventListener('DOMContentLoaded', function() {
         reader.readAsText(keyFile);
     });
 
+    // ##################################################################
+    // ##               【核心修改区域 2】 START                       ##
+    // ##################################################################
     profileList.addEventListener('click', async (e) => {
-        const button = e.target.closest('button');
-        if (!button) return;
-        const alias = button.dataset.alias;
+        const row = e.target.closest('tr');
+        if (!row || !row.dataset.alias) return;
 
-        if (button.classList.contains('connect-btn')) {
+        const button = e.target.closest('button');
+        const alias = row.dataset.alias;
+
+        // 如果点击的是已禁用的行，并且点击的不是行内的按钮，则阻止操作
+        if (row.classList.contains('profile-disabled') && !button) {
+            addLog(`账号 ${alias} 已连接，无需重复操作。`, 'warning');
+            return; 
+        }
+
+        if (button) {
+            // 处理行内按钮（代理、编辑、删除）的点击事件
+            if (button.classList.contains('proxy-btn')) {
+                try {
+                    addLog(`加载 ${alias} 的代理设置...`);
+                    const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                    proxySettingsAlias.value = alias;
+                    proxyUrlInput.value = profileData.proxy || '';
+                    proxySettingsModal.show();
+                } catch (error) {}
+            }
+            else if (button.classList.contains('edit-btn')) {
+                try {
+                    addLog(`正在加载账号 ${alias} 的信息...`);
+                    const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                    document.getElementById('editProfileOriginalAlias').value = alias;
+                    document.getElementById('editProfileAlias').value = alias;
+                    const { default_ssh_public_key, key_content, proxy, ...configParts } = profileData;
+                    document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
+                    document.getElementById('editProfileSshKey').value = default_ssh_public_key || '';
+                    document.getElementById('editProfileKeyFile').value = '';
+                    editProfileModal.show();
+                } catch (error) {}
+            }
+            else if (button.classList.contains('delete-btn')) {
+                confirmActionModalLabel.textContent = '确认删除账号';
+                confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
+                confirmActionModalTerminateOptions.classList.add('d-none');
+                confirmActionModalConfirmBtn.onclick = async () => {
+                    confirmActionModal.hide();
+                    try {
+                        addLog(`正在删除账号: ${alias}...`);
+                        await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
+                        addLog('删除成功!', 'success');
+                        loadProfiles(1);
+                    } catch (error) {}
+                };
+                confirmActionModal.show();
+            }
+        } else {
+            // 如果点击的不是按钮，则执行连接操作
             addLog(`正在连接到 ${alias}...`);
             try {
                 const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
@@ -471,44 +528,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 checkSession();
             } catch (error) {}
         }
-        else if (button.classList.contains('edit-btn')) {
-            try {
-                addLog(`正在加载账号 ${alias} 的信息...`);
-                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
-                document.getElementById('editProfileOriginalAlias').value = alias;
-                document.getElementById('editProfileAlias').value = alias;
-                const { default_ssh_public_key, key_content, proxy, ...configParts } = profileData;
-                document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
-                document.getElementById('editProfileSshKey').value = default_ssh_public_key || '';
-                document.getElementById('editProfileKeyFile').value = '';
-                editProfileModal.show();
-            } catch (error) {}
-        }
-        else if (button.classList.contains('proxy-btn')) {
-            try {
-                addLog(`加载 ${alias} 的代理设置...`);
-                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
-                proxySettingsAlias.value = alias;
-                proxyUrlInput.value = profileData.proxy || '';
-                proxySettingsModal.show();
-            } catch (error) {}
-        }
-        else if (button.classList.contains('delete-btn')) {
-            confirmActionModalLabel.textContent = '确认删除账号';
-            confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
-            confirmActionModalTerminateOptions.classList.add('d-none');
-            confirmActionModalConfirmBtn.onclick = async () => {
-                confirmActionModal.hide();
-                try {
-                    addLog(`正在删除账号: ${alias}...`);
-                    await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
-                    addLog('删除成功!', 'success');
-                    loadProfiles(1);
-                } catch (error) {}
-            };
-            confirmActionModal.show();
-        }
     });
+    // ##################################################################
+    // ##               【核心修改区域 2】 END                         ##
+    // ##################################################################
 
     document.getElementById('saveProfileChangesBtn').addEventListener('click', async () => {
         const originalAlias = document.getElementById('editProfileOriginalAlias').value;
@@ -869,4 +892,3 @@ document.addEventListener('DOMContentLoaded', function() {
     checkSession();
     loadTgConfig();
 });
-
