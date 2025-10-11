@@ -1,14 +1,16 @@
+# /app/blueprints/oci_panel.py (或 oci_bp.py，完整替换代码)
+
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
 from functools import wraps
 from datetime import timezone
 import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
-                                 UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
-                                 LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                                 LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
-                                 UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
-                                 AddVcnIpv6CidrDetails, UpdateSubnetDetails)
+                             UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
+                             LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
+                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
+                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
+                             AddVcnIpv6CidrDetails, UpdateSubnetDetails)
 from oci.exceptions import ServiceError
 from app import celery
 
@@ -222,67 +224,43 @@ runcmd:
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
 
 def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
-    """
-    自动检查并配置VCN和子网的IPv6设置，并更新路由表和安全规则。
-    """
-    # 1. 获取基础资源
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/5) 正在获取网络资源...', task_id))
     vnic = vnet_client.get_vnic(vnic_id).data
     subnet = vnet_client.get_subnet(vnic.subnet_id).data
     vcn = vnet_client.get_vcn(subnet.vcn_id).data
-    
-    # 2. 检查并为VCN开启IPv6
     if not vcn.ipv6_cidr_blocks:
         _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/5) 正在为VCN开启IPv6...', task_id))
         details = AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
-        
-        # <<< --- 最终、正确的修正 --- >>>
-        # 正确的方法名是 add_ipv6_vcn_cidr
         vnet_client.add_ipv6_vcn_cidr(vcn_id=vcn.id, add_vcn_ipv6_cidr_details=details)
-        # <<< --- 修正结束 --- >>>
-        
         oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
-        vcn = vnet_client.get_vcn(vcn.id).data # 重新获取VCN信息
+        vcn = vnet_client.get_vcn(vcn.id).data
         logging.info(f"VCN {vcn.id} 已成功开启IPv6，地址段: {vcn.ipv6_cidr_blocks}")
-
-    # 3. 检查并为子网分配IPv6 CIDR
     if not subnet.ipv6_cidr_block:
         _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/5) 正在为子网分配IPv6地址段...', task_id))
         vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
-        # 基于VCN的/56地址块生成子网的/64地址块
         subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
         details = UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
         vnet_client.update_subnet(subnet.id, details)
         oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
         logging.info(f"Subnet {subnet.id} 已成功分配IPv6地址段: {subnet_ipv6_cidr}")
-
-    # 4. 更新路由表以允许IPv6流量
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(4/5) 正在更新路由表以支持IPv6...', task_id))
     route_table = vnet_client.get_route_table(vcn.default_route_table_id).data
-    
-    # 查找互联网网关
     igws = vnet_client.list_internet_gateways(compartment_id=vcn.compartment_id, vcn_id=vcn.id).data
     if not igws:
         raise Exception("未找到互联网网关，无法为IPv6添加路由规则。")
     igw_id = igws[0].id
-
-    # 检查IPv6路由规则是否已存在
     ipv6_rule_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
     if not ipv6_rule_exists:
         new_rules = list(route_table.route_rules)
         new_rules.append(RouteRule(destination='::/0', network_entity_id=igw_id))
         vnet_client.update_route_table(route_table.id, UpdateRouteTableDetails(route_rules=new_rules))
         logging.info(f"已为路由表 {route_table.id} 添加IPv6默认路由。")
-
-    # 5. 更新安全列表以允许出站IPv6流量
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(5/5) 正在更新安全规则以支持IPv6...', task_id))
     security_list = vnet_client.get_security_list(vcn.default_security_list_id).data
-    
-    # 检查出站IPv6规则是否已存在
     egress_ipv6_rule_exists = any(rule.destination == '::/0' for rule in security_list.egress_security_rules)
     if not egress_ipv6_rule_exists:
         new_egress_rules = list(security_list.egress_security_rules)
-        new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all')) # 允许所有出站IPv6流量
+        new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all'))
         vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
         logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
 
@@ -336,30 +314,18 @@ def tg_config_handler():
 def manage_profiles():
     profiles = load_profiles()
     if request.method == "GET":
-        # --- 翻页逻辑开始 ---
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 9, type=int)
-        
-        # 获取并排序所有账号名称，确保翻页顺序稳定
-        # 使用 localeCompare 进行自然排序
         profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
-
         total_items = len(profile_names)
         start = (page - 1) * per_page
         end = start + per_page
-        
         paginated_items = profile_names[start:end]
         total_pages = (total_items + per_page - 1) // per_page
-
         return jsonify({
-            'items': paginated_items,
-            'total_items': total_items,
-            'page': page,
-            'per_page': per_page,
-            'total_pages': total_pages
+            'items': paginated_items, 'total_items': total_items, 'page': page,
+            'per_page': per_page, 'total_pages': total_pages
         })
-        # --- 翻页逻辑结束 ---
-
     if request.method == "POST":
         data = request.json
         alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
@@ -369,6 +335,7 @@ def manage_profiles():
         profiles[alias].update(new_profile_data)
         save_profiles(profiles)
         return jsonify({"success": True, "alias": alias})
+
 @oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
 @login_required
 def handle_single_profile(alias):
@@ -437,12 +404,12 @@ def oci_session_route():
                 session.pop('oci_profile_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             can_create = bool(profiles.get(alias, {}).get('default_ssh_public_key'))
-            return jsonify({"success": True, "alias": alias, "can_create": can_create, "can_snatch": can_create})
+            return jsonify({"success": True, "alias": alias, "can_create": can_create})
         if request.method == "GET":
             alias = session.get('oci_profile_alias')
             if alias:
                 can_create = bool(load_profiles().get(alias, {}).get('default_ssh_public_key'))
-                return jsonify({"logged_in": True, "alias": alias, "can_create": can_create, "can_snatch": can_create})
+                return jsonify({"logged_in": True, "alias": alias, "can_create": can_create})
             return jsonify({"logged_in": False})
         if request.method == "DELETE":
             session.pop('oci_profile_alias', None)
@@ -599,38 +566,81 @@ def update_security_rules():
     except Exception as e:
         return jsonify({"error": f"更新安全规则失败: {e}"}), 500
 
-@oci_bp.route('/api/create-instance', methods=['POST'])
+@oci_bp.route('/api/launch-instance', methods=['POST'])
 @login_required
 @oci_clients_required
-@timeout(10)
-def create_instance():
+@timeout(30)
+def launch_instance():
     try:
         data = request.json
-        task_id = _create_task_entry('create', data.get('display_name_prefix', 'N/A'))
-        _create_instance_task.delay(task_id, g.oci_config, session['oci_profile_alias'], data)
-        return jsonify({"message": "创建实例请求已提交...", "task_id": task_id})
-    except (sqlite3.OperationalError, TimeoutException) as e:
-        if isinstance(e, TimeoutException) or "database is locked" in str(e):
-            return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        raise
-    except Exception as e:
-        return jsonify({"error": f"提交创建实例任务失败: {e}"}), 500
+        display_name = data.get('display_name_prefix', 'N/A')
+        instance_count = data.get('instance_count', 1)
+        shape = data.get('shape')
+        
+        compute_client = g.oci_clients['compute']
+        bs_client = g.oci_clients['bs']
+        compartment_id = g.oci_config['tenancy']
 
-@oci_bp.route('/api/snatch-instance', methods=['POST'])
-@login_required
-@oci_clients_required
-@timeout(10)
-def snatch_instance():
-    try:
-        data = request.json
-        task_id = _create_task_entry('snatch', data.get('display_name_prefix', 'N/A'))
-        _snatch_instance_task.delay(task_id, g.oci_config, session['oci_profile_alias'], data)
-        return jsonify({"message": "抢占实例任务已提交...", "task_id": task_id})
+        try:
+            # 统一获取实例列表一次，供后续所有检查使用
+            all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
+            
+            # <<< 总磁盘容量检查 >>>
+            requested_boot_volume_size = data.get('boot_volume_size', 50)
+            new_requested_total_size = instance_count * requested_boot_volume_size
+            current_total_boot_volume_size = 0
+
+            for instance in all_instances:
+                if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
+                    try:
+                        attachments = oci.pagination.list_call_get_all_results(
+                            compute_client.list_boot_volume_attachments,
+                            availability_domain=instance.availability_domain,
+                            compartment_id=compartment_id,
+                            instance_id=instance.id
+                        ).data
+                        if attachments:
+                            boot_volume_id = attachments[0].boot_volume_id
+                            boot_volume = bs_client.get_boot_volume(boot_volume_id).data
+                            current_total_boot_volume_size += int(boot_volume.size_in_gbs)
+                    except Exception as e:
+                        logging.warning(f"无法获取实例 {instance.id} 的引导卷信息，计算总量时将忽略: {e}")
+                        continue
+            
+            if (current_total_boot_volume_size + new_requested_total_size) > 200:
+                error_msg = f"总磁盘容量超出200 GB的免费额度。您当前已使用 {current_total_boot_volume_size} GB，本次请求将导致总量达到 {current_total_boot_volume_size + new_requested_total_size} GB。"
+                return jsonify({"error": error_msg}), 400
+
+            # <<< AMD实例数量检查 >>>
+            if shape == 'VM.Standard.E2.1.Micro':
+                existing_amd_count = sum(1 for inst in all_instances if inst.shape == shape and inst.lifecycle_state not in ['TERMINATED', 'TERMINATING'])
+                if (existing_amd_count + instance_count) > 2:
+                    error_msg = f"免费账户最多只能创建2个AMD实例，您当前已有 {existing_amd_count} 个。"
+                    return jsonify({"error": error_msg}), 400
+
+        except Exception as e:
+            logging.error(f"检查配额时发生严重错误: {e}")
+            return jsonify({"error": f"检查配额时出错，请稍后重试: {e}"}), 500
+
+        task_ids = []
+        for i in range(instance_count):
+            task_name = f"{display_name}-{i+1}" if instance_count > 1 else display_name
+            task_id = _create_task_entry('snatch', task_name)
+            
+            task_data = data.copy()
+            task_data['display_name_prefix'] = task_name
+            
+            _snatch_instance_task.delay(task_id, g.oci_config, session['oci_profile_alias'], task_data)
+            task_ids.append(task_id)
+            
+        return jsonify({"message": f"已提交 {instance_count} 个抢占实例任务...", "task_ids": task_ids})
+
     except (sqlite3.OperationalError, TimeoutException) as e:
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
             return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
         raise
     except Exception as e:
+        logging.error(f"提交抢占任务失败: {e}")
         return jsonify({"error": f"提交抢占任务失败: {e}"}), 500
 
 @oci_bp.route('/api/task_status/<task_id>')
@@ -730,47 +740,6 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
 @celery.task
-def _create_instance_task(task_id, profile_config, alias, details):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '任务准备中...', task_id))
-    try:
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error: raise Exception(error)
-        compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
-        tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
-        if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
-        subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-        ad_name = identity_client.list_availability_domains(tenancy_ocid).data[0].name
-        os_name, os_version = details['os_name_version'].split('-')
-        shape = details['shape']
-        images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
-        if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
-        
-        created_instances_info = []
-        instance_passwords = {}
-
-        for i in range(details.get('instance_count', 1)):
-            instance_password = generate_oci_password()
-            user_data_encoded = get_user_data(instance_password)
-            instance_name = f"{details.get('display_name_prefix', 'Instance')}-{i+1}" if details.get('instance_count', 1) > 1 else details.get('display_name_prefix', 'Instance')
-            launch_details = LaunchInstanceDetails(compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=instance_name, create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True), metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded}, source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']), shape_config=LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None)
-            instance = compute_client.launch_instance(launch_details).data
-            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'实例 {instance_name} 正在置备...', task_id))
-            oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
-            created_instances_info.append(instance_name)
-            instance_passwords[instance_name] = instance_password
-            if i < details.get('instance_count', 1) - 1: time.sleep(5)
-            
-        passwords_str = "\n".join([f"- {name}: {pwd}" for name, pwd in instance_passwords.items()])
-        msg = f"🎉 {len(created_instances_info)} 个实例已成功创建并运行!\n- 登陆用户名：ubuntu\n- 实例密码如下:\n{passwords_str}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', msg, task_id))
-
-    except ServiceError as e:
-        msg = f"❌ 实例创建失败! \n- 原因: 资源不足或请求过于频繁 ({e.code})，请更换区域或稍后再试。" if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code else f"❌ 实例创建失败! \n- OCI API 错误: {e.message}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', msg, task_id))
-    except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 实例创建失败! \n- 程序内部错误: {e}", task_id))
-
-@celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
     status_data = {
         "attempt_count": 0,
@@ -806,7 +775,8 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         instance_password = generate_oci_password()
         user_data_encoded = get_user_data(instance_password)
         launch_details = LaunchInstanceDetails(
-            compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, display_name=details.get('display_name_prefix', 'snatch-instance'),
+            compartment_id=tenancy_ocid, availability_domain=ad_name, shape=shape, 
+            display_name=details.get('display_name_prefix', 'snatch-instance'),
             create_vnic_details=CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
             metadata={"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
             source_details=InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
@@ -841,12 +811,10 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             task_name = instance.display_name
             result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
             
-            # ---【修改部分】---
             tg_msg = (f"🔔 *任务完成通知*\n\n"
                       f"*账户*: `{alias}`\n"
                       f"*任务名称*: `{task_name}`\n\n"
                       f"*结果*:\n{result_for_tg}")
-            # ---【修改结束】---
             
             send_tg_notification(tg_msg)
             
