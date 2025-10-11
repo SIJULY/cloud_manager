@@ -317,7 +317,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 response.items.forEach(name => {
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>${name}</td>
+                        <td>
+                            <span class="badge bg-primary" style="min-width: 8em; display: inline-block; text-align: center; font-size: 0.9em; padding: 0.5em 0.75em;">
+                                ${name}
+                            </span>
+                        </td>
                         <td class="text-end action-buttons" style="min-width: 380px;">
                             <button class="btn btn-success btn-sm connect-btn profile-action-btn" data-alias="${name}">连接</button>
                             <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
