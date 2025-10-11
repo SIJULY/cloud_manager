@@ -775,21 +775,7 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details):
-    status_data = {
-        "attempt_count": 0,
-        "start_time": datetime.datetime.now(timezone.utc).isoformat(),
-        "last_message": "抢占任务准备中...",
-        "details": {
-            "name": details.get('display_name_prefix', 'snatch-instance'),
-            "shape": details.get('shape', 'N/A'),
-            "ocpus": details.get('ocpus', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
-            "memory": details.get('memory_in_gbs', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
-            "os": details.get('os_name_version', 'N/A'),
-            "ad": "自动轮询中...",
-            "boot_volume_size": details.get('boot_volume_size', 50)
-        }
-    }
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(status_data), task_id))
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中，正在获取初始配置...', task_id))
     
     try:
         clients, error = get_oci_clients(profile_config, validate=False)
@@ -807,8 +793,8 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
-        status_data['last_message'] = "正在查找兼容的系统镜像..."
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
+        
+        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', ('正在查找兼容的系统镜像...', task_id))
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
@@ -825,6 +811,21 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
         }
 
+        # 步骤2：在这里才创建用于循环的status_data，不再包含第0次的信息
+        status_data = {
+            "start_time": datetime.datetime.now(timezone.utc).isoformat(),
+            "last_message": "",
+            "details": {
+                "name": details.get('display_name_prefix', 'snatch-instance'),
+                "shape": details.get('shape', 'N/A'),
+                "ocpus": details.get('ocpus', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
+                "memory": details.get('memory_in_gbs', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
+                "os": details.get('os_name_version', 'N/A'),
+                "ad": "自动轮询中...",
+                "boot_volume_size": details.get('boot_volume_size', 50)
+            }
+        }
+
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
@@ -833,7 +834,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
     attempt_count = 0
     while True:
         attempt_count += 1
-        status_data['attempt_count'] = attempt_count
+        status_data['attempt_count'] = attempt_count # attempt_count 从 1 开始
         force_update = False
         
         current_ad_index = (attempt_count - 1) % len(availability_domains)
