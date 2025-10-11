@@ -223,9 +223,6 @@ document.addEventListener('DOMContentLoaded', function() {
     
     refreshInstancesBtn.addEventListener('click', refreshInstances);
     
-    // ##################################################################
-    // ##               【核心修改区域 1】 START                       ##
-    // ##################################################################
     async function checkSession(shouldRefreshInstances = true) {
         try {
             const data = await apiRequest('/oci/api/session');
@@ -258,9 +255,6 @@ document.addEventListener('DOMContentLoaded', function() {
              enableMainControls(false, false);
         }
     }
-    // ##################################################################
-    // ##               【核心修改区域 1】 END                         ##
-    // ##################################################################
     
     function enableMainControls(enabled, canCreate) {
         refreshInstancesBtn.disabled = !enabled;
@@ -322,12 +316,12 @@ document.addEventListener('DOMContentLoaded', function() {
             } else {
                 response.items.forEach(name => {
                     const tr = document.createElement('tr');
-                    tr.dataset.alias = name; // Add data-alias to the row
+                    tr.dataset.alias = name;
                     tr.innerHTML = `
                         <td>
-                            <span class="badge bg-primary" style="min-width: 8em; display: inline-block; text-align: center; font-size: 0.9em; padding: 0.5em 0.75em;">
+                            <a href="#" class="btn btn-info btn-sm" style="min-width: 8em;" onclick="event.preventDefault();">
                                 ${name}
-                            </span>
+                            </a>
                         </td>
                         <td class="text-end action-buttons" style="min-width: 295px;">
                             <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
@@ -464,9 +458,6 @@ document.addEventListener('DOMContentLoaded', function() {
         reader.readAsText(keyFile);
     });
 
-    // ##################################################################
-    // ##               【核心修改区域 2】 START                       ##
-    // ##################################################################
     profileList.addEventListener('click', async (e) => {
         const row = e.target.closest('tr');
         if (!row || !row.dataset.alias) return;
@@ -529,9 +520,6 @@ document.addEventListener('DOMContentLoaded', function() {
             } catch (error) {}
         }
     });
-    // ##################################################################
-    // ##               【核心修改区域 2】 END                         ##
-    // ##################################################################
 
     document.getElementById('saveProfileChangesBtn').addEventListener('click', async () => {
         const originalAlias = document.getElementById('editProfileOriginalAlias').value;
