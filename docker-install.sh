@@ -2,7 +2,6 @@
 
 # ==============================================================================
 # Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
-# 版本: 经过Gemini修改
 # ==============================================================================
 
 # --- 配置 ---
@@ -50,11 +49,8 @@ prepare_files() {
     git clone ${REPO_URL} ${INSTALL_DIR}
     cd ${INSTALL_DIR}
 
-    # <<< 关键修正：先创建文件，再设置权限 >>>
     print_info "步骤 3: 初始化文件并修正目录权限..."
-    # 创建必要的空文件，以防万一
     touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
-    # 然后再统一为所有文件和目录设置权限
     chmod -R 777 .
     print_success "权限和文件初始化完成。"
 
@@ -83,7 +79,6 @@ install_clean_server() {
     if [ -z "$domain_name" ]; then ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip); if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
     else ACCESS_ADDRESS=$domain_name; fi
     
-    # <<< 修改：密码输入可见且可编辑 >>>
     read -p "请输入新的面板登录密码: " new_password
     
     CADDY_ADDRESS=$([[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "http://${ACCESS_ADDRESS}" || echo "$ACCESS_ADDRESS")
@@ -115,10 +110,8 @@ install_existing_server() {
         print_error "无法在 docker-compose.yml 中定位 Caddy 服务块，自动化修改失败。"
     fi
     
-    # <<< 修改：密码输入可见且可编辑 >>>
     read -p "请输入新的面板登录密码: " new_password
     
-    # <<< 新增：自定义端口，默认为8000 >>>
     read -p "请输入要映射到主机的端口 [默认: 8000]: " host_port
     host_port=${host_port:-8000}
 
@@ -134,7 +127,6 @@ install_existing_server() {
     SERVER_IP=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
     echo "------------------------------------------------------------"
     print_info "核心服务已启动！"
-    # <<< 修改：输出信息使用用户指定的端口 >>>
     print_info "您现在可以通过IP地址访问: http://${SERVER_IP}:${host_port}"
     print_info "登陆密码为安装过程中您设置的密码"
     
@@ -146,23 +138,39 @@ install_existing_server() {
     echo "------------------------------------------------------------"
 }
 
+# <<< --- 【核心修改部分】 --- >>>
 # 更新逻辑
 update_panel() {
     if [ ! -d "${INSTALL_DIR}" ]; then
         print_error "未检测到安装目录，无法执行更新。请先安装。"
     fi
     cd "${INSTALL_DIR}"
-    print_info "步骤 1: 正在从 Git 拉取最新代码..."
-    git restore docker-compose.yml .env
-    git pull origin main
+
+    print_info "步骤 1: 暂存您对 docker-compose.yml 的本地修改..."
+    # 使用 git stash 保存对 docker-compose.yml 的修改，以防更新时被覆盖
+    git stash push -- docker-compose.yml
+
+    print_info "步骤 2: 正在从 Git 拉取最新代码..."
+    if ! git pull origin main; then
+        # 如果拉取失败，恢复暂存的修改
+        print_error "Git 拉取失败。可能是网络问题或复杂的合并冲突。正在恢复您的本地修改..."
+        git stash pop
+        exit 1
+    fi
+    
+    print_info "步骤 3: 正在恢复您对 docker-compose.yml 的修改..."
+    # 尝试恢复暂存，' || true ' 会在没有暂存内容时防止脚本出错
+    git stash pop || true
+    
     print_success "代码更新完毕。"
 
-    print_info "步骤 2: 正在重新构建并启动服务..."
+    print_info "步骤 4: 正在重新构建并启动服务..."
     if ! docker compose up -d --build; then
         print_error "Docker Compose 更新失败！请检查日志。"
     fi
     print_success "面板已成功更新！"
 }
+# <<< --- 【修改结束】 --- >>>
 
 
 # --- 脚本主入口 ---
