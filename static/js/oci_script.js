@@ -268,11 +268,20 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
+    // ##################################################################
+    // ##               【核心修改区域】 START                         ##
+    // ##################################################################
     function pollTaskStatus(taskId) {
-        addLog(`正在监控任务 ${taskId}...`);
-        const intervalId = setInterval(async () => {
+        // 使用一个对象来存储定时器ID，这样可以跨函数调用来清除它
+        if (!window.taskPollers) {
+            window.taskPollers = {};
+        }
+    
+        const poller = async () => {
             try {
                 const apiResponse = await apiRequest(`/oci/api/task_status/${taskId}`);
+                
+                // 如果请求成功，就处理响应
                 const isFinalState = ['success', 'failure'].includes(apiResponse.status);
                 
                 let logMessage = '';
@@ -293,20 +302,34 @@ document.addEventListener('DOMContentLoaded', function() {
                     addLog(logMessage, logType);
                     window[lastLogKey] = logMessage;
                 }
-
-                if (isFinalState) {
-                    clearInterval(intervalId);
+    
+                // 如果任务未结束，则在5秒后再次轮询
+                if (!isFinalState) {
+                    window.taskPollers[taskId] = setTimeout(poller, 5000);
+                } else {
+                    // 如果任务已结束，清理资源
                     delete window[lastLogKey];
+                    delete window.taskPollers[taskId];
                     if (apiResponse.status === 'success') {
                         setTimeout(refreshInstances, 2000);
                     }
                 }
+    
             } catch (error) {
-                addLog(`监控任务 ${taskId} 时发生错误，停止监控。`, 'error');
-                clearInterval(intervalId);
+                // 如果请求失败 (例如 "Failed to fetch")
+                addLog(`监控任务 ${taskId} 时发生网络错误，将在10秒后重试...`, 'warning');
+                // 安排在10秒后重试，而不是立即停止
+                window.taskPollers[taskId] = setTimeout(poller, 10000); 
             }
-        }, 5000);
+        };
+    
+        // 立即开始第一次轮询
+        addLog(`正在监控任务 ${taskId}...`);
+        poller();
     }
+    // ##################################################################
+    // ##               【核心修改区域】 END                           ##
+    // ##################################################################
 
     async function loadProfiles(page = 1) {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
