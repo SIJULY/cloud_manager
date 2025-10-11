@@ -55,7 +55,20 @@ prepare_files() {
     chmod -R 777 .
     print_success "权限和文件初始化完成。"
 
-    print_info "步骤 4: 检查并应用兼容性修复..."
+    print_info "步骤 4: 创建 .gitignore 以保护配置文件..."
+    # 这一步将确保 docker-compose.yml 和 .env 文件在未来更新时不会被覆盖
+    if ! grep -q "docker-compose.yml" .gitignore; then
+        echo "docker-compose.yml" >> .gitignore
+    fi
+    if ! grep -q ".env" .gitignore; then
+        echo ".env" >> .gitignore
+    fi
+    # 确保Git停止追踪这些文件
+    git rm --cached docker-compose.yml .env > /dev/null 2>&1 || true
+    print_success ".gitignore 配置完成。"
+
+
+    print_info "步骤 5: 检查并应用兼容性修复..."
     if grep -q "version: " docker-compose.yml; then sed -i "/version: /d" docker-compose.yml; fi
     if [ -f "Dockerfile" ]; then sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile; fi
     print_success "兼容性修复完成。"
@@ -63,7 +76,7 @@ prepare_files() {
 
 # 启动容器
 launch_docker() {
-    print_info "步骤 6: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
+    print_info "步骤 7: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
     if ! docker compose up -d --build; then
         print_error "Docker Compose 启动失败！请检查上面的日志输出。安装已终止。"
     fi
@@ -74,7 +87,7 @@ launch_docker() {
 # 安装逻辑 - 全新服务器
 install_clean_server() {
     prepare_files
-    print_info "步骤 5: 配置面板 (全新服务器模式)..."
+    print_info "步骤 6: 配置面板 (全新服务器模式)..."
     cp .env.example .env
     read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
     if [ -z "$domain_name" ]; then ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip); if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
@@ -99,7 +112,7 @@ install_clean_server() {
 # 安装逻辑 - 已有服务
 install_existing_server() {
     prepare_files
-    print_info "步骤 5: 配置面板 (已有服务模式)..."
+    print_info "步骤 6: 配置面板 (已有服务模式)..."
     print_info "将禁用内置Caddy并暴露指定端口。"
     
     # 修改 docker-compose.yml 来禁用 caddy
@@ -146,50 +159,30 @@ update_panel() {
     fi
     cd "${INSTALL_DIR}"
 
-    print_info "步骤 1: 检查当前安装模式..."
-    is_existing_server_mode=false
-    # 通过检查 caddy 服务是否被注释来判断模式
-    if grep -q '^#  caddy:' docker-compose.yml; then
-        is_existing_server_mode=true
-        # 获取用户设置的端口
-        host_port=$(grep -A 2 'ports:' docker-compose.yml | tail -n 1 | awk -F'"' '{print $2}' | cut -d: -f1)
-        print_info "检测到“已有服务模式”，将保留端口 ${host_port} 并禁用 Caddy。"
-    else
-        print_info "检测到“全新服务器模式”，将更新 Caddy。"
-    fi
-
-    print_info "步骤 2: 强制重置本地代码以同步远程仓库..."
-    git fetch origin
-    git reset --hard origin/main
+    print_info "步骤 1: 正在从 Git 拉取最新代码（配置文件将被忽略）..."
     
-    print_info "步骤 3: 正在从 Git 拉取最新代码..."
+    # 确保 .gitignore 存在并包含 docker-compose.yml 和 .env
+    if ! grep -q "docker-compose.yml" .gitignore 2>/dev/null; then
+        echo "docker-compose.yml" >> .gitignore
+    fi
+    if ! grep -q ".env" .gitignore 2>/dev/null; then
+        echo ".env" >> .gitignore
+    fi
+    
+    # 确保 Git 停止追踪这些文件
+    git rm --cached docker-compose.yml .env > /dev/null 2>&1 || true
+
     if ! git pull origin main; then
-        print_error "Git 拉取失败。可能是网络问题。"
-        exit 1
+        print_warning "Git 拉取失败。可能是网络问题或本地有无法自动合并的修改。"
+        print_warning "将尝试强制重置并再次拉取..."
+        git reset --hard origin/main
+        if ! git pull origin main; then
+            print_error "强制拉取仍然失败，请检查网络连接或手动解决Git问题。"
+        fi
     fi
     print_success "代码更新完毕。"
 
-    # 如果是“已有服务模式”，则在更新后的文件上重新应用修改
-    if [ "$is_existing_server_mode" = true ]; then
-        print_info "步骤 4: 正在为“已有服务模式”重新应用配置..."
-        START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
-        if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
-            COMMENT_END_LINE=$((END_LINE - 1)); sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
-            sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
-        else
-            print_warning "无法在新的 docker-compose.yml 中定位 Caddy，跳过禁用步骤。"
-        fi
-        
-        # 确保端口号有效
-        if [ -z "$host_port" ]; then 
-            host_port=8000
-            print_warning "无法检测到旧端口，将使用默认端口 8000。"
-        fi
-        sed -i "/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - \"${host_port}:5000\"/" docker-compose.yml
-        print_success "配置重新应用完成。"
-    fi
-
-    print_info "步骤 5: 正在重新构建并启动服务..."
+    print_info "步骤 2: 正在重新构建并启动服务..."
     if ! docker compose up -d --build; then
         print_error "Docker Compose 更新失败！请检查日志。"
     fi
