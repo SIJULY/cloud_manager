@@ -234,6 +234,12 @@
                             <input type="number" class="form-control" id="instanceMemory" value="24" min="1" max="24">
                         </div>
                     </div>
+                    <div class="mb-3">
+                        <label for="startupScript" class="form-label">开机脚本 (可选)</label>
+                        <textarea class="form-control" id="startupScript" rows="5" spellcheck="false" 
+                                  placeholder="在此输入您自定义的开机脚本（可选）"></textarea>
+                        <div class="form-text">实例启动时将自动执行此脚本。常用依赖（如curl, git等）会自动安装，无需在此填写。</div>
+                    </div>
                     <div id="snatchModeOptions">
                         <hr>
                         <h6>抢占模式设置</h6>
