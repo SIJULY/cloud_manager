@@ -125,6 +125,7 @@ document.addEventListener('DOMContentLoaded', function() {
             os_name_version: document.getElementById('instanceOS').value,
             shape: shape,
             boot_volume_size: requestedBootVolumeSize,
+            startup_script: document.getElementById('startupScript').value.trim(), // 获取开机脚本
             min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
             max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90
         };
