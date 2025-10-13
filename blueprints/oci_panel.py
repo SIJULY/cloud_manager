@@ -221,19 +221,33 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     save_profiles(profiles)
     return subnet.id
 
-def get_user_data(password):
-    script = f"""#cloud-config
-chpasswd:
-  expire: False
-  list:
-    - ubuntu:{password}
-runcmd:
-  - sed -i 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config
-  - '[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ] && sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/g" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'
-  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config
-  - systemctl restart sshd || service sshd restart || service ssh restart
-"""
+# --- START MODIFICATION ---
+def get_user_data(password, startup_script=None):
+    # Base script parts
+    script_parts = [
+        "#cloud-config",
+        "chpasswd:",
+        "  expire: False",
+        "  list:",
+        f"    - ubuntu:{password}",
+        "runcmd:",
+        "  - sed -i 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config",
+        "  - '[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ] && sed -i \"s/PasswordAuthentication no/PasswordAuthentication yes/g\" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
+        "  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config",
+    ]
+    
+    # Append the user's startup script if it exists
+    if startup_script and startup_script.strip():
+        # The script is a single command string, which is a valid item in runcmd.
+        # We wrap it in quotes using json.dumps to handle special characters correctly in YAML.
+        script_parts.append(f'  - {json.dumps(startup_script.strip())}')
+
+    # Add the final command to restart ssh
+    script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
+    
+    script = "\n".join(script_parts)
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
+# --- END MODIFICATION ---
 
 def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/5) 正在获取网络资源...', task_id))
@@ -401,9 +415,6 @@ def stop_task(task_id):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ?, created_at = ? WHERE id = ?', ('failure', '任务已被用户手动停止。', utc_time, task_id))
     return jsonify({"success": True, "message": f"停止任务 {task_id} 的请求已发送。"})
 
-# ##################################################################
-# ##               【核心修改区域】 START                         ##
-# ##################################################################
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
 @timeout(20)
@@ -422,21 +433,18 @@ def oci_session_route():
                 session.pop('oci_profile_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
-            # --- 修改开始 ---
-            # 检查代理信息并构建更详细的成功消息
             proxy_info = profile_config.get('proxy')
             if proxy_info:
                 success_message = f"连接成功! 当前账号: {alias} (通过代理: {proxy_info})"
             else:
                 success_message = f"连接成功! 当前账号: {alias} (未使用代理)"
-            # --- 修改结束 ---
 
             can_create = bool(profile_config.get('default_ssh_public_key'))
             return jsonify({
                 "success": True, 
                 "alias": alias, 
                 "can_create": can_create,
-                "message": success_message  # 返回包含代理信息的消息
+                "message": success_message
             })
 
         if request.method == "GET":
@@ -454,9 +462,6 @@ def oci_session_route():
     except Exception as e:
         session.pop('oci_profile_alias', None)
         return jsonify({"error": str(e)}), 500
-# ##################################################################
-# ##               【核心修改区域】 END                           ##
-# ##################################################################
 
 @oci_bp.route('/api/instances')
 @login_required
@@ -799,7 +804,38 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
         instance_password = generate_oci_password()
-        user_data_encoded = get_user_data(instance_password)
+        
+        # --- START MODIFICATION ---
+        # 定义内部默认脚本，确保核心依赖和稳定性
+        default_script = """
+# --- 默认依赖 (自动执行) ---
+echo "Waiting for apt lock to be released..."
+while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
+   echo "Another apt/dpkg process is running. Waiting 10 seconds..."
+   sleep 10
+done
+
+echo "Starting package installation with retries..."
+for i in 1 2 3; do
+  apt-get update && apt-get install -y curl wget unzip git socat cron && break
+  echo "APT commands failed (attempt $i/3), retrying in 15 seconds..."
+  sleep 15
+done
+"""
+        
+        # 获取用户从前端输入的脚本
+        user_script = details.get('startup_script', '')
+        
+        # 将默认脚本和用户脚本安全地组合起来
+        final_script_parts = [default_script.strip()]
+        if user_script and user_script.strip():
+            final_script_parts.append(user_script.strip())
+        
+        final_script = " && \\\n".join(final_script_parts)
+        
+        # 将最终组合好的脚本传递给 get_user_data 函数
+        user_data_encoded = get_user_data(instance_password, final_script)
+        # --- END MODIFICATION ---
         
         base_launch_details = {
             "compartment_id": tenancy_ocid,
@@ -811,7 +847,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
             "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
         }
 
-        # 步骤2：在这里才创建用于循环的status_data，不再包含第0次的信息
         status_data = {
             "start_time": datetime.datetime.now(timezone.utc).isoformat(),
             "last_message": "",
@@ -834,7 +869,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
     attempt_count = 0
     while True:
         attempt_count += 1
-        status_data['attempt_count'] = attempt_count # attempt_count 从 1 开始
+        status_data['attempt_count'] = attempt_count
         force_update = False
         
         current_ad_index = (attempt_count - 1) % len(availability_domains)
