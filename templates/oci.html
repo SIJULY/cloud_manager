@@ -31,9 +31,16 @@
     #networkSettingsModal th {
         white-space: nowrap;
     }
+
+    /* --- 开始：为修复分页位置而修改的CSS --- */
     .profile-list-card-body {
         min-height: 580px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
     }
+    /* --- 结束：为修复分页位置而修改的CSS --- */
+
     /* --- 新增的自定义颜色类 --- */
     .bg-confirm-add {
         background-color: #17a2b8 !important; /* 这是 Bootstrap btn-info 的默认背景色 */
