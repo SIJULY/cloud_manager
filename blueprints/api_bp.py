@@ -30,11 +30,16 @@ DATABASE = 'oci_tasks.db'
 CONFIG_FILE = 'config.json'
 
 def get_api_key():
+    api_key = current_app.config.get('PANEL_API_KEY')
+    if api_key:
+        return api_key
     if not os.path.exists(CONFIG_FILE): return None
     try:
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f).get('api_secret_key')
-    except: return None
+            config_data = json.load(f)
+            return config_data.get('PANEL_API_KEY') or config_data.get('api_secret_key')
+    except: 
+        return None
 
 def query_db_api(query, args=(), one=False):
     conn = sqlite3.connect(DATABASE, timeout=10)
@@ -51,14 +56,17 @@ def require_api_key(f):
         api_key = get_api_key()
         if not api_key:
             return jsonify({"error": "API Key not configured on the server."}), 500
+            
         auth_header = request.headers.get('Authorization')
         if not auth_header or not auth_header.startswith('Bearer '):
             return jsonify({"error": "Missing or invalid Authorization header"}), 401
+        
         provided_key = auth_header.split(' ')[1]
         
         import secrets
         if not secrets.compare_digest(provided_key, api_key):
             return jsonify({"error": "Invalid API Key"}), 403
+            
         return f(*args, **kwargs)
     return decorated_function
 
@@ -66,16 +74,12 @@ def require_api_key(f):
 def status():
     return jsonify({"status": "ok", "message": "Cloud Manager OCI API is running"})
 
-@api_bp.route('/get-app-api-key', methods=['GET'])
-def get_api_key_route():
-    # 注意：在生产环境中，应保护此端点
-    return jsonify({"api_key": current_app.config.get('API_KEY')})
-
 @api_bp.route('/profiles', methods=['GET'])
 @require_api_key
 def get_profiles():
     try:
-        return jsonify(list(load_profiles().keys()))
+        profiles = load_profiles()
+        return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -93,58 +97,38 @@ def get_instances_for_alias(alias):
 
     try:
         compute_client = clients['compute']
+        vnet_client = clients['vnet']
+        bs_client = clients['bs']
         compartment_id = profile_config['tenancy']
         
-        instances_raw = oci.pagination.list_call_get_all_results(
+        instances = oci.pagination.list_call_get_all_results(
             compute_client.list_instances, compartment_id=compartment_id
         ).data
 
         instance_details_list = []
-        for instance in instances_raw:
-            if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
-                vnic_id = None
-                try:
+        for instance in instances:
+            data = {"display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state, "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None, "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A", "vnic_id": None, "subnet_id": None}
+            try:
+                if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
                     if vnic_attachments:
                         vnic_id = vnic_attachments[0].vnic_id
-                except:
-                    pass
-                
-                instance_details_list.append({
-                    "id": instance.id,
-                    "display_name": instance.display_name,
-                    "lifecycle_state": instance.lifecycle_state,
-                    "vnic_id": vnic_id
-                })
+                        data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
+                        vnic = vnet_client.get_vnic(vnic_id).data
+                        data.update({'public_ip': vnic.public_ip or "无"})
+                        ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
+                        if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
+                    boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
+                    if boot_vol_attachments:
+                        boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
+                        data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
+            except Exception:
+                pass
+            instance_details_list.append(data)
         
         return jsonify(instance_details_list)
     except Exception as e:
         return jsonify({"error": f"获取实例列表失败: {str(e)}"}), 500
-
-@api_bp.route('/<string:alias>/network/security-list', methods=['GET'])
-@require_api_key
-def get_security_list_for_alias(alias):
-    profiles = load_profiles()
-    profile_config = profiles.get(alias)
-    if not profile_config:
-        return jsonify({"error": f"Profile '{alias}' not found"}), 404
-
-    clients, error = get_oci_clients(profile_config, validate=False)
-    if error:
-        return jsonify({"error": error}), 500
-        
-    try:
-        vnet_client = clients['vnet']
-        tenancy_ocid = profile_config['tenancy']
-        subnet_id = _ensure_subnet_in_profile(None, alias, vnet_client, tenancy_ocid)
-        subnet = vnet_client.get_subnet(subnet_id).data
-        if not subnet.security_list_ids:
-            return jsonify({"error": "默认子网没有关联任何安全列表。"}), 404
-        security_list_id = subnet.security_list_ids[0]
-        security_list = vnet_client.get_security_list(security_list_id).data
-        return jsonify(json.loads(str(security_list)))
-    except Exception as e:
-        return jsonify({"error": f"获取安全列表失败: {e}"}), 500
 
 @api_bp.route('/<string:alias>/instance-action', methods=['POST'])
 @require_api_key
@@ -157,9 +141,19 @@ def instance_action_for_alias(alias):
     profile_config = profiles.get(alias)
     if not profile_config:
         return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
-    task_name = f"{action} on instance {instance_id[-12:]}"
+        
+    task_name = f"{action} on {data.get('instance_name', instance_id[-12:])}"
     task_id = _create_task_entry('action', task_name, alias)
-    _instance_action_task.delay(task_id, profile_config, action, instance_id, data)
+    
+    config_with_alias = profile_config.copy()
+    config_with_alias['alias'] = alias
+    
+    # --- ✨ MODIFICATION START ✨ ---
+    # 添加来源标签
+    data['_source'] = 'bot'
+    # --- ✨ MODIFICATION END ✨ ---
+    _instance_action_task.delay(task_id, config_with_alias, action, instance_id, data)
+
     return jsonify({"success": True, "message": f"Action '{action}' for instance '{instance_id}' has been queued.", "task_id": task_id}), 202
 
 @api_bp.route('/<string:alias>/snatch-instance', methods=['POST'])
@@ -170,46 +164,51 @@ def snatch_instance_for_alias(alias):
     profile_config = profiles.get(alias)
     if not profile_config:
         return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
+        
     task_name = data.get('display_name_prefix', 'snatch-instance')
     task_id = _create_task_entry('snatch', task_name, alias)
-    _snatch_instance_task.delay(task_id, profile_config, alias, data)
+    
+    run_id = str(uuid.uuid4())
+    auto_bind_domain = data.get('auto_bind_domain', False)
+    
+    # --- ✨ MODIFICATION START ✨ ---
+    # 添加来源标签
+    data['_source'] = 'bot'
+    # --- ✨ MODIFICATION END ✨ ---
+    _snatch_instance_task.delay(task_id, profile_config, alias, data, run_id, auto_bind_domain)
+
     return jsonify({"success": True, "message": "抢占实例任务已提交...", "task_id": task_id}), 202
 
 @api_bp.route('/task-status/<string:task_id>', methods=['GET'])
 @require_api_key
 def get_task_status(task_id):
     try:
-        task = query_db_api('SELECT id, type, name, status, result, created_at, account_alias FROM tasks WHERE id = ?', [task_id], one=True)
+        task = query_db_api('SELECT status, result, type FROM tasks WHERE id = ?', [task_id], one=True)
         if task:
-            task_dict = dict(task)
-            if 'account_alias' in task_dict:
-                task_dict['alias'] = task_dict.pop('account_alias')
-            return jsonify(task_dict)
-
+            return jsonify({'status': task['status'], 'result': task['result'], 'type': task['type']})
+        
         res = celery.AsyncResult(task_id)
         if res:
              return jsonify({'status': res.state, 'result': str(res.info)})
+             
         return jsonify({'status': 'not_found'}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@api_bp.route('/tasks/<string:task_type>/<string:task_status>', methods=['GET'])
+@api_bp.route('/tasks/snatch/running', methods=['GET'])
 @require_api_key
-def get_tasks_by_type_and_status(task_type, task_status):
+def get_running_snatch_tasks():
     try:
-        if task_status == 'running':
-            tasks = query_db_api("SELECT id, name, result, account_alias FROM tasks WHERE type = ? AND status IN ('running', 'pending') ORDER BY created_at DESC", [task_type])
-        elif task_status == 'completed':
-            tasks = query_db_api("SELECT id, name, status, result, account_alias, created_at FROM tasks WHERE type = ? AND (status = 'success' OR 'failure') ORDER BY created_at DESC LIMIT 20", [task_type])
-        else:
-            return jsonify({"error": "Invalid task status"}), 400
-        
-        tasks_list = [dict(task) for task in tasks]
-        for task_dict in tasks_list:
-            if 'account_alias' in task_dict:
-                task_dict['alias'] = task_dict.pop('account_alias')
-        
-        return jsonify(tasks_list)
+        tasks = query_db_api("SELECT id, name, result, created_at, account_alias, status FROM tasks WHERE type = 'snatch' AND status IN ('running', 'paused') ORDER BY created_at DESC")
+        return jsonify([dict(task) for task in tasks])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+@api_bp.route('/tasks/snatch/completed', methods=['GET'])
+@require_api_key
+def get_completed_snatch_tasks():
+    try:
+        tasks = query_db_api("SELECT id, name, status, result, created_at, account_alias FROM tasks WHERE type = 'snatch' AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 50")
+        return jsonify([dict(task) for task in tasks])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
