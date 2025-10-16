@@ -28,6 +28,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
     const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
+    // 新增: Cloudflare Modal
+    const cloudflareSettingsModal = new bootstrap.Modal(document.getElementById('cloudflareSettingsModal'));
 
     const instanceCountInput = document.getElementById('instanceCount');
     const launchInstanceShapeSelect = document.getElementById('instanceShape');
@@ -71,6 +73,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const saveTgConfigBtn = document.getElementById('saveTgConfigBtn');
     const getApiKeyBtn = document.getElementById('getApiKeyBtn');
     const apiKeyInput = document.getElementById('apiKeyInput');
+    
+    // 新增: Cloudflare DOM 元素
+    const cloudflareApiTokenInput = document.getElementById('cloudflareApiToken');
+    const cloudflareZoneIdInput = document.getElementById('cloudflareZoneId');
+    const cloudflareDomainInput = document.getElementById('cloudflareDomain');
+    const saveCloudflareConfigBtn = document.getElementById('saveCloudflareConfigBtn');
+    // 新增: 创建实例时绑定域名的复选框
+    const autoBindDomainCheck = document.getElementById('autoBindDomainCheck');
+
 
     const instanceActionButtons = {
         start: document.getElementById('startBtn'),
@@ -139,7 +150,9 @@ document.addEventListener('DOMContentLoaded', function() {
             boot_volume_size: requestedBootVolumeSize,
             startup_script: document.getElementById('startupScript').value.trim(),
             min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
-            max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90
+            max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90,
+            // 新增: 传递绑定域名选项
+            auto_bind_domain: autoBindDomainCheck.checked
         };
 
         if (shape.includes('Flex')) {
@@ -150,7 +163,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (details.min_delay >= details.max_delay) return addLog('最短重试间隔必须小于最长重试间隔', 'error');
         if (!details.display_name_prefix) return addLog('实例名称/前缀不能为空', 'error');
 
-        addLog(`正在提交抢占实例 [${details.display_name_prefix}] 的任务...`);
+        let logMessage = `正在提交抢占实例 [${details.display_name_prefix}] 的任务...`;
+        if (details.auto_bind_domain) {
+            logMessage += ' (已启用自动域名绑定)';
+        }
+        addLog(logMessage);
 
         try {
             const response = await apiRequest('/oci/api/launch-instance', {
@@ -484,6 +501,18 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // 新增: 加载 Cloudflare 配置
+    async function loadCloudflareConfig() {
+        try {
+            const config = await apiRequest('/oci/api/cloudflare-config');
+            cloudflareApiTokenInput.value = config.api_token || '';
+            cloudflareZoneIdInput.value = config.zone_id || '';
+            cloudflareDomainInput.value = config.domain || '';
+        } catch (error) {
+            addLog('加载 Cloudflare 配置失败。', 'warning');
+        }
+    }
+
     saveTgConfigBtn.addEventListener('click', async () => {
         const token = tgBotTokenInput.value.trim();
         const chatId = tgChatIdInput.value.trim();
@@ -504,6 +533,33 @@ document.addEventListener('DOMContentLoaded', function() {
             spinner.classList.add('d-none');
         }
     });
+    
+    // 新增: 保存 Cloudflare 配置
+    saveCloudflareConfigBtn.addEventListener('click', async () => {
+        const apiToken = cloudflareApiTokenInput.value.trim();
+        const zoneId = cloudflareZoneIdInput.value.trim();
+        const domain = cloudflareDomainInput.value.trim();
+        if (!apiToken || !zoneId || !domain) {
+            return addLog('Cloudflare API 令牌、Zone ID 和主域名均不能为空。', 'error');
+        }
+
+        const spinner = saveCloudflareConfigBtn.querySelector('.spinner-border');
+        saveCloudflareConfigBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        try {
+            const response = await apiRequest('/oci/api/cloudflare-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_token: apiToken, zone_id: zoneId, domain: domain })
+            });
+            addLog(response.message, 'success');
+            cloudflareSettingsModal.hide();
+        } finally {
+            saveCloudflareConfigBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
+
 
     getApiKeyBtn.addEventListener('click', async () => {
         addLog('正在获取API密钥...');
@@ -915,8 +971,8 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             confirmActionModalTerminateOptions.classList.add('d-none');
         }
-        if (action === 'changeip') message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。`;
-        if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配/更换一个 IPV6 地址吗？`;
+        if (action === 'changeip') message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。如果已配置Cloudflare，将自动更新DNS解析。`;
+        if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配/更换一个 IPV6 地址吗？如果已配置Cloudflare，将自动更新DNS解析。`;
         
         confirmActionModalLabel.textContent = title;
         confirmActionModalBody.textContent = message;
@@ -1072,4 +1128,6 @@ document.addEventListener('DOMContentLoaded', function() {
     loadProfiles();
     checkSession();
     loadTgConfig();
+    // 新增: 页面加载时获取 Cloudflare 配置
+    loadCloudflareConfig();
 });
