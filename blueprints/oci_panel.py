@@ -1,5 +1,5 @@
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
-from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for
+from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for, current_app
 from functools import wraps
 from datetime import timezone
 import oci
@@ -19,6 +19,7 @@ oci_bp = Blueprint('oci', __name__, template_folder='../../templates', static_fo
 KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
 TG_CONFIG_FILE = "tg_settings.json"
+CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
 
 # --- 通用请求超时处理 ---
 class TimeoutException(Exception):
@@ -118,6 +119,87 @@ def save_tg_config(config):
         logging.info(f"Telegram config saved to {TG_CONFIG_FILE}")
     except Exception as e:
         logging.error(f"Failed to save Telegram config to {TG_CONFIG_FILE}: {e}")
+
+# --- Cloudflare 辅助函数 ---
+def load_cloudflare_config():
+    if not os.path.exists(CLOUDFLARE_CONFIG_FILE):
+        return {}
+    try:
+        with open(CLOUDFLARE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError):
+        return {}
+
+def save_cloudflare_config(config):
+    try:
+        with open(CLOUDFLARE_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+        logging.info(f"Cloudflare config saved to {CLOUDFLARE_CONFIG_FILE}")
+    except Exception as e:
+        logging.error(f"Failed to save Cloudflare config: {e}")
+
+def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
+    cf_config = load_cloudflare_config()
+    api_token = cf_config.get('api_token')
+    zone_id = cf_config.get('zone_id')
+    domain = cf_config.get('domain')
+
+    if not all([api_token, zone_id, domain]):
+        logging.warning("Cloudflare 未配置，跳过 DNS 更新。")
+        return "Cloudflare 未配置，跳过 DNS 更新。"
+
+    full_domain = f"{subdomain}.{domain}"
+    api_url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        search_params = {'type': record_type, 'name': full_domain}
+        response = requests.get(api_url, headers=headers, params=search_params, timeout=15)
+        response.raise_for_status()
+        search_result = response.json()
+
+        dns_payload = {
+            'type': record_type,
+            'name': full_domain,
+            'content': ip_address,
+            'ttl': 60,
+            'proxied': False
+        }
+
+        if search_result['result']:
+            record_id = search_result['result'][0]['id']
+            update_url = f"{api_url}/{record_id}"
+            response = requests.put(update_url, headers=headers, json=dns_payload, timeout=15)
+            action_log = "更新"
+        else:
+            response = requests.post(api_url, headers=headers, json=dns_payload, timeout=15)
+            action_log = "创建"
+
+        response.raise_for_status()
+        result_data = response.json()
+
+        if result_data['success']:
+            msg = f"✅ 成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}"
+            logging.info(msg)
+            return msg
+        else:
+            errors = result_data.get('errors', [{'message': '未知错误'}])
+            error_msg = ', '.join([e['message'] for e in errors])
+            msg = f"❌ {action_log} Cloudflare DNS 记录失败: {error_msg}"
+            logging.error(msg)
+            return msg
+
+    except requests.RequestException as e:
+        msg = f"❌ 更新 Cloudflare DNS 时发生网络错误: {e}"
+        logging.error(msg)
+        return msg
+    except Exception as e:
+        msg = f"❌ 更新 Cloudflare DNS 时发生未知错误: {e}"
+        logging.error(msg)
+        return msg
 
 def send_tg_notification(message):
     tg_config = load_tg_config()
@@ -330,7 +412,9 @@ def recover_snatching_tasks():
                 )
                 db.commit()
                 
-                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id)
+                auto_bind_domain = original_details.get('auto_bind_domain', False)
+                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
+
                 logging.info(f"已成功重新派发任务 {task_id} (账号: {alias})。")
 
             except (json.JSONDecodeError, ValueError, KeyError) as e:
@@ -351,22 +435,34 @@ def recover_snatching_tasks():
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if "user_logged_in" not in session:
-            if request.path.startswith('/oci/api/'):
-                return jsonify({"error": "用户未登录"}), 401
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
+        if "user_logged_in" in session:
+            return f(*args, **kwargs)
+
+        auth_header = request.headers.get('Authorization')
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split(' ')[1]
+            if token == current_app.config.get('PANEL_API_KEY'):
+                return f(*args, **kwargs)
+        
+        if request.path.startswith('/oci/api/'):
+            return jsonify({"error": "用户未登录或API密钥无效"}), 401
+        return redirect(url_for('login'))
     return decorated_function
 
 def oci_clients_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if 'oci_profile_alias' not in session: return jsonify({"error": "请先选择一个OCI账号"}), 403
-        alias = session['oci_profile_alias']
+        alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
+
+        if not alias:
+             return jsonify({"error": "请先选择一个OCI账号"}), 403
+
         profile_config = load_profiles().get(alias)
         if not profile_config: return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
+        
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: return jsonify({"error": error}), 500
+        
         g.oci_clients = clients
         g.oci_config = profile_config
         return f(*args, **kwargs)
@@ -392,11 +488,31 @@ def tg_config_handler():
         save_tg_config({'bot_token': bot_token, 'chat_id': chat_id})
         return jsonify({"success": True, "message": "Telegram 设置已保存"})
 
+@oci_bp.route('/api/cloudflare-config', methods=['GET', 'POST'])
+@login_required
+def cloudflare_config_handler():
+    if request.method == 'GET':
+        return jsonify(load_cloudflare_config())
+    elif request.method == 'POST':
+        data = request.json
+        api_token = data.get('api_token', '').strip()
+        zone_id = data.get('zone_id', '').strip()
+        domain = data.get('domain', '').strip()
+        if not all([api_token, zone_id, domain]):
+            return jsonify({"error": "API 令牌, Zone ID 和主域名均不能为空"}), 400
+        
+        config = {'api_token': api_token, 'zone_id': zone_id, 'domain': domain}
+        save_cloudflare_config(config)
+        return jsonify({"success": True, "message": "Cloudflare 设置已成功保存"})
+
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
 def manage_profiles():
     profiles = load_profiles()
     if request.method == "GET":
+        if 'page' not in request.args:
+            return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
+
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 9, type=int)
         profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
@@ -524,7 +640,9 @@ def resume_tasks():
 
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(result_json), task_id))
             
-            _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id)
+            auto_bind_domain = original_details.get('auto_bind_domain', False)
+            _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
+
             resumed_count += 1
         except Exception as e:
             logging.error(f"恢复任务 {task_id} 失败: {e}")
@@ -536,7 +654,6 @@ def resume_tasks():
         message += f" {len(failed_tasks)} 个任务恢复失败: {', '.join(failed_tasks)}"
     
     return jsonify({"success": True, "message": message})
-
 
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
@@ -550,10 +667,12 @@ def oci_session_route():
             
             profile_config = profiles.get(alias)
             session['oci_profile_alias'] = alias
-            
+            g.api_selected_alias = alias
+
             _, error = get_oci_clients(profile_config, validate=True)
             if error:
                 session.pop('oci_profile_alias', None)
+                g.pop('api_selected_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
             proxy_info = profile_config.get('proxy')
@@ -578,22 +697,38 @@ def oci_session_route():
             return jsonify({"logged_in": False})
         if request.method == "DELETE":
             session.pop('oci_profile_alias', None)
+            g.pop('api_selected_alias', None)
             return jsonify({"success": True})
     except TimeoutException:
         session.pop('oci_profile_alias', None)
+        g.pop('api_selected_alias', None)
         return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504
     except Exception as e:
         session.pop('oci_profile_alias', None)
+        g.pop('api_selected_alias', None)
         return jsonify({"error": str(e)}), 500
 
-@oci_bp.route('/api/instances')
+@oci_bp.route('/api/instances', defaults={'alias': None})
+@oci_bp.route('/api/<alias>/instances')
 @login_required
-@oci_clients_required
 @timeout(30)
-def get_instances():
+def get_instances(alias):
     try:
-        compute_client, vnet_client, bs_client = g.oci_clients['compute'], g.oci_clients['vnet'], g.oci_clients['bs']
-        compartment_id = g.oci_config['tenancy']
+        if alias is None:
+            alias = session.get('oci_profile_alias')
+            if not alias:
+                return jsonify({"error": "请先选择一个OCI账号"}), 403
+
+        profile_config = load_profiles().get(alias)
+        if not profile_config:
+            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            return jsonify({"error": error}), 500
+        
+        compute_client, vnet_client, bs_client = clients['compute'], clients['vnet'], clients['bs']
+        compartment_id = profile_config['tenancy']
+
         instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
         instance_details_list = []
         for instance in instances:
@@ -627,25 +762,44 @@ def get_instances():
 def _create_task_entry(task_type, task_name, alias=None):
     db = get_db()
     task_id = str(uuid.uuid4())
-    if alias is None: alias = session.get('oci_profile_alias', 'N/A')
+    if alias is None: alias = session.get('oci_profile_alias') or g.get('api_selected_alias', 'N/A')
     utc_time = datetime.datetime.now(timezone.utc).isoformat()
     db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
                (task_id, task_type, task_name, 'pending', '', utc_time, alias))
     db.commit()
     return task_id
 
-@oci_bp.route('/api/instance-action', methods=['POST'])
+@oci_bp.route('/api/instance-action', methods=['POST'], defaults={'alias': None})
+@oci_bp.route('/api/<alias>/instance-action', methods=['POST'])
 @login_required
-@oci_clients_required
 @timeout(10)
-def instance_action():
+def instance_action(alias):
     try:
+        if alias is None:
+            alias = session.get('oci_profile_alias')
+            if not alias:
+                return jsonify({"error": "请先选择一个OCI账号"}), 403
+        
+        profile_config = load_profiles().get(alias)
+        if not profile_config:
+            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
+
         data = request.json
         action, instance_id = data.get('action'), data.get('instance_id')
         if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
+        
         task_name = f"{action} on {data.get('instance_name', instance_id[-12:])}"
-        task_id = _create_task_entry('action', task_name)
-        _instance_action_task.delay(task_id, g.oci_config, action, instance_id, data)
+        task_id = _create_task_entry('action', task_name, alias)
+        
+        config_with_alias = profile_config.copy()
+        config_with_alias['alias'] = alias
+
+        # --- ✨ MODIFICATION START ✨ ---
+        # 为来自 Web 的任务添加来源标签
+        data['_source'] = 'web'
+        # --- ✨ MODIFICATION END ✨ ---
+
+        _instance_action_task.delay(task_id, config_with_alias, action, instance_id, data)
         return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
     except (sqlite3.OperationalError, TimeoutException) as e:
         if isinstance(e, TimeoutException) or "database is locked" in str(e):
@@ -700,7 +854,8 @@ def update_instance():
 def get_security_list():
     try:
         vnet_client = g.oci_clients['vnet']
-        tenancy_ocid, alias = g.oci_config['tenancy'], session.get('oci_profile_alias')
+        tenancy_ocid = g.oci_config['tenancy']
+        alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
         subnet_id = _ensure_subnet_in_profile(None, alias, vnet_client, tenancy_ocid)
         subnet = vnet_client.get_subnet(subnet_id).data
         if not subnet.security_list_ids: return jsonify({"error": "默认子网没有关联任何安全列表。"}), 404
@@ -731,20 +886,39 @@ def update_security_rules():
     except Exception as e:
         return jsonify({"error": f"更新安全规则失败: {e}"}), 500
 
-@oci_bp.route('/api/launch-instance', methods=['POST'])
+@oci_bp.route('/api/launch-instance', methods=['POST'], defaults={'alias': None, 'endpoint': 'launch-instance'})
+@oci_bp.route('/api/<alias>/<endpoint>', methods=['POST'])
 @login_required
-@oci_clients_required
 @timeout(30)
-def launch_instance():
+def launch_instance(alias, endpoint):
     try:
+        if endpoint not in ["create-instance", "snatch-instance", "launch-instance"]:
+            return jsonify({"error": "无效的端点"}), 404
+        
+        if alias is None:
+            alias = session.get('oci_profile_alias')
+            if not alias:
+                return jsonify({"error": "请先选择一个OCI账号"}), 403
+
+        profile_config = load_profiles().get(alias)
+        if not profile_config:
+            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            return jsonify({"error": error}), 500
+
         data = request.json
+        
+        data.setdefault('os_name_version', 'Canonical Ubuntu-22.04')
+
         display_name = data.get('display_name_prefix', 'N/A')
         instance_count = data.get('instance_count', 1)
         shape = data.get('shape')
+        auto_bind_domain = data.get('auto_bind_domain', False)
         
-        compute_client = g.oci_clients['compute']
-        bs_client = g.oci_clients['bs']
-        compartment_id = g.oci_config['tenancy']
+        compute_client = clients['compute']
+        bs_client = clients['bs']
+        compartment_id = profile_config['tenancy']
 
         try:
             all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
@@ -787,14 +961,14 @@ def launch_instance():
         task_ids = []
         for i in range(instance_count):
             task_name = f"{display_name}-{i+1}" if instance_count > 1 else display_name
-            alias = session['oci_profile_alias']
             task_id = _create_task_entry('snatch', task_name, alias)
             
             task_data = data.copy()
             task_data['display_name_prefix'] = task_name
+            task_data['auto_bind_domain'] = auto_bind_domain
             
             run_id = str(uuid.uuid4())
-            _snatch_instance_task.delay(task_id, g.oci_config, alias, task_data, run_id)
+            _snatch_instance_task.delay(task_id, profile_config, alias, task_data, run_id, auto_bind_domain)
             task_ids.append(task_id)
             
         return jsonify({"message": f"已提交 {instance_count} 个抢占实例任务...", "task_ids": task_ids})
@@ -851,6 +1025,7 @@ def _update_instance_details_task(task_id, profile_config, data):
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
+# --- ✨ MODIFICATION START (添加通知抑制逻辑) ✨ ---
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在执行操作...', task_id))
@@ -858,8 +1033,17 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: raise Exception(error)
         compute_client, vnet_client = clients['compute'], clients['vnet']
+        
+        instance = compute_client.get_instance(instance_id).data
+        instance_name = instance.display_name
+        
+        alias = profile_config.get('alias', '未知账户')
+
         action_map = {"START": ("START", "RUNNING"), "STOP": ("STOP", "STOPPED"), "RESTART": ("SOFTRESET", "RUNNING")}
         action_upper = action.upper()
+        result_message = ""
+        task_title = f"{action_upper} on {instance_name}"
+
         if action_upper in action_map:
             oci_action, target_state = action_map[action_upper]
             compute_client.instance_action(instance_id=instance_id, action=oci_action)
@@ -886,8 +1070,12 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             except ServiceError as e:
                 if e.status != 404: raise
             new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
+            
             result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
-        
+            
+            dns_update_msg = _update_cloudflare_dns(instance_name, new_pub_ip.ip_address, 'A')
+            result_message += f"\n{dns_update_msg}"
+
         elif action_upper == "ASSIGNIPV6":
             vnic_id = data.get('vnic_id')
             if not vnic_id: raise Exception("缺少 vnic_id")
@@ -899,13 +1087,39 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
             result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
 
+            dns_update_msg = _update_cloudflare_dns(instance_name, new_ipv6.ip_address, 'AAAA')
+            result_message += f"\n{dns_update_msg}"
+
         else: raise Exception(f"未知的操作: {action}")
+        
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+        
+        # 只有当任务来源不是 'web' 时才发送通知
+        if data.get('_source') != 'web':
+            tg_msg = (f"🔔 *任务完成通知*\n\n"
+                      f"*账户*: `{alias}`\n"
+                      f"*任务*: `{task_title}`\n\n"
+                      f"*结果*:\n{result_message}")
+            send_tg_notification(tg_msg)
+
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
+        alias = profile_config.get('alias', '未知账户')
+        task_title = f"{action.upper()} on instance"
+        error_message = f"❌ 操作失败: {e}"
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
+        
+        # 只有当任务来源不是 'web' 时才发送通知
+        if data.get('_source') != 'web':
+            tg_msg = (f"🔔 *任务失败通知*\n\n"
+                      f"*账户*: `{alias}`\n"
+                      f"*任务*: `{task_title}`\n\n"
+                      f"*原因*:\n`{e}`")
+            send_tg_notification(tg_msg)
+# --- ✨ MODIFICATION END ✨ ---
+
 
 @celery.task
-def _snatch_instance_task(task_id, profile_config, alias, details, run_id):
+def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_bind_domain=False):
     
     task_data = query_db('SELECT result FROM tasks WHERE id = ?', [task_id], one=True)
     try:
@@ -1048,10 +1262,18 @@ done
                 public_ip = "获取失败"
             
             db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
+            
+            dns_update_msg = ""
+            if auto_bind_domain and public_ip != "无" and public_ip != "获取失败":
+                dns_update_msg = _update_cloudflare_dns(instance.display_name, public_ip, 'A')
+                db_msg += f"\n{dns_update_msg}"
+
             _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
             
             result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
-            
+            if dns_update_msg:
+                result_for_tg += f"\n{dns_update_msg}"
+
             tg_msg = (f"🔔 *任务完成通知*\n\n"
                       f"*账户*: `{alias}`\n"
                       f"*任务名称*: `{details.get('display_name_prefix', 'snatch-instance')}`\n\n"
@@ -1082,4 +1304,3 @@ done
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
-
