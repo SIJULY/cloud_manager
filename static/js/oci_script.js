@@ -1,5 +1,5 @@
 document.addEventListener('DOMContentLoaded', function() {
-    // --- 1. DOM 元素获取 (已更新) ---
+    // --- 1. DOM 元素获取 ---
     const profileList = document.getElementById('profileList');
     const currentProfileStatus = document.getElementById('currentProfileStatus');
     const addNewProfileBtn = document.getElementById('addNewProfileBtn');
@@ -14,9 +14,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const logOutput = document.getElementById('logOutput');
     const clearLogBtn = document.getElementById('clearLogBtn');
     
+    const snatchLogOutput = document.getElementById('snatchLogOutput');
+    const clearSnatchLogBtn = document.getElementById('clearSnatchLogBtn');
+    const snatchLogArea = document.getElementById('snatchLogArea');
+    
     // Modals
     const launchInstanceModal = new bootstrap.Modal(document.getElementById('createLaunchInstanceModal'));
     const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
+    const viewSnatchTasksModalEl = document.getElementById('viewSnatchTasksModal'); 
     const taskResultModal = new bootstrap.Modal(document.getElementById('taskResultModal'));
     const networkSettingsModal = new bootstrap.Modal(document.getElementById('networkSettingsModal'));
     const editInstanceModal = new bootstrap.Modal(document.getElementById('editInstanceModal'));
@@ -24,25 +29,22 @@ document.addEventListener('DOMContentLoaded', function() {
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
     const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
 
-    // Launch Instance Modal Elements
     const instanceCountInput = document.getElementById('instanceCount');
     const launchInstanceShapeSelect = document.getElementById('instanceShape');
     const launchFlexConfig = document.getElementById('flexShapeConfig');
     const submitLaunchInstanceBtn = document.getElementById('submitLaunchInstanceBtn');
-
-    // Proxy Modal Elements
     const proxySettingsAlias = document.getElementById('proxySettingsAlias');
     const proxyUrlInput = document.getElementById('proxyUrl');
     const saveProxyBtn = document.getElementById('saveProxyBtn');
     const removeProxyBtn = document.getElementById('removeProxyBtn');
-
-    // Snatch Task View Elements
+    
     const stopSnatchTaskBtn = document.getElementById('stopSnatchTaskBtn');
+    const resumeSnatchTaskBtn = document.getElementById('resumeSnatchTaskBtn');
     const deleteSnatchTaskBtn = document.getElementById('deleteSnatchTaskBtn');
+    const deleteCompletedBtn = document.getElementById('deleteCompletedBtn');
+    
     const runningSnatchTasksList = document.getElementById('runningSnatchTasksList');
     const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
-    
-    // Other UI Elements
     const actionAreaProfile = document.getElementById('actionAreaProfile');
     const ingressRulesTable = document.getElementById('ingressRulesTable');
     const egressRulesTable = document.getElementById('egressRulesTable');
@@ -84,6 +86,19 @@ document.addEventListener('DOMContentLoaded', function() {
     let selectedInstance = null;
     let currentSecurityList = null;
     
+    const accountColors = {};
+    const colorPalette = ['#007bff', '#28a745', '#dc3545', '#ffc107', '#17a2b8', '#6610f2', '#e83e8c'];
+    let colorIndex = 0;
+    const snatchTaskAnnounced = {};
+
+    function getAccountColor(alias) {
+        if (!accountColors[alias]) {
+            accountColors[alias] = colorPalette[colorIndex % colorPalette.length];
+            colorIndex++;
+        }
+        return accountColors[alias];
+    }
+
     // --- Event Listeners ---
 
     launchInstanceShapeSelect.addEventListener('change', () => {
@@ -97,7 +112,6 @@ document.addEventListener('DOMContentLoaded', function() {
         const requestedCount = parseInt(instanceCountInput.value, 10);
         const requestedBootVolumeSize = parseInt(document.getElementById('bootVolumeSize').value, 10);
         
-        // Frontend quota checks
         const newRequestedTotalSize = requestedCount * requestedBootVolumeSize;
         const currentTotalBootVolumeSize = currentInstances.reduce((total, inst) => {
             const sizeInGb = parseInt(inst.boot_volume_size_gb, 10);
@@ -105,16 +119,14 @@ document.addEventListener('DOMContentLoaded', function() {
         }, 0);
 
         if ((currentTotalBootVolumeSize + newRequestedTotalSize) > 200) {
-            const errorMsg = `总磁盘容量将超出200 GB免费额度。您当前已使用 ${currentTotalBootVolumeSize} GB，本次请求将导致总量达到 ${currentTotalBootVolumeSize + newRequestedTotalSize} GB。`;
-            addLog(errorMsg, 'error');
+            addLog(`总磁盘容量将超出200 GB免费额度。您当前已使用 ${currentTotalBootVolumeSize} GB，本次请求将导致总量达到 ${currentTotalBootVolumeSize + newRequestedTotalSize} GB。`, 'error');
             return;
         }
 
         if (shape === 'VM.Standard.E2.1.Micro') {
             const existingAMDCount = currentInstances.filter(inst => inst.shape === shape).length;
             if ((existingAMDCount + requestedCount) > 2) {
-                const errorMsg = `免费账户最多只能创建2个AMD实例，您已有 ${existingAMDCount} 个，无法再创建 ${requestedCount} 个。`;
-                addLog(errorMsg, 'error');
+                addLog(`免费账户最多只能创建2个AMD实例，您已有 ${existingAMDCount} 个，无法再创建 ${requestedCount} 个。`, 'error');
                 return;
             }
         }
@@ -125,7 +137,7 @@ document.addEventListener('DOMContentLoaded', function() {
             os_name_version: document.getElementById('instanceOS').value,
             shape: shape,
             boot_volume_size: requestedBootVolumeSize,
-            startup_script: document.getElementById('startupScript').value.trim(), // 获取开机脚本
+            startup_script: document.getElementById('startupScript').value.trim(),
             min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
             max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90
         };
@@ -155,7 +167,47 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch (error) {}
     });
 
+    const snatchTaskTabs = document.querySelectorAll('#snatchTaskTabs button[data-bs-toggle="tab"]');
+    snatchTaskTabs.forEach(tab => {
+        tab.addEventListener('shown.bs.tab', event => {
+            const runningDeleteAction = document.getElementById('running-delete-action');
+            if (event.target.id === 'running-tab') {
+                document.getElementById('running-actions').style.display = 'flex';
+                document.getElementById('completed-actions').style.display = 'none';
+                runningDeleteAction.style.display = 'block';
+                snatchLogArea.style.display = 'block';
+            } else if (event.target.id === 'completed-tab') {
+                document.getElementById('running-actions').style.display = 'none';
+                document.getElementById('completed-actions').style.display = 'flex';
+                runningDeleteAction.style.display = 'none';
+                snatchLogArea.style.display = 'none';
+            }
+        });
+    });
+    
+    viewSnatchTasksModalEl.addEventListener('shown.bs.modal', function () {
+        snatchLogOutput.scrollTop = snatchLogOutput.scrollHeight;
+    });
 
+    document.getElementById('viewSnatchTasksBtn').addEventListener('click', function() {
+        const runningTabBtn = document.getElementById('running-tab');
+        const completedTabBtn = document.getElementById('completed-tab');
+        const runningPane = document.getElementById('running-tab-pane');
+        const completedPane = document.getElementById('completed-tab-pane');
+
+        runningTabBtn.classList.add('active');
+        completedTabBtn.classList.remove('active');
+        runningPane.classList.add('show', 'active');
+        completedPane.classList.remove('show', 'active');
+        
+        document.getElementById('running-actions').style.display = 'flex';
+        document.getElementById('completed-actions').style.display = 'none';
+        document.getElementById('running-delete-action').style.display = 'block';
+        snatchLogArea.style.display = 'block';
+
+        loadSnatchTasks();
+    });
+    
     // --- Core and Helper Functions ---
     
     function addLog(message, type = 'info') {
@@ -168,8 +220,21 @@ document.addEventListener('DOMContentLoaded', function() {
         logOutput.appendChild(logEntry);
         logOutput.scrollTop = logOutput.scrollHeight;
     }
+
+    function addSnatchLog(message, accountAlias) {
+        const timestamp = new Date().toLocaleTimeString();
+        const color = getAccountColor(accountAlias);
+        
+        const logEntry = document.createElement('div');
+        logEntry.style.color = color;
+        logEntry.innerHTML = `[${timestamp}] <strong style="color: ${color};">[${accountAlias || '未知账户'}]</strong> ${message.replace(/\n/g, '<br>')}`;
+        
+        snatchLogOutput.appendChild(logEntry);
+        snatchLogOutput.scrollTop = snatchLogOutput.scrollHeight;
+    }
     
     clearLogBtn.addEventListener('click', () => logOutput.innerHTML = '');
+    clearSnatchLogBtn.addEventListener('click', () => snatchLogOutput.innerHTML = '');
 
     async function apiRequest(url, options = {}) {
         try {
@@ -228,7 +293,6 @@ document.addEventListener('DOMContentLoaded', function() {
         try {
             const data = await apiRequest('/oci/api/session');
             
-            // 每次检查前，先重置所有行的状态
             document.querySelectorAll('#profileList tr').forEach(r => {
                 r.classList.remove('table-active', 'profile-disabled');
             });
@@ -239,10 +303,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionAreaProfile.classList.remove('d-none');
                 enableMainControls(true, data.can_create);
                 if (shouldRefreshInstances) {
-                    await refreshInstances(); // Make sure this is awaited
+                    await refreshInstances();
                 }
                 
-                // 找到当前连接的账户行，并同时添加高亮和禁用样式
                 const activeRow = document.querySelector(`#profileList tr[data-alias="${data.alias}"]`);
                 if (activeRow) {
                     activeRow.classList.add('table-active', 'profile-disabled');
@@ -269,69 +332,97 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    // ##################################################################
-    // ##               【核心修改区域】 START                         ##
-    // ##################################################################
-    function pollTaskStatus(taskId) {
-        // 使用一个对象来存储定时器ID，这样可以跨函数调用来清除它
-        if (!window.taskPollers) {
-            window.taskPollers = {};
-        }
+    function pollTaskStatus(taskId, isRepoll = false) {
+        if (!window.taskPollers) window.taskPollers = {};
     
         const poller = async () => {
             try {
                 const apiResponse = await apiRequest(`/oci/api/task_status/${taskId}`);
-                
-                // 如果请求成功，就处理响应
-                const isFinalState = ['success', 'failure'].includes(apiResponse.status);
-                
-                let logMessage = '';
-                if (apiResponse.status === 'running') {
-                    try {
-                        const resultData = JSON.parse(apiResponse.result);
-                        logMessage = `任务 ${resultData.details.name}: 第 ${resultData.attempt_count} 次尝试，${resultData.last_message}`;
-                    } catch (e) {
-                        logMessage = apiResponse.result;
-                    }
-                } else {
-                    logMessage = apiResponse.result;
+                if (!apiResponse || apiResponse.status === 'not_found') {
+                    console.warn(`Task ${taskId} not found or invalid response. Stopping poller.`);
+                    delete window.taskPollers[taskId];
+                    return;
                 }
-                
-                const lastLogKey = `lastLog_${taskId}`;
-                if (window[lastLogKey] !== logMessage) {
-                    const logType = apiResponse.status === 'success' ? 'success' : (apiResponse.status === 'failure' ? 'error' : 'info');
-                    addLog(logMessage, logType);
-                    window[lastLogKey] = logMessage;
+                const isFinalState = ['success', 'failure'].includes(apiResponse.status);
+
+                if (apiResponse.type === 'snatch') {
+                    handleSnatchTaskPolling(taskId, apiResponse, isFinalState, isRepoll);
+                } else {
+                    const lastLogKey = `lastLog_main_${taskId}`;
+                    if (window[lastLogKey] !== apiResponse.result) {
+                        const logType = apiResponse.status === 'success' ? 'success' : (apiResponse.status === 'failure' ? 'error' : 'info');
+                        addLog(`任务[${taskId.substring(0,8)}] ${apiResponse.result}`, logType);
+                        window[lastLogKey] = apiResponse.result;
+                    }
                 }
     
-                // 如果任务未结束，则在5秒后再次轮询
                 if (!isFinalState) {
+                    if (apiResponse.status === 'paused') {
+                        delete window.taskPollers[taskId]; 
+                        return;
+                    }
                     window.taskPollers[taskId] = setTimeout(poller, 5000);
                 } else {
-                    // 如果任务已结束，清理资源
+                    delete window.taskPollers[taskId]; 
+                    const lastLogKey = `lastLog_main_${taskId}`;
+                    const lastSnatchLogKey = `lastSnatchLog_${taskId}`;
                     delete window[lastLogKey];
-                    delete window.taskPollers[taskId];
+                    delete window[lastSnatchLogKey];
+
                     if (apiResponse.status === 'success') {
                         setTimeout(refreshInstances, 2000);
                     }
                 }
     
             } catch (error) {
-                // 如果请求失败 (例如 "Failed to fetch")
                 addLog(`监控任务 ${taskId} 时发生网络错误，将在10秒后重试...`, 'warning');
-                // 安排在10秒后重试，而不是立即停止
                 window.taskPollers[taskId] = setTimeout(poller, 10000); 
             }
         };
-    
-        // 立即开始第一次轮询
-        addLog(`正在监控任务 ${taskId}...`);
+        
         poller();
     }
-    // ##################################################################
-    // ##               【核心修改区域】 END                           ##
-    // ##################################################################
 
+    function handleSnatchTaskPolling(taskId, apiResponse, isFinalState, isRepoll) {
+        const lastLogKey = `lastSnatchLog_${taskId}`;
+        let parsedResult = null;
+        let currentMessage = apiResponse.result; 
+
+        try {
+            parsedResult = JSON.parse(apiResponse.result);
+            if (parsedResult && parsedResult.details) {
+                const taskName = parsedResult.details.display_name_prefix || parsedResult.details.name;
+                if (parsedResult.attempt_count > 0) {
+                    currentMessage = `任务 ${taskName}: 第 ${parsedResult.attempt_count} 次尝试，${parsedResult.last_message}`;
+                } else {
+                    currentMessage = `任务 ${taskName}: ${parsedResult.last_message}`;
+                }
+            }
+        } catch (e) { /* Not JSON, keep original message */ }
+
+        if(window[lastLogKey] === currentMessage) return; 
+        window[lastLogKey] = currentMessage; 
+
+        const accountAlias = parsedResult?.details?.account_alias;
+        const taskNameForLog = parsedResult?.details?.display_name_prefix || parsedResult?.details?.name || taskId.substring(0,8);
+
+        if (apiResponse.status === 'running' || apiResponse.status === 'paused') {
+             if (apiResponse.status === 'running' && !isRepoll && !snatchTaskAnnounced[taskId]) {
+                addLog(`任务 [${taskNameForLog}] 正在准备...`);
+                addLog(`抢占任务已成功启动，具体详情请点击【查看抢占任务】`, 'success');
+                snatchTaskAnnounced[taskId] = true;
+            }
+            addSnatchLog(currentMessage, accountAlias);
+        } else if (isFinalState) {
+            const logType = apiResponse.status === 'success' ? 'success' : 'error';
+            addLog(`抢占任务 [${taskNameForLog}] 已完成: ${apiResponse.result}`, logType);
+            addSnatchLog(`<strong>任务完成:</strong> ${apiResponse.result}`, accountAlias);
+            delete snatchTaskAnnounced[taskId];
+        } else {
+            addLog(`任务 [${taskNameForLog}] 状态: ${apiResponse.status} - ${apiResponse.result}`);
+        }
+    }
+    
     async function loadProfiles(page = 1) {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
         try {
@@ -510,15 +601,9 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
                 addLog(response.message, 'success');
-    
-                // If connection is successful, now refresh the instances and wait for it to complete
                 await refreshInstances();
-    
             } catch (error) {
-                // Error is logged inside apiRequest/refreshInstances
             } finally {
-                // After all async operations are done (success or fail), restore the UI
-                // Pass 'false' because instances are already refreshed (or failed to)
                 checkSession(false);
             }
         } 
@@ -647,42 +732,64 @@ document.addEventListener('DOMContentLoaded', function() {
         instanceActionButtons.assignIpv6.disabled = !(state === 'RUNNING' && selectedInstance.vnic_id);
     });
     
-    document.getElementById('viewSnatchTasksBtn').addEventListener('click', loadSnatchTasks);
-    
     async function loadSnatchTasks() {
         runningSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
         completedSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
+        
         stopSnatchTaskBtn.disabled = true;
+        resumeSnatchTaskBtn.disabled = true;
         deleteSnatchTaskBtn.disabled = true;
+        deleteCompletedBtn.disabled = true;
+
         document.getElementById('selectAllRunningTasks').checked = false;
         document.getElementById('selectAllCompletedTasks').checked = false;
+        
         try {
             const [running, completed] = await Promise.all([
                 apiRequest('/oci/api/tasks/snatching/running'),
                 apiRequest('/oci/api/tasks/snatching/completed')
             ]);
             
+            if (running && running.length > 0) {
+                if (!window.taskPollers) window.taskPollers = {};
+                running.forEach(task => {
+                    if (task.status === 'running' && !window.taskPollers[task.id]) {
+                        console.log(`Re-initiating poller for running task: ${task.id}`);
+                        pollTaskStatus(task.id, true);
+                    }
+                });
+            }
+
             runningSnatchTasksList.innerHTML = running.length === 0
-                ? '<li class="list-group-item text-muted">没有正在运行的抢占任务。</li>'
+                ? '<li class="list-group-item text-muted">没有正在运行或已暂停的任务。</li>'
                 : running.map(task => {
-                    if (task.result && typeof task.result === 'object') {
+                    if (task.result && typeof task.result === 'object' && task.result.details) {
                         const { details, start_time, attempt_count, last_message } = task.result;
+                        const taskName = details.display_name_prefix || details.name;
+                        const isPaused = task.status === 'paused';
+                        const statusBadge = isPaused 
+                            ? `<span class="badge bg-secondary">已暂停</span>`
+                            : `<span class="badge bg-warning text-dark">第 ${attempt_count} 次尝试</span>`;
+                        const progressBar = isPaused
+                            ? `<div class="progress" style="height: 5px;"><div class="progress-bar bg-secondary" style="width: 100%"></div></div>`
+                            : `<div class="progress" style="height: 5px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div></div>`;
+                        
                         return `
-                        <li class="list-group-item" data-task-id="${task.id}">
+                        <li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}">
                             <div class="row align-items-center">
                                 <div class="col-auto"><input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}" style="transform: scale(1.2);"></div>
                                 <div class="col">
                                     <div class="d-flex justify-content-between align-items-start">
-                                        <div><strong><span class="badge bg-primary me-2">${task.account_alias}</span><code>${details.name}</code></strong><p class="mb-1 small text-muted">开始于: ${new Date(start_time).toLocaleString()}</p></div>
-                                        <div class="text-end"><span class="badge bg-warning text-dark">第 ${attempt_count} 次尝试</span></div>
+                                        <div><strong><span class="badge bg-primary me-2">${task.account_alias}</span><code>${taskName}</code></strong><p class="mb-1 small text-muted">开始于: ${new Date(start_time).toLocaleString()}</p></div>
+                                        <div class="text-end">${statusBadge}</div>
                                     </div>
-                                    <div class="bg-light p-2 rounded small mt-1"><strong>配置:</strong> ${details.shape} / ${details.ocpus} OCPU / ${details.memory} GB / ${details.os}<br><strong>可用域:</strong> <code>${details.ad}</code><br><strong>执行时长:</strong> ${formatElapsedTime(start_time)}</div>
-                                    <div class="mt-2"><div class="progress" style="height: 5px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div></div><p class="mb-0 mt-1 small text-info-emphasis"><strong>最新状态:</strong> ${last_message}</p></div>
+                                    <div class="bg-light p-2 rounded small mt-1"><strong>配置:</strong> ${details.shape} / ${details.ocpus || 'N/A'} OCPU / ${details.memory_in_gbs || 'N/A'} GB / ${details.os_name_version}<br><strong>可用域:</strong> <code>${details.ad || '未知'}</code><br><strong>执行时长:</strong> ${formatElapsedTime(start_time)}</div>
+                                    <div class="mt-2">${progressBar}<p class="mb-0 mt-1 small text-info-emphasis"><strong>最新状态:</strong> ${last_message}</p></div>
                                 </div>
                             </div>
                         </li>`;
                     }
-                    return `<li class="list-group-item" data-task-id="${task.id}"><div class="d-flex w-100 align-items-center"><input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}"><div class="ms-3 flex-grow-1"><strong><span class="badge bg-primary me-2">${task.account_alias}</span>${task.name}</strong><br><small class="text-muted">${task.result}</small></div></div></li>`;
+                    return `<li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}"><div class="d-flex w-100 align-items-center"><input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}"><div class="ms-3 flex-grow-1"><strong><span class="badge bg-primary me-2">${task.account_alias}</span>${task.name}</strong><br><small class="text-muted">${String(task.result)}</small></div></div></li>`;
                 }).join('');
 
             completedSnatchTasksList.innerHTML = completed.length === 0
@@ -702,6 +809,7 @@ document.addEventListener('DOMContentLoaded', function() {
             completedSnatchTasksList.innerHTML = '<li class="list-group-item list-group-item-danger">加载已完成任务失败。</li>';
         }
     }
+    
     completedSnatchTasksList.addEventListener('dblclick', async e => {
         const listItem = e.target.closest('li.list-group-item[data-task-id]');
         if (!listItem) return;
@@ -712,20 +820,49 @@ document.addEventListener('DOMContentLoaded', function() {
             taskResultModal.show();
         } catch (error) {}
     });
-    stopSnatchTaskBtn.addEventListener('click', () => handleTaskAction('stop', '#runningSnatchTasksList'));
-    deleteSnatchTaskBtn.addEventListener('click', () => handleTaskAction('delete', '#completedSnatchTasksList'));
-    document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#runningSnatchTasksList', stopSnatchTaskBtn));
-    document.getElementById('selectAllCompletedTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#completedSnatchTasksList', deleteSnatchTaskBtn));
-    runningSnatchTasksList.addEventListener('change', () => updateActionButtonState('#runningSnatchTasksList', stopSnatchTaskBtn));
-    completedSnatchTasksList.addEventListener('change', () => updateActionButtonState('#completedSnatchTasksList', deleteSnatchTaskBtn));
     
-    function toggleSelectAll(masterCheckbox, listSelector, actionButton) {
+    stopSnatchTaskBtn.addEventListener('click', () => handleTaskAction('stop', '#runningSnatchTasksList'));
+    resumeSnatchTaskBtn.addEventListener('click', () => handleTaskAction('resume', '#runningSnatchTasksList'));
+    deleteSnatchTaskBtn.addEventListener('click', () => handleTaskAction('delete', '#runningSnatchTasksList'));
+    deleteCompletedBtn.addEventListener('click', () => handleTaskAction('delete', '#completedSnatchTasksList'));
+
+    document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#runningSnatchTasksList'));
+    document.getElementById('selectAllCompletedTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#completedSnatchTasksList'));
+    
+    runningSnatchTasksList.addEventListener('change', () => updateRunningActionButtons());
+    completedSnatchTasksList.addEventListener('change', () => updateCompletedActionButtons());
+    
+    function toggleSelectAll(masterCheckbox, listSelector) {
         document.querySelectorAll(`${listSelector} .task-checkbox`).forEach(chk => chk.checked = masterCheckbox.checked);
-        actionButton.disabled = !masterCheckbox.checked;
+        if (listSelector === '#runningSnatchTasksList') {
+            updateRunningActionButtons();
+        } else {
+            updateCompletedActionButtons();
+        }
     }
 
-    function updateActionButtonState(listSelector, actionButton) {
-        actionButton.disabled = document.querySelectorAll(`${listSelector} .task-checkbox:checked`).length === 0;
+    function updateRunningActionButtons() {
+        const checked = Array.from(document.querySelectorAll('#runningSnatchTasksList .task-checkbox:checked'));
+        if (checked.length === 0) {
+            stopSnatchTaskBtn.disabled = true;
+            resumeSnatchTaskBtn.disabled = true;
+            deleteSnatchTaskBtn.disabled = true;
+            return;
+        }
+        
+        const statuses = checked.map(chk => chk.closest('li').dataset.taskStatus);
+        
+        const allPaused = statuses.every(s => s === 'paused');
+        const anyRunning = statuses.some(s => s === 'running');
+        const anyPaused = statuses.some(s => s === 'paused');
+        
+        stopSnatchTaskBtn.disabled = !anyRunning || anyPaused;
+        resumeSnatchTaskBtn.disabled = !anyPaused || anyRunning;
+        deleteSnatchTaskBtn.disabled = !allPaused;
+    }
+
+    function updateCompletedActionButtons() {
+        deleteCompletedBtn.disabled = document.querySelectorAll('#completedSnatchTasksList .task-checkbox:checked').length === 0;
     }
     
     async function handleTaskAction(action, listSelector) {
@@ -733,22 +870,35 @@ document.addEventListener('DOMContentLoaded', function() {
         if (checked.length === 0) return addLog('请先选择任务', 'warning');
 
         const taskIds = Array.from(checked).map(cb => cb.dataset.taskId);
-        const actionText = action === 'stop' ? '停止' : '删除';
+        const actionTextMap = { 'stop': '暂停', 'delete': '删除', 'resume': '恢复' };
+        const actionText = actionTextMap[action];
+
         confirmActionModalLabel.textContent = `确认${actionText}任务`;
         confirmActionModalBody.textContent = `确定要${actionText}选中的 ${taskIds.length} 个任务吗？`;
         confirmActionModalConfirmBtn.onclick = async () => {
             confirmActionModal.hide();
             addLog(`正在${actionText} ${taskIds.length} 个任务...`);
-            const endpoint = action === 'stop' ? '/stop' : '';
-            const method = action === 'stop' ? 'POST' : 'DELETE';
+            
             try {
-                await Promise.all(taskIds.map(id => apiRequest(`/oci/api/tasks/${id}${endpoint}`, { method })));
-                addLog(`任务${actionText}成功`, 'success');
+                if (action === 'resume') {
+                    const response = await apiRequest(`/oci/api/tasks/resume`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task_ids: taskIds })
+                    });
+                    addLog(response.message, 'success');
+                } else {
+                    const endpoint = action === 'stop' ? '/stop' : '';
+                    const method = action === 'stop' ? 'POST' : 'DELETE';
+                    await Promise.all(taskIds.map(id => apiRequest(`/oci/api/tasks/${id}${endpoint}`, { method })));
+                    addLog(`任务${actionText}请求已发送`, 'success');
+                }
                 loadSnatchTasks();
             } catch (error) {}
         };
         confirmActionModal.show();
     }
+    
     Object.entries(instanceActionButtons).forEach(([key, button]) => {
         if (key !== 'editInstance') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
     });
