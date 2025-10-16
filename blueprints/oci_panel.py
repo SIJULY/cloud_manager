@@ -13,7 +13,7 @@ from oci.exceptions import ServiceError
 from app import celery
 
 # --- Blueprint Setup ---
-oci_bp = Blueprint('oci', __name__, template_folder='../templates', static_folder='../static')
+oci_bp = Blueprint('oci', __name__, template_folder='../../templates', static_folder='../../static')
 
 # --- Configuration ---
 KEYS_FILE = "oci_profiles.json"
@@ -221,9 +221,7 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     save_profiles(profiles)
     return subnet.id
 
-# --- START MODIFICATION ---
 def get_user_data(password, startup_script=None):
-    # Base script parts
     script_parts = [
         "#cloud-config",
         "chpasswd:",
@@ -236,18 +234,13 @@ def get_user_data(password, startup_script=None):
         "  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config",
     ]
     
-    # Append the user's startup script if it exists
     if startup_script and startup_script.strip():
-        # The script is a single command string, which is a valid item in runcmd.
-        # We wrap it in quotes using json.dumps to handle special characters correctly in YAML.
         script_parts.append(f'  - {json.dumps(startup_script.strip())}')
 
-    # Add the final command to restart ssh
     script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
     
     script = "\n".join(script_parts)
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
-# --- END MODIFICATION ---
 
 def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/5) 正在获取网络资源...', task_id))
@@ -289,6 +282,70 @@ def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
         new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all'))
         vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
         logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
+
+# --- 任务恢复功能 ---
+def recover_snatching_tasks():
+    logging.info("--- 检查并恢复被中断的抢占任务 ---")
+    
+    db = get_db_connection()
+    try:
+        orphaned_tasks = db.execute(
+            "SELECT id, result, account_alias FROM tasks WHERE status = 'running' AND type = 'snatch'"
+        ).fetchall()
+
+        if not orphaned_tasks:
+            logging.info("没有需要自动恢复的抢占任务。")
+            return
+
+        logging.info(f"发现 {len(orphaned_tasks)} 个需要自动恢复的抢占任务。")
+        profiles = load_profiles()
+
+        for task in orphaned_tasks:
+            task_id = task['id']
+            alias = task['account_alias']
+            
+            profile_config = profiles.get(alias)
+            if not profile_config:
+                logging.warning(f"任务 {task_id} 对应的账号 '{alias}' 配置已不存在，无法恢复。")
+                db.execute(
+                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
+                    ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id)
+                )
+                db.commit()
+                continue
+
+            try:
+                result_json = json.loads(task['result'])
+                original_details = result_json.get('details')
+                if not original_details:
+                    raise ValueError("在任务 result 中未找到 'details' 字段。")
+                
+                result_json['last_message'] = "服务重启，任务已自动恢复并继续执行..."
+                new_run_id = str(uuid.uuid4())
+                result_json['run_id'] = new_run_id
+                
+                db.execute(
+                    "UPDATE tasks SET result = ? WHERE id = ?",
+                    (json.dumps(result_json), task_id)
+                )
+                db.commit()
+                
+                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id)
+                logging.info(f"已成功重新派发任务 {task_id} (账号: {alias})。")
+
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                logging.error(f"解析或恢复任务 {task_id} 失败: {e}。")
+                db.execute(
+                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
+                    ('failure', f'任务恢复失败，原因: 无法解析任务参数 ({e})', task_id)
+                )
+                db.commit()
+
+    except Exception as e:
+        logging.error(f"在恢复抢占任务过程中发生未知错误: {e}")
+    finally:
+        db.close()
+        logging.info("--- 抢占任务恢复检查完成 ---")
 
 # --- Decorators ---
 def login_required(f):
@@ -378,7 +435,7 @@ def handle_single_profile(alias):
 @login_required
 def get_running_snatching_tasks():
     try:
-        tasks = query_db("SELECT id, name, result, created_at, account_alias FROM tasks WHERE type = 'snatch' AND status = 'running' ORDER BY created_at DESC")
+        tasks = query_db("SELECT id, name, result, created_at, account_alias, status FROM tasks WHERE type = 'snatch' AND status IN ('running', 'paused') ORDER BY created_at DESC")
         tasks_list = []
         for task in tasks:
             task_dict = dict(task)
@@ -401,19 +458,85 @@ def get_completed_snatching_tasks():
 def delete_task_record(task_id):
     db = get_db()
     task = db.execute("SELECT status FROM tasks WHERE id = ?", [task_id]).fetchone()
-    if task and task['status'] in ['success', 'failure']:
+    if task and task['status'] in ['success', 'failure', 'paused']:
+        celery.control.revoke(task_id, terminate=True, signal='SIGKILL')
         db.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
         db.commit()
         return jsonify({"success": True, "message": "任务记录已删除。"})
-    return jsonify({"error": "只能删除已完成或失败的任务记录。"}), 400
+    return jsonify({"error": "只能删除已完成、失败或暂停的任务记录。"}), 400
 
 @oci_bp.route('/api/tasks/<task_id>/stop', methods=['POST'])
 @login_required
 def stop_task(task_id):
     celery.control.revoke(task_id, terminate=True, signal='SIGKILL')
-    utc_time = datetime.datetime.now(timezone.utc).isoformat()
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ?, created_at = ? WHERE id = ?', ('failure', '任务已被用户手动停止。', utc_time, task_id))
-    return jsonify({"success": True, "message": f"停止任务 {task_id} 的请求已发送。"})
+    
+    task_data = query_db('SELECT result FROM tasks WHERE id = ?', [task_id], one=True)
+    if task_data and task_data['result']:
+        try:
+            result_json = json.loads(task_data['result'])
+            result_json['last_message'] = '任务已被用户手动暂停。'
+            if 'run_id' in result_json:
+                del result_json['run_id']
+            new_result = json.dumps(result_json)
+        except (json.JSONDecodeError, TypeError):
+            new_result = '{"last_message": "任务已被用户手动暂停。"}'
+    else:
+        new_result = '{"last_message": "任务已被用户手动暂停。"}'
+        
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('paused', new_result, task_id))
+    return jsonify({"success": True, "message": f"任务 {task_id} 已被暂停。"})
+
+@oci_bp.route('/api/tasks/resume', methods=['POST'])
+@login_required
+def resume_tasks():
+    data = request.json
+    task_ids = data.get('task_ids', [])
+    if not task_ids:
+        return jsonify({"error": "未提供任何任务ID"}), 400
+
+    resumed_count = 0
+    failed_tasks = []
+    profiles = load_profiles()
+    
+    for task_id in task_ids:
+        task = query_db('SELECT result, account_alias FROM tasks WHERE id = ? AND status = ?', [task_id, 'paused'], one=True)
+        if not task:
+            failed_tasks.append(task_id)
+            continue
+        
+        alias = task['account_alias']
+        profile_config = profiles.get(alias)
+
+        if not profile_config:
+            failed_tasks.append(task_id)
+            _db_execute_celery("UPDATE tasks SET status = ?, result = ? WHERE id = ?", ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id))
+            continue
+
+        try:
+            result_json = json.loads(task['result'])
+            original_details = result_json.get('details')
+            if not original_details:
+                raise ValueError("任务数据中缺少 'details' 字段")
+            
+            result_json['last_message'] = "任务已手动恢复，继续执行..."
+            new_run_id = str(uuid.uuid4())
+            result_json['run_id'] = new_run_id
+
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(result_json), task_id))
+            
+            _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id)
+            resumed_count += 1
+        except Exception as e:
+            logging.error(f"恢复任务 {task_id} 失败: {e}")
+            failed_tasks.append(task_id)
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f'手动恢复任务失败: {e}', task_id))
+
+    message = f"成功恢复 {resumed_count} 个任务。"
+    if failed_tasks:
+        message += f" {len(failed_tasks)} 个任务恢复失败: {', '.join(failed_tasks)}"
+    
+    return jsonify({"success": True, "message": message})
+
 
 @oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
 @login_required
@@ -664,12 +787,14 @@ def launch_instance():
         task_ids = []
         for i in range(instance_count):
             task_name = f"{display_name}-{i+1}" if instance_count > 1 else display_name
-            task_id = _create_task_entry('snatch', task_name)
+            alias = session['oci_profile_alias']
+            task_id = _create_task_entry('snatch', task_name, alias)
             
             task_data = data.copy()
             task_data['display_name_prefix'] = task_name
             
-            _snatch_instance_task.delay(task_id, g.oci_config, session['oci_profile_alias'], task_data)
+            run_id = str(uuid.uuid4())
+            _snatch_instance_task.delay(task_id, g.oci_config, alias, task_data, run_id)
             task_ids.append(task_id)
             
         return jsonify({"message": f"已提交 {instance_count} 个抢占实例任务...", "task_ids": task_ids})
@@ -685,8 +810,9 @@ def launch_instance():
 @oci_bp.route('/api/task_status/<task_id>')
 @login_required
 def task_status(task_id):
-    task = query_db('SELECT status, result FROM tasks WHERE id = ?', [task_id], one=True)
-    if task: return jsonify({'status': task['status'], 'result': task['result']})
+    task = query_db('SELECT status, result, type FROM tasks WHERE id = ?', [task_id], one=True)
+    if task:
+        return jsonify({'status': task['status'], 'result': task['result'], 'type': task['type']})
     return jsonify({'status': 'not_found'}), 404
 
 # --- Celery Tasks ---
@@ -779,8 +905,24 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
 @celery.task
-def _snatch_instance_task(task_id, profile_config, alias, details):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '抢占任务准备中，正在获取初始配置...', task_id))
+def _snatch_instance_task(task_id, profile_config, alias, details, run_id):
+    
+    task_data = query_db('SELECT result FROM tasks WHERE id = ?', [task_id], one=True)
+    try:
+        status_data = json.loads(task_data['result']) if task_data and task_data['result'] else {}
+    except (json.JSONDecodeError, TypeError):
+        status_data = {}
+
+    if not status_data or 'details' not in status_data:
+        status_data['details'] = details
+        status_data['start_time'] = datetime.datetime.now(timezone.utc).isoformat()
+        status_data['attempt_count'] = 0
+        status_data['last_message'] = "抢占任务准备中..."
+
+    status_data['details']['account_alias'] = alias
+    status_data['run_id'] = run_id
+    
+    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(status_data), task_id))
     
     try:
         clients, error = get_oci_clients(profile_config, validate=False)
@@ -799,14 +941,14 @@ def _snatch_instance_task(task_id, profile_config, alias, details):
         os_name, os_version = details['os_name_version'].split('-')
         shape = details['shape']
         
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', ('正在查找兼容的系统镜像...', task_id))
+        status_data['last_message'] = '正在查找兼容的系统镜像...'
+        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
+        
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
         instance_password = generate_oci_password()
         
-        # --- START MODIFICATION ---
-        # 定义内部默认脚本，确保核心依赖和稳定性
         default_script = """
 # --- 默认依赖 (自动执行) ---
 echo "Waiting for apt lock to be released..."
@@ -823,19 +965,15 @@ for i in 1 2 3; do
 done
 """
         
-        # 获取用户从前端输入的脚本
         user_script = details.get('startup_script', '')
         
-        # 将默认脚本和用户脚本安全地组合起来
         final_script_parts = [default_script.strip()]
         if user_script and user_script.strip():
             final_script_parts.append(user_script.strip())
         
         final_script = " && \\\n".join(final_script_parts)
         
-        # 将最终组合好的脚本传递给 get_user_data 函数
         user_data_encoded = get_user_data(instance_password, final_script)
-        # --- END MODIFICATION ---
         
         base_launch_details = {
             "compartment_id": tenancy_ocid,
@@ -847,27 +985,34 @@ done
             "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
         }
 
-        status_data = {
-            "start_time": datetime.datetime.now(timezone.utc).isoformat(),
-            "last_message": "",
-            "details": {
-                "name": details.get('display_name_prefix', 'snatch-instance'),
-                "shape": details.get('shape', 'N/A'),
-                "ocpus": details.get('ocpus', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
-                "memory": details.get('memory_in_gbs', 'N/A') if "Flex" in details.get('shape', '') else '1 (Micro)',
-                "os": details.get('os_name_version', 'N/A'),
-                "ad": "自动轮询中...",
-                "boot_volume_size": details.get('boot_volume_size', 50)
-            }
-        }
-
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
         return
 
     last_update_time = time.time()
-    attempt_count = 0
+    attempt_count = status_data.get('attempt_count', 0)
+
     while True:
+        current_task_data = query_db('SELECT result, status FROM tasks WHERE id = ?', [task_id], one=True)
+        if not current_task_data:
+            logging.warning(f"Task {task_id} not found in DB. Worker will exit.")
+            return
+
+        if current_task_data['status'] != 'running':
+            logging.info(f"Task {task_id} status is '{current_task_data['status']}', not 'running'. Worker will exit.")
+            return
+            
+        try:
+            current_result_json = json.loads(current_task_data['result'])
+            db_run_id = current_result_json.get('run_id')
+            if db_run_id != run_id:
+                logging.info(f"Task {task_id} has a new run_id ({db_run_id}). This worker ({run_id}) will exit.")
+                return
+        except (json.JSONDecodeError, TypeError, KeyError):
+            logging.error(f"Could not verify run_id for task {task_id}. Data might be corrupt. Exiting.")
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', "任务数据损坏，无法继续执行。", task_id))
+            return
+
         attempt_count += 1
         status_data['attempt_count'] = attempt_count
         force_update = False
@@ -875,6 +1020,7 @@ done
         current_ad_index = (attempt_count - 1) % len(availability_domains)
         current_ad_name = availability_domains[current_ad_index]
         
+        if 'details' not in status_data: status_data['details'] = {}
         status_data['details']['ad'] = current_ad_name
         
         try:
@@ -926,7 +1072,7 @@ done
         
         task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
         if not task_record_check or task_record_check['status'] not in ['running', 'pending']:
-            logging.info(f"Snatching task {task_id} has been stopped. Exiting loop.")
+            logging.info(f"Snatching task {task_id} has been stopped or paused. Exiting loop.")
             return
 
         delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
@@ -936,3 +1082,4 @@ done
             _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
             last_update_time = current_time
         time.sleep(delay)
+
