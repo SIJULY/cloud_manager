@@ -12,15 +12,27 @@
     .status-running { background-color: #198754; }
     .status-stopped { background-color: #dc3545; }
     .status-other { background-color: #ffc107; }
-    .action-buttons button { margin: 0 2px; }
+    /* 调整 action-group 按钮样式以实现等宽 */
+    .action-group { 
+        display: flex; 
+        flex-wrap: wrap; 
+        gap: 0.5rem; 
+    }
+    .action-group .btn { 
+        flex: 1 1 0; /* 允许按钮等宽增长和缩小，flex-basis: 0; 确保起始等分 */
+        min-width: 0; /* 确保在小屏幕下可以正常收缩 */
+    }
+    /* 移除或调整 profile-action-btn 的固定宽度，让 flex 属性生效 */
+    /* #instanceList td { text-align: center; vertical-align: middle; } */
+    #instanceList td:first-child { text-align: left; }
     #logOutput { white-space: pre-wrap; word-break: break-all; }
     #logOutput pre { margin-bottom: 0; white-space: pre-wrap; }
     #instanceList td { text-align: center; vertical-align: middle; }
     #instanceList td:first-child { text-align: left; }
-    .action-group { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    /* .action-group .btn { margin: 0 2px; } */ /* 这行可以移除，gap 已经提供了间距 */
     #viewSnatchTasksModal .list-group-item { cursor: pointer; }
-    .action-group .btn { flex-grow: 1; }
-    .profile-action-btn { width: 85px !important; }
+    /* .action-group .btn { flex-grow: 1; } */ /* 已经整合到 .action-group .btn 的 flex 属性中 */
+    /* .profile-action-btn { width: 85px !important; } */ /* 这个样式会导致宽度不一致，需要移除或调整 */
     .status-cell { display: flex; align-items: center; justify-content: center; }
     .rule-row input { font-size: 0.9rem; }
     .rule-row .btn-sm { padding: 0.2rem 0.5rem; }
@@ -44,10 +56,10 @@
     .table-hover tbody tr.profile-disabled {
         opacity: 0.65;
         cursor: not-allowed;
-        pointer-events: none;
+        /* pointer-events: none; */ /* 重新启用事件，以便操作按钮仍然可点击 */
     }
     .table-hover tbody tr.profile-disabled .action-buttons {
-        pointer-events: auto;
+        pointer-events: auto; /* 确保在 profile-disabled 状态下，操作按钮仍然可以点击 */
     }
     #viewSnatchTasksModal .modal-footer {
         justify-content: space-between;
@@ -123,16 +135,19 @@
         </div>
         <div class="card-body">
             <div class="action-group">
-                <button id="createInstanceBtn" class="btn btn-success" disabled data-bs-toggle="modal" data-bs-target="#createLaunchInstanceModal">
+                <button id="createInstanceBtn" class="btn btn-success profile-action-btn" disabled data-bs-toggle="modal" data-bs-target="#createLaunchInstanceModal">
                     <i class="bi bi-plus-circle"></i> 创建 / 抢占实例
                 </button>
-                <button id="viewSnatchTasksBtn" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
+                <button id="viewSnatchTasksBtn" class="btn btn-success profile-action-btn" data-bs-toggle="modal" data-bs-target="#viewSnatchTasksModal">
                     <i class="bi bi-list-task"></i> 查看抢占任务
                 </button>
-                <button id="networkSettingsBtn" class="btn btn-info" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
+                <button id="networkSettingsBtn" class="btn btn-info profile-action-btn" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
                     <i class="bi bi-shield-gear"></i> 网络设置
                 </button>
-                <button id="tgSettingsBtn" class="btn btn-info" data-bs-toggle="modal" data-bs-target="#tgSettingsModal">
+                <button id="cloudflareSettingsBtn" class="btn btn-info profile-action-btn" data-bs-toggle="modal" data-bs-target="#cloudflareSettingsModal">
+                    <i class="bi bi-cloud-fill"></i> Cloudflare 设置
+                </button>
+                <button id="tgSettingsBtn" class="btn btn-info profile-action-btn" data-bs-toggle="modal" data-bs-target="#tgSettingsModal">
                     <i class="bi bi-telegram"></i> TG & API 设置
                 </button>
             </div>
@@ -248,9 +263,10 @@
                                   placeholder="在此输入您自定义的开机脚本（可选）"></textarea>
                         <div class="form-text">实例启动时将自动执行此脚本。常用依赖（如curl, git等）会自动安装，无需在此填写。</div>
                     </div>
+                    
                     <div id="snatchModeOptions">
                         <hr>
-                        <h6>抢占模式设置</h6>
+                        <h6>抢占模式与域名设置</h6>
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label for="minDelay" class="form-label">最短重试间隔 (秒)</label>
@@ -262,6 +278,15 @@
                             </div>
                         </div>
                          <div class="form-text">可用性域将由程序自动轮询，无需手动指定。</div>
+                        
+                        <div class="form-check mt-3">
+                            <input class="form-check-input" type="checkbox" value="" id="autoBindDomainCheck">
+                            <label class="form-check-label" for="autoBindDomainCheck">
+                                自动绑定 Cloudflare 域名
+                            </label>
+                            <div class="form-text">勾选后，将使用实例名作为子域名自动解析到公网IP。请先在“Cloudflare设置”中完成配置。</div>
+                        </div>
+
                     </div>
                 </form>
             </div>
@@ -606,6 +631,42 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="cloudflareSettingsModal" tabindex="-1" aria-labelledby="cloudflareSettingsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="cloudflareSettingsModalLabel">Cloudflare DNS 设置</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-warning">请确保提供的 API 令牌具有该 Zone 的 "DNS:Edit" 权限。</div>
+                <div class="mb-3">
+                    <label for="cloudflareApiToken" class="form-label">Cloudflare API 令牌</label>
+                    <input type="password" class="form-control" id="cloudflareApiToken" placeholder="输入您的 Cloudflare API Token">
+                </div>
+                <div class="mb-3">
+                    <label for="cloudflareZoneId" class="form-label">Zone ID</label>
+                    <input type="text" class="form-control" id="cloudflareZoneId" placeholder="输入您的域名 Zone ID">
+                </div>
+                <div class="mb-3">
+                    <label for="cloudflareDomain" class="form-label">主域名</label>
+                    <input type="text" class="form-control" id="cloudflareDomain" placeholder="例如: example.com">
+                </div>
+                 <small class="text-muted d-block mt-2">
+                    如何获取? 登录 Cloudflare -> 选择域名 -> 在右侧 "API" 部分找到您的 Zone ID。API 令牌请在 "My Profile" -> "API Tokens" 页面创建。
+                 </small>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="saveCloudflareConfigBtn">
+                    <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                    保存设置
+                </button>
             </div>
         </div>
     </div>
