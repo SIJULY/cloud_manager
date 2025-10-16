@@ -307,20 +307,25 @@ def get_user_data(password, startup_script=None):
     script_parts = [
         "#cloud-config",
         "chpasswd:",
+        # --- ✅ Bug 修复点: 移除行末多余的逗号 ---
         "  expire: False",
+        # --- ✅ 修复结束 ---
         "  list:",
         f"    - ubuntu:{password}",
         "runcmd:",
-        "  - sed -i 's/^#?PasswordAuthentication.*/PasswordAuthentication yes/g' /etc/ssh/sshd_config",
-        "  - '[ -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf ] && sed -i \"s/PasswordAuthentication no/PasswordAuthentication yes/g\" /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
-        "  - sed -i 's/^#?PermitRootLogin.*/PermitRootLogin prohibit-password/g' /etc/ssh/sshd_config",
+        # 1. 修正SSH登录的命令
+        "  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"",
+        "  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
+        "  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"",
     ]
-    
-    if startup_script and startup_script.strip():
-        script_parts.append(f'  - {json.dumps(startup_script.strip())}')
 
+    if startup_script and startup_script.strip():
+        # 使用 bash -c 来正确执行高级脚本
+        script_parts.append(f"  - bash -c '{json.dumps(startup_script.strip())[1:-1]}'")
+
+    # 重启SSH服务以应用所有更改
     script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
-    
+
     script = "\n".join(script_parts)
     return base64.b64encode(script.encode('utf-8')).decode('utf-8')
 
@@ -908,7 +913,6 @@ def launch_instance(alias, endpoint):
             return jsonify({"error": error}), 500
 
         data = request.json
-        
         data.setdefault('os_name_version', 'Canonical Ubuntu-22.04')
 
         display_name = data.get('display_name_prefix', 'N/A')
@@ -923,35 +927,47 @@ def launch_instance(alias, endpoint):
         try:
             all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
             
+            # --- ✅ Bug 修复点 ---
+            #
+            # 筛选出所有“活着”的实例，用于后续的配额计算。
+            # 忽略 'TERMINATED' (已终止) 和 'TERMINATING' (正在终止) 的实例。
+            #
+            active_instances = [
+                inst for inst in all_instances 
+                if inst.lifecycle_state not in ['TERMINATED', 'TERMINATING']
+            ]
+            # --- ✅ 修复结束 ---
+
             requested_boot_volume_size = data.get('boot_volume_size', 50)
             new_requested_total_size = instance_count * requested_boot_volume_size
             current_total_boot_volume_size = 0
 
-            for instance in all_instances:
-                if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
-                    try:
-                        attachments = oci.pagination.list_call_get_all_results(
-                            compute_client.list_boot_volume_attachments,
-                            availability_domain=instance.availability_domain,
-                            compartment_id=compartment_id,
-                            instance_id=instance.id
-                        ).data
-                        if attachments:
-                            boot_volume_id = attachments[0].boot_volume_id
-                            boot_volume = bs_client.get_boot_volume(boot_volume_id).data
-                            current_total_boot_volume_size += int(boot_volume.size_in_gbs)
-                    except Exception as e:
-                        logging.warning(f"无法获取实例 {instance.id} 的引导卷信息，计算总量时将忽略: {e}")
-                        continue
+            # 使用筛选后的 active_instances 列表进行计算
+            for instance in active_instances:
+                try:
+                    attachments = oci.pagination.list_call_get_all_results(
+                        compute_client.list_boot_volume_attachments,
+                        availability_domain=instance.availability_domain,
+                        compartment_id=compartment_id,
+                        instance_id=instance.id
+                    ).data
+                    if attachments:
+                        boot_volume_id = attachments[0].boot_volume_id
+                        boot_volume = bs_client.get_boot_volume(boot_volume_id).data
+                        current_total_boot_volume_size += int(boot_volume.size_in_gbs)
+                except Exception as e:
+                    logging.warning(f"无法获取实例 {instance.id} 的引导卷信息，计算总量时将忽略: {e}")
+                    continue
             
             if (current_total_boot_volume_size + new_requested_total_size) > 200:
                 error_msg = f"总磁盘容量超出200 GB的免费额度。您当前已使用 {current_total_boot_volume_size} GB，本次请求将导致总量达到 {current_total_boot_volume_size + new_requested_total_size} GB。"
                 return jsonify({"error": error_msg}), 400
 
             if shape == 'VM.Standard.E2.1.Micro':
-                existing_amd_count = sum(1 for inst in all_instances if inst.shape == shape and inst.lifecycle_state not in ['TERMINATED', 'TERMINATING'])
+                # 使用筛选后的 active_instances 列表进行计算
+                existing_amd_count = sum(1 for inst in active_instances if inst.shape == shape)
                 if (existing_amd_count + instance_count) > 2:
-                    error_msg = f"免费账户最多只能创建2个AMD实例，您当前已有 {existing_amd_count} 个。"
+                    error_msg = f"免费账户最多只能创建2个AMD实例，您当前已有 {existing_amd_count} 个活动实例。"
                     return jsonify({"error": error_msg}), 400
 
         except Exception as e:
