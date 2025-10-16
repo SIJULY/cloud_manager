@@ -1,30 +1,28 @@
 import os
 import json
-import secrets # <<< 新增导入
-from flask import Flask, render_template, request, session, redirect, url_for, jsonify # 确保 jsonify 已导入
-from celery import Celery, bootsteps
-from kombu import Consumer, Exchange, Queue
+import secrets 
+from flask import Flask, render_template, request, session, redirect, url_for, jsonify
+from celery import Celery
+from celery.signals import worker_ready
 import logging
-from datetime import timedelta # <<< 1. 新增导入
+from datetime import timedelta
 
 # --- App Configuration ---
 app = Flask(__name__)
 
-# --- 2. 新增会话过期设置 ---
-# 设置会话的生命周期为2小时
+# --- 会话过期设置 ---
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
 
 @app.before_request
 def make_session_permanent():
     """让会话在每次请求后都重置计时器 (滑动窗口)"""
     session.permanent = True
-# --- 新增设置结束 ---
 
 app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
 PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345")
 DEBUG_MODE = os.getenv("FLASK_DEBUG", "false").lower() in ['true', '1', 't']
 
-# <<< 新增：配置文件和密钥初始化 >>>
+# --- 配置文件和密钥初始化 ---
 CONFIG_FILE = 'config.json'
 
 def initialize_app_config():
@@ -42,7 +40,7 @@ def initialize_app_config():
 
     if 'api_secret_key' not in config or not config.get('api_secret_key'):
         print("首次启动或API密钥不存在，正在生成新的API密钥...")
-        new_key = secrets.token_hex(32) # 生成一个64位的安全随机字符串
+        new_key = secrets.token_hex(32) 
         config['api_secret_key'] = new_key
 
         try:
@@ -54,8 +52,6 @@ def initialize_app_config():
 
 # 在Flask App启动时执行初始化
 initialize_app_config()
-# <<< 初始化代码结束 >>>
-
 
 # --- Celery Configuration ---
 redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
@@ -74,13 +70,25 @@ celery.conf.update(app.config)
 # --- Import and Register Blueprints ---
 from blueprints.aws_panel import aws_bp
 from blueprints.azure_panel import azure_bp, init_db as init_azure_db
-from blueprints.oci_panel import oci_bp, init_db as init_oci_db
-from blueprints.api_bp import api_bp # <<< 新增导入 API 蓝图
+from blueprints.oci_panel import oci_bp, init_db as init_oci_db, recover_snatching_tasks
+from blueprints.api_bp import api_bp
 
 app.register_blueprint(aws_bp, url_prefix='/aws')
 app.register_blueprint(azure_bp, url_prefix='/azure')
 app.register_blueprint(oci_bp, url_prefix='/oci')
-app.register_blueprint(api_bp, url_prefix='/api/v1/oci') # <<< 新增注册 API 蓝图
+app.register_blueprint(api_bp, url_prefix='/api/v1/oci')
+
+# --- Celery Worker 启动时执行的恢复逻辑 ---
+@worker_ready.connect
+def on_worker_ready(**kwargs):
+    """
+    此函数仅在 Celery worker 进程准备就绪时执行。
+    这是运行任务恢复逻辑的正确位置，以避免 web 进程重复执行。
+    """
+    print("Celery worker is ready. Running OCI task recovery check...")
+    with app.app_context():
+        # 调用我们之前创建的恢复函数
+        recover_snatching_tasks()
 
 # --- Shared Routes ---
 @app.route('/login', methods=['GET', 'POST'])
@@ -102,9 +110,8 @@ def logout():
 def index():
     if 'user_logged_in' not in session:
         return redirect(url_for('login'))
-    return redirect(url_for('aws.aws_index')) # 默认跳转保持不变
+    return redirect(url_for('aws.aws_index')) 
 
-# --- 新增的API密钥获取接口 ---
 @app.route('/api/get-app-api-key')
 def get_app_api_key():
     """为前端提供API密钥的接口"""
@@ -118,7 +125,7 @@ def get_app_api_key():
                 config = json.load(f)
                 api_key = config.get('api_secret_key')
         except (IOError, json.JSONDecodeError):
-            pass # 如果文件有问题，则返回下面的错误
+            pass 
 
     if api_key:
         return jsonify({"api_key": api_key})
@@ -130,6 +137,8 @@ with app.app_context():
     print("Checking and initializing databases if necessary...")
     init_azure_db()
     init_oci_db()
+    # 恢复逻辑已移至 on_worker_ready 函数中
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=DEBUG_MODE)
+
