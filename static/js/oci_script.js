@@ -1,1340 +1,1200 @@
-import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
-from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for, current_app
-from functools import wraps
-from datetime import timezone
-import oci
-from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
-                             UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
-                             LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
-                             LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
-                             UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
-                             AddVcnIpv6CidrDetails, UpdateSubnetDetails)
-from oci.exceptions import ServiceError
-from app import celery
+document.addEventListener('DOMContentLoaded', function() {
+    // --- 1. DOM 元素获取 ---
+    const profileList = document.getElementById('profileList');
+    const currentProfileStatus = document.getElementById('currentProfileStatus');
+    const addNewProfileBtn = document.getElementById('addNewProfileBtn');
+    const newProfileAlias = document.getElementById('newProfileAlias');
+    const newProfileConfigText = document.getElementById('newProfileConfigText');
+    const newProfileSshKey = document.getElementById('newProfileSshKey');
+    const newProfileKeyFile = document.getElementById('newProfileKeyFile');
+    const refreshInstancesBtn = document.getElementById('refreshInstancesBtn');
+    const createInstanceBtn = document.getElementById('createInstanceBtn');
+    const networkSettingsBtn = document.getElementById('networkSettingsBtn');
+    const instanceList = document.getElementById('instanceList');
+    const logOutput = document.getElementById('logOutput');
+    const clearLogBtn = document.getElementById('clearLogBtn');
+    
+    const snatchLogOutput = document.getElementById('snatchLogOutput');
+    const clearSnatchLogBtn = document.getElementById('clearSnatchLogBtn');
+    const snatchLogArea = document.getElementById('snatchLogArea');
+    
+    // Modals
+    const launchInstanceModal = new bootstrap.Modal(document.getElementById('createLaunchInstanceModal'));
+    // --- ✨ MODIFICATION START ✨ ---
+    const launchInstanceModalEl = document.getElementById('createLaunchInstanceModal');
+    // --- ✨ MODIFICATION END ✨ ---
+    const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
+    const viewSnatchTasksModalEl = document.getElementById('viewSnatchTasksModal'); 
+    const taskResultModal = new bootstrap.Modal(document.getElementById('taskResultModal'));
+    const networkSettingsModal = new bootstrap.Modal(document.getElementById('networkSettingsModal'));
+    const editInstanceModal = new bootstrap.Modal(document.getElementById('editInstanceModal'));
+    const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
+    const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
+    const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
+    // 新增: Cloudflare Modal
+    const cloudflareSettingsModal = new bootstrap.Modal(document.getElementById('cloudflareSettingsModal'));
 
-# --- Blueprint Setup ---
-oci_bp = Blueprint('oci', __name__, template_folder='../../templates', static_folder='../../static')
+    const instanceCountInput = document.getElementById('instanceCount');
+    const launchInstanceShapeSelect = document.getElementById('instanceShape');
+    const launchFlexConfig = document.getElementById('flexShapeConfig');
+    const submitLaunchInstanceBtn = document.getElementById('submitLaunchInstanceBtn');
+    const proxySettingsAlias = document.getElementById('proxySettingsAlias');
+    const proxyUrlInput = document.getElementById('proxyUrl');
+    const saveProxyBtn = document.getElementById('saveProxyBtn');
+    const removeProxyBtn = document.getElementById('removeProxyBtn');
+    
+    const stopSnatchTaskBtn = document.getElementById('stopSnatchTaskBtn');
+    const resumeSnatchTaskBtn = document.getElementById('resumeSnatchTaskBtn');
+    const deleteSnatchTaskBtn = document.getElementById('deleteSnatchTaskBtn');
+    const deleteCompletedBtn = document.getElementById('deleteCompletedBtn');
+    
+    const runningSnatchTasksList = document.getElementById('runningSnatchTasksList');
+    const completedSnatchTasksList = document.getElementById('completedSnatchTasksList');
+    const actionAreaProfile = document.getElementById('actionAreaProfile');
+    const ingressRulesTable = document.getElementById('ingressRulesTable');
+    const egressRulesTable = document.getElementById('egressRulesTable');
+    const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
+    const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
+    const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
+    const editDisplayName = document.getElementById('editDisplayName');
+    const saveDisplayNameBtn = document.getElementById('saveDisplayNameBtn');
+    const editFlexInstanceConfig = document.getElementById('editFlexInstanceConfig');
+    const editOcpus = document.getElementById('editOcpus');
+    const editMemory = document.getElementById('editMemory');
+    const saveFlexConfigBtn = document.getElementById('saveFlexConfigBtn');
+    const editBootVolumeSize = document.getElementById('editBootVolumeSize');
+    const saveBootVolumeSizeBtn = document.getElementById('saveBootVolumeSizeBtn');
+    const editVpus = document.getElementById('editVpus');
+    const saveVpusBtn = document.getElementById('saveVpusBtn');
+    const confirmActionModalLabel = document.getElementById('confirmActionModalLabel');
+    const confirmActionModalBody = document.getElementById('confirmActionModalBody');
+    const confirmActionModalTerminateOptions = document.getElementById('confirmActionModalTerminateOptions');
+    const confirmDeleteVolumeCheck = document.getElementById('confirmDeleteVolumeCheck');
+    const confirmActionModalConfirmBtn = document.getElementById('confirmActionModalConfirmBtn');
+    const tgBotTokenInput = document.getElementById('tgBotToken');
+    const tgChatIdInput = document.getElementById('tgChatId');
+    const saveTgConfigBtn = document.getElementById('saveTgConfigBtn');
+    const getApiKeyBtn = document.getElementById('getApiKeyBtn');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    
+    // 新增: Cloudflare DOM 元素
+    const cloudflareApiTokenInput = document.getElementById('cloudflareApiToken');
+    const cloudflareZoneIdInput = document.getElementById('cloudflareZoneId');
+    const cloudflareDomainInput = document.getElementById('cloudflareDomain');
+    const saveCloudflareConfigBtn = document.getElementById('saveCloudflareConfigBtn');
+    // 新增: 创建实例时绑定域名的复选框
+    const autoBindDomainCheck = document.getElementById('autoBindDomainCheck');
 
-# --- Configuration ---
-KEYS_FILE = "oci_profiles.json"
-DATABASE = 'oci_tasks.db'
-TG_CONFIG_FILE = "tg_settings.json"
-CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
 
-# --- 通用请求超时处理 ---
-class TimeoutException(Exception):
-    pass
+    const instanceActionButtons = {
+        start: document.getElementById('startBtn'),
+        stop: document.getElementById('stopBtn'),
+        restart: document.getElementById('restartBtn'),
+        editInstance: document.getElementById('editInstanceBtn'),
+        changeIp: document.getElementById('changeIpBtn'),
+        assignIpv6: document.getElementById('assignIpv6Btn'),
+        terminate: document.getElementById('terminateBtn'),
+    };
 
-def timeout_handler(signum, frame):
-    raise TimeoutException("请求超时")
+    let currentInstances = [];
+    let selectedInstance = null;
+    let currentSecurityList = null;
+    
+    const accountColors = {};
+    const colorPalette = ['#007bff', '#28a745', '#dc3545', '#ffc107', '#17a2b8', '#6610f2', '#e83e8c'];
+    let colorIndex = 0;
+    const snatchTaskAnnounced = {};
 
-def timeout(seconds):
-    def decorator(f):
-        @wraps(f)
-        def wrapper(*args, **kwargs):
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = f(*args, **kwargs)
-            finally:
-                signal.alarm(0)
-            return result
-        return wrapper
-    return decorator
-
-# --- 数据库核心辅助函数 ---
-def get_db_connection(timeout=3):
-    conn = sqlite3.connect(DATABASE, timeout=timeout)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    return conn
-
-def get_db():
-    db = getattr(g, '_oci_database', None)
-    if db is None:
-        db = g._oci_database = get_db_connection(timeout=3)
-    return db
-
-@oci_bp.teardown_request
-def close_connection(exception):
-    db = getattr(g, '_oci_database', None)
-    if db is not None:
-        db.close()
-
-def init_db():
-    db = get_db_connection()
-    cursor = db.cursor()
-    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks'")
-    table_exists = cursor.fetchone()
-    if not table_exists:
-        print("Initializing OCI database table 'tasks'...")
-        logging.info("OCI database file found, but 'tasks' table is missing. Creating table...")
-        cursor.executescript("""
-        CREATE TABLE tasks (
-            id TEXT PRIMARY KEY, type TEXT, name TEXT, status TEXT NOT NULL,
-            result TEXT, created_at TEXT, account_alias TEXT
-        );
-        """)
-        db.commit()
-        logging.info("'tasks' table created successfully in OCI database.")
-    db.close()
-
-def query_db(query, args=(), one=False):
-    db = get_db_connection(timeout=20)
-    cur = db.execute(query, args)
-    rv = cur.fetchall()
-    cur.close()
-    db.close()
-    return (rv[0] if rv else None) if one else rv
-
-def _db_execute_celery(query, params=()):
-    db = get_db_connection(timeout=20)
-    db.execute(query, params)
-    db.commit()
-    db.close()
-
-# --- 核心辅助函数 ---
-def load_profiles():
-    if not os.path.exists(KEYS_FILE): return {}
-    try:
-        with open(KEYS_FILE, 'r', encoding='utf-8') as f:
-            content = f.read()
-            return json.loads(content) if content else {}
-    except (IOError, json.JSONDecodeError): return {}
-
-def save_profiles(profiles):
-    with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(profiles, f, indent=4, ensure_ascii=False)
-
-def load_tg_config():
-    if not os.path.exists(TG_CONFIG_FILE): return {}
-    try:
-        with open(TG_CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError): return {}
-
-def save_tg_config(config):
-    try:
-        with open(TG_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4)
-        logging.info(f"Telegram config saved to {TG_CONFIG_FILE}")
-    except Exception as e:
-        logging.error(f"Failed to save Telegram config to {TG_CONFIG_FILE}: {e}")
-
-# --- Cloudflare 辅助函数 ---
-def load_cloudflare_config():
-    if not os.path.exists(CLOUDFLARE_CONFIG_FILE):
-        return {}
-    try:
-        with open(CLOUDFLARE_CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (IOError, json.JSONDecodeError):
-        return {}
-
-def save_cloudflare_config(config):
-    try:
-        with open(CLOUDFLARE_CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=4)
-        logging.info(f"Cloudflare config saved to {CLOUDFLARE_CONFIG_FILE}")
-    except Exception as e:
-        logging.error(f"Failed to save Cloudflare config: {e}")
-
-def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
-    cf_config = load_cloudflare_config()
-    api_token = cf_config.get('api_token')
-    zone_id = cf_config.get('zone_id')
-    domain = cf_config.get('domain')
-
-    if not all([api_token, zone_id, domain]):
-        logging.warning("Cloudflare 未配置，跳过 DNS 更新。")
-        return "Cloudflare 未配置，跳过 DNS 更新。"
-
-    full_domain = f"{subdomain}.{domain}"
-    api_url = f"https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records"
-    headers = {
-        "Authorization": f"Bearer {api_token}",
-        "Content-Type": "application/json"
+    function getAccountColor(alias) {
+        if (!accountColors[alias]) {
+            accountColors[alias] = colorPalette[colorIndex % colorPalette.length];
+            colorIndex++;
+        }
+        return accountColors[alias];
     }
 
-    try:
-        search_params = {'type': record_type, 'name': full_domain}
-        response = requests.get(api_url, headers=headers, params=search_params, timeout=15)
-        response.raise_for_status()
-        search_result = response.json()
+    // --- Event Listeners ---
 
-        dns_payload = {
-            'type': record_type,
-            'name': full_domain,
-            'content': ip_address,
-            'ttl': 60,
-            'proxied': False
+    launchInstanceShapeSelect.addEventListener('change', () => {
+        const isFlex = launchInstanceShapeSelect.value.includes('Flex');
+        launchFlexConfig.style.display = isFlex ? 'flex' : 'none';
+    });
+    launchInstanceShapeSelect.dispatchEvent(new Event('change'));
+
+    // --- ✨ MODIFICATION START ✨ ---
+    submitLaunchInstanceBtn.addEventListener('click', () => {
+        const proceedWithLaunch = async () => {
+            const shape = launchInstanceShapeSelect.value;
+            if (!shape) {
+                addLog('请选择一个有效的实例规格。', 'error');
+                return;
+            }
+
+            const details = {
+                display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
+                instance_count: parseInt(instanceCountInput.value, 10),
+                os_name_version: document.getElementById('instanceOS').value,
+                shape: shape,
+                boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
+                startup_script: document.getElementById('startupScript').value.trim(),
+                min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
+                max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90,
+                auto_bind_domain: autoBindDomainCheck.checked
+            };
+    
+            if (shape.includes('Flex')) {
+                details.ocpus = parseInt(document.getElementById('instanceOcpus').value, 10);
+                details.memory_in_gbs = parseInt(document.getElementById('instanceMemory').value, 10);
+            }
+            
+            if (details.min_delay >= details.max_delay) return addLog('最短重试间隔必须小于最长重试间隔', 'error');
+            if (!details.display_name_prefix) return addLog('实例名称/前缀不能为空', 'error');
+    
+            let logMessage = `正在提交抢占实例 [${details.display_name_prefix}] 的任务...`;
+            if (details.auto_bind_domain) {
+                logMessage += ' (已启用自动域名绑定)';
+            }
+            addLog(logMessage);
+    
+            try {
+                const response = await apiRequest('/oci/api/launch-instance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(details)
+                });
+                addLog(response.message, 'success');
+                launchInstanceModal.hide();
+                
+                if (response.task_ids && Array.isArray(response.task_ids)) {
+                    response.task_ids.forEach(pollTaskStatus);
+                }
+            } catch (error) {}
+        };
+
+        const shape = launchInstanceShapeSelect.value;
+        const requestedCount = parseInt(instanceCountInput.value, 10);
+        const requestedBootVolumeSize = parseInt(document.getElementById('bootVolumeSize').value, 10);
+        
+        const activeInstances = currentInstances.filter(inst => 
+            !['TERMINATED', 'TERMINATING'].includes(inst.lifecycle_state)
+        );
+
+        const newRequestedTotalSize = requestedCount * requestedBootVolumeSize;
+        const currentTotalBootVolumeSize = activeInstances.reduce((total, inst) => {
+            const sizeInGb = parseInt(inst.boot_volume_size_gb, 10);
+            return total + (isNaN(sizeInGb) ? 0 : sizeInGb);
+        }, 0);
+
+        if ((currentTotalBootVolumeSize + newRequestedTotalSize) > 200) {
+            confirmActionModalLabel.textContent = '警告: 超出免费额度';
+            confirmActionModalBody.innerHTML = `您当前已使用 <strong>${currentTotalBootVolumeSize} GB</strong> 磁盘，本次请求将导致总量达到 <strong>${currentTotalBootVolumeSize + newRequestedTotalSize} GB</strong>，超出 200 GB 的免费额度。这可能会导致您的账户产生额外费用。<br><br>确定要继续吗？`;
+            confirmActionModalConfirmBtn.onclick = () => {
+                confirmActionModal.hide();
+                proceedWithLaunch();
+            };
+            confirmActionModal.show();
+            return;
         }
 
-        if search_result['result']:
-            record_id = search_result['result'][0]['id']
-            update_url = f"{api_url}/{record_id}"
-            response = requests.put(update_url, headers=headers, json=dns_payload, timeout=15)
-            action_log = "更新"
-        else:
-            response = requests.post(api_url, headers=headers, json=dns_payload, timeout=15)
-            action_log = "创建"
-
-        response.raise_for_status()
-        result_data = response.json()
-
-        if result_data['success']:
-            msg = f"✅ 成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}"
-            logging.info(msg)
-            return msg
-        else:
-            errors = result_data.get('errors', [{'message': '未知错误'}])
-            error_msg = ', '.join([e['message'] for e in errors])
-            msg = f"❌ {action_log} Cloudflare DNS 记录失败: {error_msg}"
-            logging.error(msg)
-            return msg
-
-    except requests.RequestException as e:
-        msg = f"❌ 更新 Cloudflare DNS 时发生网络错误: {e}"
-        logging.error(msg)
-        return msg
-    except Exception as e:
-        msg = f"❌ 更新 Cloudflare DNS 时发生未知错误: {e}"
-        logging.error(msg)
-        return msg
-
-def send_tg_notification(message):
-    tg_config = load_tg_config()
-    bot_token = tg_config.get('bot_token')
-    chat_id = tg_config.get('chat_id')
-    if not bot_token or not chat_id:
-        logging.info("Telegram bot_token或chat_id未配置，跳过发送。")
-        return
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {'chat_id': chat_id, 'text': message, 'parse_mode': 'Markdown'}
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            logging.info(f"Telegram消息已成功发送至 Chat ID: {chat_id}")
-        else:
-            logging.error(f"发送Telegram消息失败: {response.status_code} - {response.text}")
-    except requests.RequestException as e:
-        logging.error(f"发送Telegram消息时发生网络错误: {e}")
-    except Exception as e:
-        logging.error(f"发送Telegram消息时发生未知错误: {e}")
-
-def generate_oci_password(length=16):
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
-
-def get_oci_clients(profile_config, validate=True):
-    key_file_path = None
-    try:
-        config_for_sdk = profile_config.copy()
+        if (shape === 'VM.Standard.E2.1.Micro') {
+            const existingAMDCount = activeInstances.filter(inst => inst.shape === shape).length;
+            if ((existingAMDCount + requestedCount) > 2) {
+                addLog(`免费账户最多只能创建2个AMD实例，您已有 ${existingAMDCount} 个活动实例，无法再创建 ${requestedCount} 个。`, 'error');
+                return;
+            }
+        }
         
-        if 'proxy' in profile_config and profile_config['proxy']:
-            config_for_sdk['proxy'] = profile_config['proxy']
-            logging.info(f"Using proxy: {profile_config['proxy']} for OCI client.")
+        proceedWithLaunch();
+    });
 
-        if 'key_content' in profile_config:
-            key_file_path = f"/tmp/{uuid.uuid4()}.pem"
-            with open(key_file_path, 'w') as key_file:
-                key_file.write(profile_config['key_content'])
-            os.chmod(key_file_path, 0o600)
-            config_for_sdk['key_file'] = key_file_path
+    // Add event listeners for the new dynamic shape functionality
+    launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
+    document.getElementById('instanceOS').addEventListener('change', updateAvailableShapes);
+    // --- ✨ MODIFICATION END ✨ ---
+
+
+    const snatchTaskTabs = document.querySelectorAll('#snatchTaskTabs button[data-bs-toggle="tab"]');
+    snatchTaskTabs.forEach(tab => {
+        tab.addEventListener('shown.bs.tab', event => {
+            const runningDeleteAction = document.getElementById('running-delete-action');
+            if (event.target.id === 'running-tab') {
+                document.getElementById('running-actions').style.display = 'flex';
+                document.getElementById('completed-actions').style.display = 'none';
+                runningDeleteAction.style.display = 'block';
+                snatchLogArea.style.display = 'block';
+            } else if (event.target.id === 'completed-tab') {
+                document.getElementById('running-actions').style.display = 'none';
+                document.getElementById('completed-actions').style.display = 'flex';
+                runningDeleteAction.style.display = 'none';
+                snatchLogArea.style.display = 'none';
+            }
+        });
+    });
+    
+    viewSnatchTasksModalEl.addEventListener('shown.bs.modal', function () {
+        snatchLogOutput.scrollTop = snatchLogOutput.scrollHeight;
+    });
+
+    document.getElementById('viewSnatchTasksBtn').addEventListener('click', function() {
+        const runningTabBtn = document.getElementById('running-tab');
+        const completedTabBtn = document.getElementById('completed-tab');
+        const runningPane = document.getElementById('running-tab-pane');
+        const completedPane = document.getElementById('completed-tab-pane');
+
+        runningTabBtn.classList.add('active');
+        completedTabBtn.classList.remove('active');
+        runningPane.classList.add('show', 'active');
+        completedPane.classList.remove('show', 'active');
         
-        if validate:
-            oci.config.validate_config(config_for_sdk)
-            
-        return {
-            "identity": oci.identity.IdentityClient(config_for_sdk),
-            "compute": oci.core.ComputeClient(config_for_sdk),
-            "vnet": oci.core.VirtualNetworkClient(config_for_sdk),
-            "bs": oci.core.BlockstorageClient(config_for_sdk)
-        }, None
-    except Exception as e:
-        return None, f"创建OCI客户端失败: {e}"
-    finally:
-        if key_file_path and os.path.exists(key_file_path):
-            os.remove(key_file_path)
+        document.getElementById('running-actions').style.display = 'flex';
+        document.getElementById('completed-actions').style.display = 'none';
+        document.getElementById('running-delete-action').style.display = 'block';
+        snatchLogArea.style.display = 'block';
 
-def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
-    profiles = load_profiles()
-    profile_config = profiles.get(alias, {})
-    subnet_id = profile_config.get('default_subnet_ocid')
-    if subnet_id:
-        try:
-            if vnet_client.get_subnet(subnet_id).data.lifecycle_state == 'AVAILABLE':
-                return subnet_id
-        except ServiceError as e:
-            if e.status != 404: raise
-            logging.warning(f"Saved subnet {subnet_id} not found, will auto-discover or create a new one.")
-    try:
-        vcns = vnet_client.list_vcns(compartment_id=tenancy_ocid).data
-        if vcns:
-            default_vcn = vcns[0]
-            subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
-            if subnets:
-                default_subnet = subnets[0]
-                profiles[alias]['default_subnet_ocid'] = default_subnet.id
-                save_profiles(profiles)
-                return default_subnet.id
-    except Exception as e:
-        logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
-    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('首次运行，正在自动创建网络资源 (VCN, 子网等)，预计需要2-3分钟...', task_id))
-    vcn_name = f"vcn-autocreated-{alias}-{random.randint(100, 999)}"
-    vcn_details = CreateVcnDetails(cidr_block="10.0.0.0/16", display_name=vcn_name, compartment_id=tenancy_ocid)
-    vcn = vnet_client.create_vcn(vcn_details).data
-    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/3) VCN 已创建，正在等待其生效...', task_id))
-    oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE')
-    ig_name = f"ig-autocreated-{alias}-{random.randint(100, 999)}"
-    ig_details = CreateInternetGatewayDetails(display_name=ig_name, compartment_id=tenancy_ocid, is_enabled=True, vcn_id=vcn.id)
-    ig = vnet_client.create_internet_gateway(ig_details).data
-    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/3) 互联网网关已创建并添加路由...', task_id))
-    oci.wait_until(vnet_client, vnet_client.get_internet_gateway(ig.id), 'lifecycle_state', 'AVAILABLE')
-    route_table_id = vcn.default_route_table_id
-    rt_rules = vnet_client.get_route_table(route_table_id).data.route_rules
-    rt_rules.append(RouteRule(destination="0.0.0.0/0", network_entity_id=ig.id))
-    vnet_client.update_route_table(route_table_id, UpdateRouteTableDetails(route_rules=rt_rules))
-    subnet_name = f"subnet-autocreated-{alias}-{random.randint(100, 999)}"
-    subnet_details = CreateSubnetDetails(compartment_id=tenancy_ocid, vcn_id=vcn.id, cidr_block="10.0.1.0/24", display_name=subnet_name)
-    subnet = vnet_client.create_subnet(subnet_details).data
-    if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
-    oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
-    profiles[alias]['default_subnet_ocid'] = subnet.id
-    save_profiles(profiles)
-    return subnet.id
-
-def get_user_data(password, startup_script=None):
-    # 默认依赖安装脚本
-    default_script = """
-echo "Waiting for apt lock to be released..."
-while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
-   echo "Another apt/dpkg process is running. Waiting 10 seconds..."
-   sleep 10
-done
-
-echo "Starting package installation with retries..."
-for i in 1 2 3; do
-  apt-get update && apt-get install -y curl wget unzip git socat cron && break
-  echo "APT commands failed (attempt $i/3), retrying in 15 seconds..."
-  sleep 15
-done
-"""
+        loadSnatchTasks();
+    });
     
-    script_parts = [
-        "#cloud-config",
-        "chpasswd:",
-        "  expire: False",
-        "  list:",
-        f"    - ubuntu:{password}",
-        "runcmd:",
-        # 1. 修正SSH登录的命令
-        "  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"",
-        "  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
-        "  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"",
-        # 2. 将默认脚本作为一个独立的命令项
-        f"  - [ bash, -c, {json.dumps(default_script)} ]",
-    ]
+    // --- Core and Helper Functions ---
 
-    # 3. 如果有用户脚本，也将其作为独立的命令项
-    if startup_script and startup_script.strip():
-        # 使用更安全的列表格式来传递命令，避免复杂的转义
-        script_parts.append(f"  - [ bash, -c, {json.dumps(startup_script.strip())} ]")
+    // --- ✨ NEW FUNCTION START ✨ ---
+    async function updateAvailableShapes() {
+        const os_name_version = document.getElementById('instanceOS').value;
+        const shapeSelect = document.getElementById('instanceShape');
+        
+        shapeSelect.innerHTML = '<option value="">正在刷新实例规格...</option>';
+        shapeSelect.disabled = true;
+        // Also disable the launch button while refreshing
+        submitLaunchInstanceBtn.disabled = true;
 
-    # 4. 最后重启SSH服务
-    script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
-
-    script = "\n".join(script_parts)
-    return base64.b64encode(script.encode('utf-8')).decode('utf-8')
-
-def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
-    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(1/5) 正在获取网络资源...', task_id))
-    vnic = vnet_client.get_vnic(vnic_id).data
-    subnet = vnet_client.get_subnet(vnic.subnet_id).data
-    vcn = vnet_client.get_vcn(subnet.vcn_id).data
-    if not vcn.ipv6_cidr_blocks:
-        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/5) 正在为VCN开启IPv6...', task_id))
-        details = AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
-        vnet_client.add_ipv6_vcn_cidr(vcn_id=vcn.id, add_vcn_ipv6_cidr_details=details)
-        oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
-        vcn = vnet_client.get_vcn(vcn.id).data
-        logging.info(f"VCN {vcn.id} 已成功开启IPv6，地址段: {vcn.ipv6_cidr_blocks}")
-    if not subnet.ipv6_cidr_block:
-        _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/5) 正在为子网分配IPv6地址段...', task_id))
-        vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
-        subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
-        details = UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
-        vnet_client.update_subnet(subnet.id, details)
-        oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
-        logging.info(f"Subnet {subnet.id} 已成功分配IPv6地址段: {subnet_ipv6_cidr}")
-    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(4/5) 正在更新路由表以支持IPv6...', task_id))
-    route_table = vnet_client.get_route_table(vcn.default_route_table_id).data
-    igws = vnet_client.list_internet_gateways(compartment_id=vcn.compartment_id, vcn_id=vcn.id).data
-    if not igws:
-        raise Exception("未找到互联网网关，无法为IPv6添加路由规则。")
-    igw_id = igws[0].id
-    ipv6_rule_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
-    if not ipv6_rule_exists:
-        new_rules = list(route_table.route_rules)
-        new_rules.append(RouteRule(destination='::/0', network_entity_id=igw_id))
-        vnet_client.update_route_table(route_table.id, UpdateRouteTableDetails(route_rules=new_rules))
-        logging.info(f"已为路由表 {route_table.id} 添加IPv6默认路由。")
-    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(5/5) 正在更新安全规则以支持IPv6...', task_id))
-    security_list = vnet_client.get_security_list(vcn.default_security_list_id).data
-    egress_ipv6_rule_exists = any(rule.destination == '::/0' for rule in security_list.egress_security_rules)
-    if not egress_ipv6_rule_exists:
-        new_egress_rules = list(security_list.egress_security_rules)
-        new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all'))
-        vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
-        logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
-
-# --- 任务恢复功能 ---
-def recover_snatching_tasks():
-    logging.info("--- 检查并恢复被中断的抢占任务 ---")
+        try {
+            const shapes = await apiRequest(`/oci/api/available-shapes?os_name_version=${os_name_version}`);
+            shapeSelect.innerHTML = ''; // Clear previous options
+            if (shapes.length === 0) {
+                shapeSelect.innerHTML = '<option value="">当前系统无可用规格</option>';
+            } else {
+                // Ensure ARM Flex is the default option if available
+                shapes.sort((a, b) => a.includes('A1.Flex') ? -1 : (b.includes('A1.Flex') ? 1 : 0));
+                shapes.forEach(shape => {
+                    const option = document.createElement('option');
+                    option.value = shape;
+                    option.textContent = shape;
+                    shapeSelect.appendChild(option);
+                });
+                // Re-enable the launch button if shapes were found
+                submitLaunchInstanceBtn.disabled = false;
+            }
+        } catch (error) {
+            shapeSelect.innerHTML = '<option value="">获取规格失败</option>';
+            addLog('自动刷新实例规格失败，请检查网络或账号权限。', 'error');
+        } finally {
+            shapeSelect.disabled = false;
+            // Manually trigger a change event to update the UI for Flex options
+            shapeSelect.dispatchEvent(new Event('change'));
+        }
+    }
+    // --- ✨ NEW FUNCTION END ✨ ---
     
-    db = get_db_connection()
-    try:
-        orphaned_tasks = db.execute(
-            "SELECT id, result, account_alias FROM tasks WHERE status = 'running' AND type = 'snatch'"
-        ).fetchall()
+    function addLog(message, type = 'info') {
+        const timestamp = new Date().toLocaleTimeString();
+        const typeMap = { 'error': 'text-danger', 'success': 'text-success', 'warning': 'text-warning' };
+        const color = typeMap[type] || '';
+        const logEntry = document.createElement('div');
+        logEntry.className = color;
+        logEntry.innerHTML = `[${timestamp}] ${message.replace(/\n/g, '<br>')}`;
+        logOutput.appendChild(logEntry);
+        logOutput.scrollTop = logOutput.scrollHeight;
+    }
 
-        if not orphaned_tasks:
-            logging.info("没有需要自动恢复的抢占任务。")
-            return
+    function addSnatchLog(message, accountAlias) {
+        const timestamp = new Date().toLocaleTimeString();
+        const color = getAccountColor(accountAlias);
+        
+        const logEntry = document.createElement('div');
+        logEntry.style.color = color;
+        logEntry.innerHTML = `[${timestamp}] <strong style="color: ${color};">[${accountAlias || '未知账户'}]</strong> ${message.replace(/\n/g, '<br>')}`;
+        
+        snatchLogOutput.appendChild(logEntry);
+        snatchLogOutput.scrollTop = snatchLogOutput.scrollHeight;
+    }
+    
+    clearLogBtn.addEventListener('click', () => logOutput.innerHTML = '');
+    clearSnatchLogBtn.addEventListener('click', () => snatchLogOutput.innerHTML = '');
 
-        logging.info(f"发现 {len(orphaned_tasks)} 个需要自动恢复的抢占任务。")
-        profiles = load_profiles()
+    async function apiRequest(url, options = {}) {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: `HTTP 错误! 状态: ${response.status}` }));
+                throw new Error(errorData.error || `HTTP 错误! 状态: ${response.status}`);
+            }
+            const text = await response.text();
+            return text ? JSON.parse(text) : {};
+        } catch (error) {
+            addLog(`请求失败: ${error.message}`, 'error');
+            throw error;
+        }
+    }
 
-        for task in orphaned_tasks:
-            task_id = task['id']
-            alias = task['account_alias']
+    async function refreshInstances() {
+        addLog('正在刷新实例列表...');
+        refreshInstancesBtn.disabled = true;
+        instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div> 正在加载...</td></tr>`;
+        try {
+            const instances = await apiRequest('/oci/api/instances');
+            currentInstances = instances; 
+            instanceList.innerHTML = '';
+            if (instances.length === 0) {
+                 instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">未找到任何实例</td></tr>`;
+            } else {
+                instances.forEach(inst => {
+                    const tr = document.createElement('tr');
+                    tr.dataset.instanceId = inst.id;
+                    tr.dataset.instanceData = JSON.stringify(inst);
+                    const state = inst.lifecycle_state;
+                    let dotClass = state === 'RUNNING' ? 'status-running' : (state === 'STOPPED' ? 'status-stopped' : 'status-other');
+                    tr.innerHTML = `
+                        <td style="text-align: left; padding-left: 1rem;">${inst.display_name}</td>
+                        <td><div class="status-cell"><span class="status-dot ${dotClass}"></span><span>${state}</span></div></td>
+                        <td>${inst.public_ip || '无'}</td>
+                        <td>${inst.ipv6_address || '无'}</td>
+                        <td>${inst.ocpus}c / ${inst.memory_in_gbs}g / ${inst.boot_volume_size_gb}</td>
+                        <td>${new Date(inst.time_created).toLocaleString()}</td>`;
+                    instanceList.appendChild(tr);
+                });
+            }
+            addLog('实例列表刷新成功!', 'success');
+        } catch (error) {
+            currentInstances = [];
+            instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-5">加载实例列表失败</td></tr>`;
+        } finally {
+            refreshInstancesBtn.disabled = false;
+        }
+    }
+    
+    refreshInstancesBtn.addEventListener('click', refreshInstances);
+    
+    async function checkSession(shouldRefreshInstances = true) {
+        try {
+            const data = await apiRequest('/oci/api/session');
             
-            profile_config = profiles.get(alias)
-            if not profile_config:
-                logging.warning(f"任务 {task_id} 对应的账号 '{alias}' 配置已不存在，无法恢复。")
-                db.execute(
-                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
-                    ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id)
-                )
-                db.commit()
-                continue
+            document.querySelectorAll('#profileList tr').forEach(r => {
+                r.classList.remove('table-active', 'profile-disabled');
+            });
 
-            try:
-                result_json = json.loads(task['result'])
-                original_details = result_json.get('details')
-                if not original_details:
-                    raise ValueError("在任务 result 中未找到 'details' 字段。")
+            if (data.logged_in && data.alias) {
+                currentProfileStatus.textContent = `已连接: ${data.alias}`;
+                actionAreaProfile.textContent = `当前账号: ${data.alias}`;
+                actionAreaProfile.classList.remove('d-none');
+                enableMainControls(true, data.can_create);
+                if (shouldRefreshInstances) {
+                    await refreshInstances();
+                }
                 
-                result_json['last_message'] = "服务重启，任务已自动恢复并继续执行..."
-                new_run_id = str(uuid.uuid4())
-                result_json['run_id'] = new_run_id
-                
-                db.execute(
-                    "UPDATE tasks SET result = ? WHERE id = ?",
-                    (json.dumps(result_json), task_id)
-                )
-                db.commit()
-                
-                auto_bind_domain = original_details.get('auto_bind_domain', False)
-                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
-
-                logging.info(f"已成功重新派发任务 {task_id} (账号: {alias})。")
-
-            except (json.JSONDecodeError, ValueError, KeyError) as e:
-                logging.error(f"解析或恢复任务 {task_id} 失败: {e}。")
-                db.execute(
-                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
-                    ('failure', f'任务恢复失败，原因: 无法解析任务参数 ({e})', task_id)
-                )
-                db.commit()
-
-    except Exception as e:
-        logging.error(f"在恢复抢占任务过程中发生未知错误: {e}")
-    finally:
-        db.close()
-        logging.info("--- 抢占任务恢复检查完成 ---")
-
-# --- Decorators ---
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if "user_logged_in" in session:
-            return f(*args, **kwargs)
-
-        auth_header = request.headers.get('Authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-            if token == current_app.config.get('PANEL_API_KEY'):
-                return f(*args, **kwargs)
-        
-        if request.path.startswith('/oci/api/'):
-            return jsonify({"error": "用户未登录或API密钥无效"}), 401
-        return redirect(url_for('login'))
-    return decorated_function
-
-def oci_clients_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
-
-        if not alias:
-             return jsonify({"error": "请先选择一个OCI账号"}), 403
-
-        profile_config = load_profiles().get(alias)
-        if not profile_config: return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
-        
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error: return jsonify({"error": error}), 500
-        
-        g.oci_clients = clients
-        g.oci_config = profile_config
-        return f(*args, **kwargs)
-    return decorated_function
-
-# --- Routes ---
-@oci_bp.route("/")
-@login_required
-def oci_index():
-    return render_template("oci.html")
-
-# --- API Routes ---
-@oci_bp.route('/api/tg-config', methods=['GET', 'POST'])
-@login_required
-def tg_config_handler():
-    if request.method == 'GET':
-        return jsonify(load_tg_config())
-    elif request.method == 'POST':
-        data = request.json
-        bot_token, chat_id = data.get('bot_token', '').strip(), data.get('chat_id', '').strip()
-        if not bot_token or not chat_id:
-            return jsonify({"error": "Bot Token 和 Chat ID 不能为空"}), 400
-        save_tg_config({'bot_token': bot_token, 'chat_id': chat_id})
-        return jsonify({"success": True, "message": "Telegram 设置已保存"})
-
-@oci_bp.route('/api/cloudflare-config', methods=['GET', 'POST'])
-@login_required
-def cloudflare_config_handler():
-    if request.method == 'GET':
-        return jsonify(load_cloudflare_config())
-    elif request.method == 'POST':
-        data = request.json
-        api_token = data.get('api_token', '').strip()
-        zone_id = data.get('zone_id', '').strip()
-        domain = data.get('domain', '').strip()
-        if not all([api_token, zone_id, domain]):
-            return jsonify({"error": "API 令牌, Zone ID 和主域名均不能为空"}), 400
-        
-        config = {'api_token': api_token, 'zone_id': zone_id, 'domain': domain}
-        save_cloudflare_config(config)
-        return jsonify({"success": True, "message": "Cloudflare 设置已成功保存"})
-
-@oci_bp.route("/api/profiles", methods=["GET", "POST"])
-@login_required
-def manage_profiles():
-    profiles = load_profiles()
-    if request.method == "GET":
-        if 'page' not in request.args:
-            return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
-
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 9, type=int)
-        profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
-        total_items = len(profile_names)
-        start = (page - 1) * per_page
-        end = start + per_page
-        paginated_items = profile_names[start:end]
-        total_pages = (total_items + per_page - 1) // per_page
-        return jsonify({
-            'items': paginated_items, 'total_items': total_items, 'page': page,
-            'per_page': per_page, 'total_pages': total_pages
-        })
-    if request.method == "POST":
-        data = request.json
-        alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
-        if not alias or not new_profile_data:
-            return jsonify({"error": "Missing alias or profile_data"}), 400
-        profiles[alias] = profiles.get(alias, {})
-        profiles[alias].update(new_profile_data)
-        save_profiles(profiles)
-        return jsonify({"success": True, "alias": alias})
-
-@oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
-@login_required
-def handle_single_profile(alias):
-    profiles = load_profiles()
-    if alias not in profiles: return jsonify({"error": "账号未找到"}), 404
-    if request.method == "GET": return jsonify(profiles[alias])
-    if request.method == "DELETE":
-        del profiles[alias]
-        save_profiles(profiles)
-        if session.get('oci_profile_alias') == alias: session.pop('oci_profile_alias', None)
-        return jsonify({"success": True})
-
-@oci_bp.route('/api/tasks/snatching/running', methods=['GET'])
-@login_required
-def get_running_snatching_tasks():
-    try:
-        tasks = query_db("SELECT id, name, result, created_at, account_alias, status FROM tasks WHERE type = 'snatch' AND status IN ('running', 'paused') ORDER BY created_at DESC")
-        tasks_list = []
-        for task in tasks:
-            task_dict = dict(task)
-            try:
-                task_dict['result'] = json.loads(task_dict['result'])
-            except (json.JSONDecodeError, TypeError):
-                pass
-            tasks_list.append(task_dict)
-        return jsonify(tasks_list)
-    except Exception as e: return jsonify({"error": str(e)}), 500
-
-@oci_bp.route('/api/tasks/snatching/completed', methods=['GET'])
-@login_required
-def get_completed_snatching_tasks():
-    tasks = query_db("SELECT id, name, status, result, created_at, account_alias FROM tasks WHERE type = 'snatch' AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 50")
-    return jsonify([dict(task) for task in tasks])
-
-@oci_bp.route('/api/tasks/<task_id>', methods=['DELETE'])
-@login_required
-def delete_task_record(task_id):
-    db = get_db()
-    task = db.execute("SELECT status FROM tasks WHERE id = ?", [task_id]).fetchone()
-    if task and task['status'] in ['success', 'failure', 'paused']:
-        celery.control.revoke(task_id, terminate=True, signal='SIGKILL')
-        db.execute('DELETE FROM tasks WHERE id = ?', (task_id,))
-        db.commit()
-        return jsonify({"success": True, "message": "任务记录已删除。"})
-    return jsonify({"error": "只能删除已完成、失败或暂停的任务记录。"}), 400
-
-@oci_bp.route('/api/tasks/<task_id>/stop', methods=['POST'])
-@login_required
-def stop_task(task_id):
-    celery.control.revoke(task_id, terminate=True, signal='SIGKILL')
+                const activeRow = document.querySelector(`#profileList tr[data-alias="${data.alias}"]`);
+                if (activeRow) {
+                    activeRow.classList.add('table-active', 'profile-disabled');
+                }
+            } else {
+                currentProfileStatus.textContent = '未连接';
+                actionAreaProfile.classList.add('d-none');
+                enableMainControls(false, false);
+            }
+        } catch (error) {
+             currentProfileStatus.textContent = '未连接 (会话检查失败)';
+             actionAreaProfile.classList.add('d-none');
+             enableMainControls(false, false);
+        }
+    }
     
-    task_data = query_db('SELECT result FROM tasks WHERE id = ?', [task_id], one=True)
-    if task_data and task_data['result']:
-        try:
-            result_json = json.loads(task_data['result'])
-            result_json['last_message'] = '任务已被用户手动暂停。'
-            if 'run_id' in result_json:
-                del result_json['run_id']
-            new_result = json.dumps(result_json)
-        except (json.JSONDecodeError, TypeError):
-            new_result = '{"last_message": "任务已被用户手动暂停。"}'
-    else:
-        new_result = '{"last_message": "任务已被用户手动暂停。"}'
-        
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('paused', new_result, task_id))
-    return jsonify({"success": True, "message": f"任务 {task_id} 已被暂停。"})
-
-@oci_bp.route('/api/tasks/resume', methods=['POST'])
-@login_required
-def resume_tasks():
-    data = request.json
-    task_ids = data.get('task_ids', [])
-    if not task_ids:
-        return jsonify({"error": "未提供任何任务ID"}), 400
-
-    resumed_count = 0
-    failed_tasks = []
-    profiles = load_profiles()
+    function enableMainControls(enabled, canCreate) {
+        refreshInstancesBtn.disabled = !enabled;
+        createInstanceBtn.disabled = !canCreate;
+        networkSettingsBtn.disabled = !enabled;
+        if (!enabled) {
+            instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
+            Object.values(instanceActionButtons).forEach(btn => btn.disabled = true);
+        }
+    }
     
-    for task_id in task_ids:
-        task = query_db('SELECT result, account_alias FROM tasks WHERE id = ? AND status = ?', [task_id, 'paused'], one=True)
-        if not task:
-            failed_tasks.append(task_id)
-            continue
-        
-        alias = task['account_alias']
-        profile_config = profiles.get(alias)
-
-        if not profile_config:
-            failed_tasks.append(task_id)
-            _db_execute_celery("UPDATE tasks SET status = ?, result = ? WHERE id = ?", ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id))
-            continue
-
-        try:
-            result_json = json.loads(task['result'])
-            original_details = result_json.get('details')
-            if not original_details:
-                raise ValueError("任务数据中缺少 'details' 字段")
-            
-            result_json['last_message'] = "任务已手动恢复，继续执行..."
-            new_run_id = str(uuid.uuid4())
-            result_json['run_id'] = new_run_id
-
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(result_json), task_id))
-            
-            auto_bind_domain = original_details.get('auto_bind_domain', False)
-            _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
-
-            resumed_count += 1
-        except Exception as e:
-            logging.error(f"恢复任务 {task_id} 失败: {e}")
-            failed_tasks.append(task_id)
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f'手动恢复任务失败: {e}', task_id))
-
-    message = f"成功恢复 {resumed_count} 个任务。"
-    if failed_tasks:
-        message += f" {len(failed_tasks)} 个任务恢复失败: {', '.join(failed_tasks)}"
+    function pollTaskStatus(taskId, isRepoll = false) {
+        if (!window.taskPollers) window.taskPollers = {};
     
-    return jsonify({"success": True, "message": message})
+        const poller = async () => {
+            try {
+                const apiResponse = await apiRequest(`/oci/api/task_status/${taskId}`);
+                if (!apiResponse || apiResponse.status === 'not_found') {
+                    console.warn(`Task ${taskId} not found or invalid response. Stopping poller.`);
+                    delete window.taskPollers[taskId];
+                    return;
+                }
+                const isFinalState = ['success', 'failure'].includes(apiResponse.status);
 
-@oci_bp.route("/api/session", methods=["POST", "GET", "DELETE"])
-@login_required
-@timeout(20)
-def oci_session_route():
-    try:
-        if request.method == "POST":
-            alias = request.json.get("alias")
-            profiles = load_profiles()
-            if not alias or alias not in profiles: return jsonify({"error": "无效的账号别名"}), 400
-            
-            profile_config = profiles.get(alias)
-            session['oci_profile_alias'] = alias
-            g.api_selected_alias = alias
-
-            _, error = get_oci_clients(profile_config, validate=True)
-            if error:
-                session.pop('oci_profile_alias', None)
-                g.pop('api_selected_alias', None)
-                return jsonify({"error": f"连接验证失败: {error}"}), 400
-            
-            proxy_info = profile_config.get('proxy')
-            if proxy_info:
-                success_message = f"连接成功! 当前账号: {alias} (通过代理: {proxy_info})"
-            else:
-                success_message = f"连接成功! 当前账号: {alias} (未使用代理)"
-
-            can_create = bool(profile_config.get('default_ssh_public_key'))
-            return jsonify({
-                "success": True, 
-                "alias": alias, 
-                "can_create": can_create,
-                "message": success_message
-            })
-
-        if request.method == "GET":
-            alias = session.get('oci_profile_alias')
-            if alias:
-                can_create = bool(load_profiles().get(alias, {}).get('default_ssh_public_key'))
-                return jsonify({"logged_in": True, "alias": alias, "can_create": can_create})
-            return jsonify({"logged_in": False})
-        if request.method == "DELETE":
-            session.pop('oci_profile_alias', None)
-            g.pop('api_selected_alias', None)
-            return jsonify({"success": True})
-    except TimeoutException:
-        session.pop('oci_profile_alias', None)
-        g.pop('api_selected_alias', None)
-        return jsonify({"error": "连接 OCI 验证超时，请检查网络或API密钥设置。"}), 504
-    except Exception as e:
-        session.pop('oci_profile_alias', None)
-        g.pop('api_selected_alias', None)
-        return jsonify({"error": str(e)}), 500
-
-@oci_bp.route('/api/instances', defaults={'alias': None})
-@oci_bp.route('/api/<alias>/instances')
-@login_required
-@timeout(30)
-def get_instances(alias):
-    try:
-        if alias is None:
-            alias = session.get('oci_profile_alias')
-            if not alias:
-                return jsonify({"error": "请先选择一个OCI账号"}), 403
-
-        profile_config = load_profiles().get(alias)
-        if not profile_config:
-            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error:
-            return jsonify({"error": error}), 500
-        
-        compute_client, vnet_client, bs_client = clients['compute'], clients['vnet'], clients['bs']
-        compartment_id = profile_config['tenancy']
-
-        instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
-        instance_details_list = []
-        for instance in instances:
-            data = {"display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state, "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None, "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A", "vnic_id": None, "subnet_id": None}
-            try:
-                if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
-                    vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
-                    if vnic_attachments:
-                        vnic_id = vnic_attachments[0].vnic_id
-                        data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
-                        vnic = vnet_client.get_vnic(vnic_id).data
-                        data.update({'public_ip': vnic.public_ip or "无"})
-                        ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
-                        if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
-                    boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-                    if boot_vol_attachments:
-                        boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-                        data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
-            except ServiceError as se:
-                if se.status == 404: logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
-                else: logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
-            except Exception as ex:
-                logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
-            instance_details_list.append(data)
-        return jsonify(instance_details_list)
-    except TimeoutException:
-        return jsonify({"error": "获取实例列表超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"获取实例列表失败: {e}"}), 500
-
-def _create_task_entry(task_type, task_name, alias=None):
-    db = get_db()
-    task_id = str(uuid.uuid4())
-    if alias is None: alias = session.get('oci_profile_alias') or g.get('api_selected_alias', 'N/A')
-    utc_time = datetime.datetime.now(timezone.utc).isoformat()
-    db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
-               (task_id, task_type, task_name, 'pending', '', utc_time, alias))
-    db.commit()
-    return task_id
-
-@oci_bp.route('/api/instance-action', methods=['POST'], defaults={'alias': None})
-@oci_bp.route('/api/<alias>/instance-action', methods=['POST'])
-@login_required
-@timeout(10)
-def instance_action(alias):
-    try:
-        if alias is None:
-            alias = session.get('oci_profile_alias')
-            if not alias:
-                return jsonify({"error": "请先选择一个OCI账号"}), 403
-        
-        profile_config = load_profiles().get(alias)
-        if not profile_config:
-            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
-
-        data = request.json
-        action, instance_id = data.get('action'), data.get('instance_id')
-        if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
-        
-        task_name = f"{action} on {data.get('instance_name', instance_id[-12:])}"
-        task_id = _create_task_entry('action', task_name, alias)
-        
-        config_with_alias = profile_config.copy()
-        config_with_alias['alias'] = alias
-
-        data['_source'] = 'web'
-
-        _instance_action_task.delay(task_id, config_with_alias, action, instance_id, data)
-        return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
-    except (sqlite3.OperationalError, TimeoutException) as e:
-        if isinstance(e, TimeoutException) or "database is locked" in str(e):
-            return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        raise
-    except Exception as e:
-        return jsonify({"error": f"提交实例操作失败: {e}"}), 500
-
-@oci_bp.route('/api/instance-details/<instance_id>')
-@login_required
-@oci_clients_required
-@timeout(10)
-def get_instance_details(instance_id):
-    try:
-        compute_client = g.oci_clients['compute']
-        bs_client = g.oci_clients['bs']
-        compartment_id = g.oci_config['tenancy']
-        instance = compute_client.get_instance(instance_id).data
-        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-        if not boot_vol_attachments: return jsonify({"error": "找不到此实例的引导卷"}), 404
-        boot_volume = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-        return jsonify({"display_name": instance.display_name, "shape": instance.shape, "ocpus": instance.shape_config.ocpus, "memory_in_gbs": instance.shape_config.memory_in_gbs, "boot_volume_id": boot_volume.id, "boot_volume_size_in_gbs": boot_volume.size_in_gbs, "vpus_per_gb": boot_volume.vpus_per_gb})
-    except TimeoutException:
-        return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
-
-@oci_bp.route('/api/available-shapes')
-@login_required
-@oci_clients_required
-@timeout(45)  # Increased timeout for a potentially longer API call
-def get_available_shapes():
-    try:
-        os_name_version = request.args.get('os_name_version')
-        if not os_name_version:
-            return jsonify({"error": "缺少 os_name_version 参数"}), 400
-
-        os_name, os_version = os_name_version.split('-')
-        compute_client = g.oci_clients['compute']
-        tenancy_ocid = g.oci_config['tenancy']
-        
-        # 1. Fetch all available shapes in the compartment
-        logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
-        all_shapes = oci.pagination.list_call_get_all_results(
-            compute_client.list_shapes,
-            compartment_id=tenancy_ocid
-        ).data
-        logging.info(f"Found {len(all_shapes)} total shapes.")
-
-        # 2. Filter for ARM (Ampere) and AMD shapes first, and only for VMs
-        architecture_shapes = []
-        for shape in all_shapes:
-            # --- ✅ 修正点: 增加 startswith('VM.') 判断 ---
-            if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
-                proc_desc = shape.processor_description.lower()
-                if 'ampere' in proc_desc or 'amd' in proc_desc:
-                    architecture_shapes.append(shape.shape)
-        
-        logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
-
-        # 3. Check OS image compatibility for the filtered list
-        valid_shapes_for_os = []
-        for shape_name in architecture_shapes:
-            try:
-                # We only need to check for existence, so limit=1 is efficient
-                images = compute_client.list_images(
-                    tenancy_ocid,
-                    operating_system=os_name,
-                    operating_system_version=os_version,
-                    shape=shape_name,
-                    limit=1
-                ).data
-                if images:
-                    valid_shapes_for_os.append(shape_name)
-            except ServiceError as se:
-                # This can happen for shapes that are visible but not usable in the region.
-                # It's safe to ignore these and continue.
-                logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
-                continue
-        
-        logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
-        
-        # Prioritize free-tier shapes to appear first in the dropdown
-        valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
-
-        return jsonify(valid_shapes_for_os)
-
-    except TimeoutException:
-        return jsonify({"error": "获取可用实例规格超时。"}), 504
-    except Exception as e:
-        logging.error(f"Failed to get available shapes: {e}", exc_info=True)
-        return jsonify({"error": f"获取可用实例规格失败: {e}"}), 500
-
-@oci_bp.route('/api/update-instance', methods=['POST'])
-@login_required
-@oci_clients_required
-@timeout(10)
-def update_instance():
-    try:
-        data = request.json
-        action, instance_id = data.get('action'), data.get('instance_id')
-        if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
-        task_name = f"{action} on instance {instance_id[-6:]}"
-        task_id = _create_task_entry('action', task_name)
-        _update_instance_details_task.delay(task_id, g.oci_config, data)
-        return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
-    except (sqlite3.OperationalError, TimeoutException) as e:
-        if isinstance(e, TimeoutException) or "database is locked" in str(e):
-            return jsonify({"error": "请求超时或数据库繁忙，请稍后重-试。"}), 503
-        raise
-    except Exception as e:
-        return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
-
-@oci_bp.route('/api/network/security-list')
-@login_required
-@oci_clients_required
-@timeout(20)
-def get_security_list():
-    try:
-        vnet_client = g.oci_clients['vnet']
-        tenancy_ocid = g.oci_config['tenancy']
-        alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
-        subnet_id = _ensure_subnet_in_profile(None, alias, vnet_client, tenancy_ocid)
-        subnet = vnet_client.get_subnet(subnet_id).data
-        if not subnet.security_list_ids: return jsonify({"error": "默认子网没有关联任何安全列表。"}), 404
-        security_list_id = subnet.security_list_ids[0]
-        security_list = vnet_client.get_security_list(security_list_id).data
-        vcn = vnet_client.get_vcn(subnet.vcn_id).data
-        return jsonify({ "vcn_name": vcn.display_name, "security_list": json.loads(str(security_list)) })
-    except TimeoutException:
-        return jsonify({"error": "获取安全列表超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"获取安全列表失败: {e}"}), 500
-
-@oci_bp.route('/api/network/update-security-rules', methods=['POST'])
-@login_required
-@oci_clients_required
-@timeout(10)
-def update_security_rules():
-    try:
-        data = request.json
-        security_list_id, rules = data.get('security_list_id'), data.get('rules')
-        if not security_list_id or not rules: return jsonify({"error": "缺少 security_list_id 或 rules"}), 400
-        vnet_client = g.oci_clients['vnet']
-        update_details = UpdateSecurityListDetails(ingress_security_rules=rules.get('ingress_security_rules', []), egress_security_rules=rules.get('egress_security_rules', []))
-        vnet_client.update_security_list(security_list_id, update_details)
-        return jsonify({"success": True, "message": "安全规则已成功更新！"})
-    except TimeoutException:
-        return jsonify({"error": "更新安全规则超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"更新安全规则失败: {e}"}), 500
-
-@oci_bp.route('/api/launch-instance', methods=['POST'], defaults={'alias': None, 'endpoint': 'launch-instance'})
-@oci_bp.route('/api/<alias>/<endpoint>', methods=['POST'])
-@login_required
-@timeout(30)
-def launch_instance(alias, endpoint):
-    try:
-        if endpoint not in ["create-instance", "snatch-instance", "launch-instance"]:
-            return jsonify({"error": "无效的端点"}), 404
-        
-        if alias is None:
-            alias = session.get('oci_profile_alias')
-            if not alias:
-                return jsonify({"error": "请先选择一个OCI账号"}), 403
-
-        profile_config = load_profiles().get(alias)
-        if not profile_config:
-            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error:
-            return jsonify({"error": error}), 500
-
-        data = request.json
-        data.setdefault('os_name_version', 'Canonical Ubuntu-22.04')
-
-        display_name = data.get('display_name_prefix', 'N/A')
-        instance_count = data.get('instance_count', 1)
-        shape = data.get('shape')
-        auto_bind_domain = data.get('auto_bind_domain', False)
-        
-        compute_client = clients['compute']
-        compartment_id = profile_config['tenancy']
-
-        try:
-            all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
-            active_instances = [
-                inst for inst in all_instances 
-                if inst.lifecycle_state not in ['TERMINATED', 'TERMINATING']
-            ]
-            
-            if shape == 'VM.Standard.E2.1.Micro':
-                existing_amd_count = sum(1 for inst in active_instances if inst.shape == shape)
-                if (existing_amd_count + instance_count) > 2:
-                    error_msg = f"免费账户最多只能创建2个AMD实例，您当前已有 {existing_amd_count} 个活动实例。"
-                    return jsonify({"error": error_msg}), 400
-
-        except Exception as e:
-            logging.error(f"检查配额时发生严重错误: {e}")
-            return jsonify({"error": f"检查配额时出错，请稍后重试: {e}"}), 500
-
-        task_ids = []
-        for i in range(instance_count):
-            task_name = f"{display_name}-{i+1}" if instance_count > 1 else display_name
-            task_id = _create_task_entry('snatch', task_name, alias)
-            
-            task_data = data.copy()
-            task_data['display_name_prefix'] = task_name
-            task_data['auto_bind_domain'] = auto_bind_domain
-            
-            run_id = str(uuid.uuid4())
-            _snatch_instance_task.delay(task_id, profile_config, alias, task_data, run_id, auto_bind_domain)
-            task_ids.append(task_id)
-            
-        return jsonify({"message": f"已提交 {instance_count} 个抢占实例任务...", "task_ids": task_ids})
-
-    except (sqlite3.OperationalError, TimeoutException) as e:
-        if isinstance(e, TimeoutException) or "database is locked" in str(e):
-            return jsonify({"error": "请求超时或数据库繁忙，请稍后重试。"}), 503
-        raise
-    except Exception as e:
-        logging.error(f"提交抢占任务失败: {e}")
-        return jsonify({"error": f"提交抢占任务失败: {e}"}), 500
-
-@oci_bp.route('/api/task_status/<task_id>')
-@login_required
-def task_status(task_id):
-    task = query_db('SELECT status, result, type FROM tasks WHERE id = ?', [task_id], one=True)
-    if task:
-        return jsonify({'status': task['status'], 'result': task['result'], 'type': task['type']})
-    return jsonify({'status': 'not_found'}), 404
-
-# --- Celery Tasks ---
-@celery.task
-def _update_instance_details_task(task_id, profile_config, data):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在更新实例...', task_id))
-    try:
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error: raise Exception(error)
-        compute_client, bs_client = clients['compute'], clients['bs']
-        action, instance_id = data.get('action'), data.get('instance_id')
-        instance = compute_client.get_instance(instance_id).data
-        if action == 'update_display_name':
-            details = UpdateInstanceDetails(display_name=data.get('display_name'))
-            compute_client.update_instance(instance_id, details)
-            result_message = "✅ 实例名称更新成功!"
-        elif action == 'update_shape':
-            if instance.lifecycle_state != "STOPPED": raise Exception("必须先停止实例才能修改CPU和内存。")
-            shape_config = UpdateInstanceShapeConfigDetails(ocpus=data.get('ocpus'), memory_in_gbs=data.get('memory_in_gbs'))
-            details = UpdateInstanceDetails(shape_config=shape_config)
-            compute_client.update_instance(instance_id, details)
-            result_message = "✅ CPU/内存配置更新成功！请手动启动实例。"
-        elif action == 'update_boot_volume':
-            boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, profile_config['tenancy'], instance_id=instance_id).data
-            if not boot_vol_attachments: raise Exception("找不到引导卷")
-            boot_volume_id = boot_vol_attachments[0].boot_volume_id
-            update_data = {}
-            if data.get('size_in_gbs'): update_data['size_in_gbs'] = data.get('size_in_gbs')
-            if data.get('vpus_per_gb'): update_data['vpus_per_gb'] = data.get('vpus_per_gb')
-            if not update_data: raise Exception("没有提供任何引导卷更新信息。")
-            details = UpdateBootVolumeDetails(**update_data)
-            bs_client.update_boot_volume(boot_volume_id, details)
-            result_message = "✅ 引导卷更新成功！"
-        else: raise Exception(f"未知的更新操作: {action}")
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
-    except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
-
-@celery.task
-def _instance_action_task(task_id, profile_config, action, instance_id, data):
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在执行操作...', task_id))
-    try:
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error: raise Exception(error)
-        compute_client, vnet_client = clients['compute'], clients['vnet']
-        
-        instance = compute_client.get_instance(instance_id).data
-        instance_name = instance.display_name
-        
-        alias = profile_config.get('alias', '未知账户')
-
-        action_map = {"START": ("START", "RUNNING"), "STOP": ("STOP", "STOPPED"), "RESTART": ("SOFTRESET", "RUNNING")}
-        action_upper = action.upper()
-        result_message = ""
-        task_title = f"{action_upper} on {instance_name}"
-
-        if action_upper in action_map:
-            oci_action, target_state = action_map[action_upper]
-            compute_client.instance_action(instance_id=instance_id, action=oci_action)
-            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'等待实例进入 {target_state} 状态...', task_id))
-            oci.wait_until(compute_client, compute_client.get_instance(instance_id), 'lifecycle_state', target_state, max_wait_seconds=300)
-            result_message = f"✅ 实例已成功 {action}!"
-        elif action_upper == "TERMINATE":
-            compute_client.terminate_instance(instance_id, preserve_boot_volume=data.get('preserve_boot_volume', True))
-            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('等待实例进入 TERMINATED 状态...', task_id))
-            oci.wait_until(compute_client, compute_client.get_instance(instance_id), 'lifecycle_state', 'TERMINATED', max_wait_seconds=300, succeed_on_not_found=True)
-            result_message = "✅ 实例已成功终止!"
-        elif action_upper == "CHANGEIP":
-            vnic_id = data.get('vnic_id')
-            if not vnic_id: raise Exception("缺少 vnic_id")
-            private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
-            primary_private_ip = next((p for p in private_ips if p.is_primary), None)
-            if not primary_private_ip: raise Exception("未找到主私有IP")
-            try:
-                pub_ip_details = oci.core.models.GetPublicIpByPrivateIpIdDetails(private_ip_id=primary_private_ip.id)
-                existing_pub_ip = vnet_client.get_public_ip_by_private_ip_id(pub_ip_details).data
-                if existing_pub_ip.lifetime == "EPHEMERAL":
-                    vnet_client.delete_public_ip(existing_pub_ip.id)
-                    time.sleep(5)
-            except ServiceError as e:
-                if e.status != 404: raise
-            new_pub_ip = vnet_client.create_public_ip(CreatePublicIpDetails(compartment_id=profile_config['tenancy'], lifetime="EPHEMERAL", private_ip_id=primary_private_ip.id)).data
-            
-            result_message = f"✅ 更换IP成功，新IP: {new_pub_ip.ip_address}"
-            
-            dns_update_msg = _update_cloudflare_dns(instance_name, new_pub_ip.ip_address, 'A')
-            result_message += f"\n{dns_update_msg}"
-
-        elif action_upper == "ASSIGNIPV6":
-            vnic_id = data.get('vnic_id')
-            if not vnic_id: raise Exception("缺少 vnic_id")
-            
-            _enable_ipv6_networking(task_id, vnet_client, vnic_id)
-            
-            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('网络配置完成，正在为实例分配IPv6地址...', task_id))
-
-            new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
-            result_message = f"✅ 已成功分配IPv6地址: {new_ipv6.ip_address}"
-
-            dns_update_msg = _update_cloudflare_dns(instance_name, new_ipv6.ip_address, 'AAAA')
-            result_message += f"\n{dns_update_msg}"
-
-        else: raise Exception(f"未知的操作: {action}")
-        
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
-        
-        if data.get('_source') != 'web':
-            tg_msg = (f"🔔 *任务完成通知*\n\n"
-                      f"*账户*: `{alias}`\n"
-                      f"*任务*: `{task_title}`\n\n"
-                      f"*结果*:\n{result_message}")
-            send_tg_notification(tg_msg)
-
-    except Exception as e:
-        alias = profile_config.get('alias', '未知账户')
-        task_title = f"{action.upper()} on instance"
-        error_message = f"❌ 操作失败: {e}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
-        
-        if data.get('_source') != 'web':
-            tg_msg = (f"🔔 *任务失败通知*\n\n"
-                      f"*账户*: `{alias}`\n"
-                      f"*任务*: `{task_title}`\n\n"
-                      f"*原因*:\n`{e}`")
-            send_tg_notification(tg_msg)
-
-@celery.task
-def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_bind_domain=False):
+                if (apiResponse.type === 'snatch') {
+                    handleSnatchTaskPolling(taskId, apiResponse, isFinalState, isRepoll);
+                } else {
+                    const lastLogKey = `lastLog_main_${taskId}`;
+                    if (window[lastLogKey] !== apiResponse.result) {
+                        const logType = apiResponse.status === 'success' ? 'success' : (apiResponse.status === 'failure' ? 'error' : 'info');
+                        addLog(`任务[${taskId.substring(0,8)}] ${apiResponse.result}`, logType);
+                        window[lastLogKey] = apiResponse.result;
+                    }
+                }
     
-    task_data = query_db('SELECT result FROM tasks WHERE id = ?', [task_id], one=True)
-    try:
-        status_data = json.loads(task_data['result']) if task_data and task_data['result'] else {}
-    except (json.JSONDecodeError, TypeError):
-        status_data = {}
+                if (!isFinalState) {
+                    if (apiResponse.status === 'paused') {
+                        delete window.taskPollers[taskId]; 
+                        return;
+                    }
+                    window.taskPollers[taskId] = setTimeout(poller, 5000);
+                } else {
+                    delete window.taskPollers[taskId]; 
+                    const lastLogKey = `lastLog_main_${taskId}`;
+                    const lastSnatchLogKey = `lastSnatchLog_${taskId}`;
+                    delete window[lastLogKey];
+                    delete window[lastSnatchLogKey];
 
-    if not status_data or 'details' not in status_data:
-        status_data['details'] = details
-        status_data['start_time'] = datetime.datetime.now(timezone.utc).isoformat()
-        status_data['attempt_count'] = 0
-        status_data['last_message'] = "抢占任务准备中..."
-
-    status_data['details']['account_alias'] = alias
-    status_data['run_id'] = run_id
+                    if (apiResponse.status === 'success') {
+                        setTimeout(refreshInstances, 2000);
+                    }
+                }
     
-    _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', json.dumps(status_data), task_id))
-    
-    try:
-        clients, error = get_oci_clients(profile_config, validate=False)
-        if error: raise Exception(error)
-        compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
-        tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
-        if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
+            } catch (error) {
+                addLog(`监控任务 ${taskId} 时发生网络错误，将在10秒后重试...`, 'warning');
+                window.taskPollers[taskId] = setTimeout(poller, 10000); 
+            }
+        };
+        
+        poller();
+    }
 
-        ad_objects = identity_client.list_availability_domains(tenancy_ocid).data
-        if not ad_objects:
-            raise Exception("无法获取可用性域列表。")
-        availability_domains = [ad.name for ad in ad_objects]
+    function handleSnatchTaskPolling(taskId, apiResponse, isFinalState, isRepoll) {
+        const lastLogKey = `lastSnatchLog_${taskId}`;
+        let parsedResult = null;
+        let currentMessage = apiResponse.result; 
+
+        try {
+            parsedResult = JSON.parse(apiResponse.result);
+            if (parsedResult && parsedResult.details) {
+                const taskName = parsedResult.details.display_name_prefix || parsedResult.details.name;
+                if (parsedResult.attempt_count > 0) {
+                    currentMessage = `任务 ${taskName}: 第 ${parsedResult.attempt_count} 次尝试，${parsedResult.last_message}`;
+                } else {
+                    currentMessage = `任务 ${taskName}: ${parsedResult.last_message}`;
+                }
+            }
+        } catch (e) { /* Not JSON, keep original message */ }
+
+        if(window[lastLogKey] === currentMessage) return; 
+        window[lastLogKey] = currentMessage; 
+
+        const accountAlias = parsedResult?.details?.account_alias;
+        const taskNameForLog = parsedResult?.details?.display_name_prefix || parsedResult?.details?.name || taskId.substring(0,8);
+
+        if (apiResponse.status === 'running' || apiResponse.status === 'paused') {
+             if (apiResponse.status === 'running' && !isRepoll && !snatchTaskAnnounced[taskId]) {
+                addLog(`任务 [${taskNameForLog}] 正在准备...`);
+                addLog(`抢占任务已成功启动，具体详情请点击【查看抢占任务】`, 'success');
+                snatchTaskAnnounced[taskId] = true;
+            }
+            addSnatchLog(currentMessage, accountAlias);
+        } else if (isFinalState) {
+            const logType = apiResponse.status === 'success' ? 'success' : 'error';
+            addLog(`抢占任务 [${taskNameForLog}] 已完成: ${apiResponse.result}`, logType);
+            addSnatchLog(`<strong>任务完成:</strong> ${apiResponse.result}`, accountAlias);
+            delete snatchTaskAnnounced[taskId];
+        } else {
+            addLog(`任务 [${taskNameForLog}] 状态: ${apiResponse.status} - ${apiResponse.result}`);
+        }
+    }
+    
+    async function loadProfiles(page = 1) {
+        profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
+        try {
+            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=9`);
+            profileList.innerHTML = '';
+            if (response.items.length === 0 && page === 1) {
+                profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
+            } else {
+                response.items.forEach(name => {
+                    const tr = document.createElement('tr');
+                    tr.dataset.alias = name;
+                    tr.innerHTML = `
+                        <td>
+                            <a href="#" class="btn btn-info btn-sm connect-link-btn" data-alias="${name}" style="min-width: 8em;" onclick="event.preventDefault();">
+                                ${name}
+                            </a>
+                        </td>
+                        <td class="text-end action-buttons" style="min-width: 295px;">
+                            <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
+                            <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
+                            <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
+                        </td>
+                    `;
+                    profileList.appendChild(tr);
+                });
+            }
+            renderPagination(response.page, response.total_pages);
+            checkSession(false); 
+        } catch (error) {
+            profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
+            renderPagination(0, 0);
+        }
+    }
+    
+    function formatElapsedTime(startTimeString) {
+        const startTime = new Date(startTimeString);
+        const now = new Date();
+        let seconds = Math.floor((now - startTime) / 1000);
+        if (seconds < 60) return `不到1分钟`;
+        const days = Math.floor(seconds / (3600 * 24));
+        seconds -= days * 3600 * 24;
+        const hours = Math.floor(seconds / 3600);
+        seconds -= hours * 3600;
+        const minutes = Math.floor(seconds / 60);
+        let parts = [];
+        if (days > 0) parts.push(`${days}天`);
+        if (hours > 0) parts.push(`${hours}小时`);
+        if (minutes > 0) parts.push(`${minutes}分钟`);
+        return parts.join('');
+    }
+
+    async function loadTgConfig() {
+        try {
+            const config = await apiRequest('/oci/api/tg-config');
+            tgBotTokenInput.value = config.bot_token || '';
+            tgChatIdInput.value = config.chat_id || '';
+        } catch (error) {
+            addLog('加载 Telegram 配置失败。', 'warning');
+        }
+    }
+
+    // 新增: 加载 Cloudflare 配置
+    async function loadCloudflareConfig() {
+        try {
+            const config = await apiRequest('/oci/api/cloudflare-config');
+            cloudflareApiTokenInput.value = config.api_token || '';
+            cloudflareZoneIdInput.value = config.zone_id || '';
+            cloudflareDomainInput.value = config.domain || '';
+        } catch (error) {
+            addLog('加载 Cloudflare 配置失败。', 'warning');
+        }
+    }
+
+    saveTgConfigBtn.addEventListener('click', async () => {
+        const token = tgBotTokenInput.value.trim();
+        const chatId = tgChatIdInput.value.trim();
+        if (!token || !chatId) return addLog('Bot Token 和 Chat ID 均不能为空。', 'error');
         
-        subnet_id = _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid)
-        
-        os_name, os_version = details['os_name_version'].split('-')
-        shape = details['shape']
-        
-        status_data['last_message'] = '正在查找兼容的系统镜像...'
-        _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
-        
-        images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
-        if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
-        
-        instance_password = generate_oci_password()
-        
-        user_script = details.get('startup_script', '')
-        user_data_encoded = get_user_data(instance_password, user_script)
-        
-        base_launch_details = {
-            "compartment_id": tenancy_ocid,
-            "shape": shape, 
-            "display_name": details.get('display_name_prefix', 'snatch-instance'),
-            "create_vnic_details": CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
-            "metadata": {"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
-            "source_details": InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
-            "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
+        const spinner = saveTgConfigBtn.querySelector('.spinner-border');
+        saveTgConfigBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        try {
+            const response = await apiRequest('/oci/api/tg-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bot_token: token, chat_id: chatId })
+            });
+            addLog(response.message, 'success');
+        } finally {
+            saveTgConfigBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
+    
+    // 新增: 保存 Cloudflare 配置
+    saveCloudflareConfigBtn.addEventListener('click', async () => {
+        const apiToken = cloudflareApiTokenInput.value.trim();
+        const zoneId = cloudflareZoneIdInput.value.trim();
+        const domain = cloudflareDomainInput.value.trim();
+        if (!apiToken || !zoneId || !domain) {
+            return addLog('Cloudflare API 令牌、Zone ID 和主域名均不能为空。', 'error');
         }
 
-    except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
-        return
+        const spinner = saveCloudflareConfigBtn.querySelector('.spinner-border');
+        saveCloudflareConfigBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        try {
+            const response = await apiRequest('/oci/api/cloudflare-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ api_token: apiToken, zone_id: zoneId, domain: domain })
+            });
+            addLog(response.message, 'success');
+            cloudflareSettingsModal.hide();
+        } finally {
+            saveCloudflareConfigBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
 
-    last_update_time = time.time()
-    attempt_count = status_data.get('attempt_count', 0)
 
-    while True:
-        current_task_data = query_db('SELECT result, status FROM tasks WHERE id = ?', [task_id], one=True)
-        if not current_task_data:
-            logging.warning(f"Task {task_id} not found in DB. Worker will exit.")
-            return
+    getApiKeyBtn.addEventListener('click', async () => {
+        addLog('正在获取API密钥...');
+        try {
+            const data = await apiRequest('/api/get-app-api-key'); 
+            if (data.api_key) {
+                apiKeyInput.value = data.api_key;
+                navigator.clipboard.writeText(data.api_key).then(() => {
+                    addLog('API密钥已成功复制到剪贴板！', 'success');
+                    getApiKeyBtn.textContent = '已复制!';
+                    setTimeout(() => { getApiKeyBtn.textContent = '获取/复制密钥'; }, 2000);
+                }).catch(() => addLog('自动复制失败，请手动复制。', 'warning'));
+            }
+        } catch (error) {}
+    });
 
-        if current_task_data['status'] != 'running':
-            logging.info(f"Task {task_id} status is '{current_task_data['status']}', not 'running'. Worker will exit.")
-            return
-            
-        try:
-            current_result_json = json.loads(current_task_data['result'])
-            db_run_id = current_result_json.get('run_id')
-            if db_run_id != run_id:
-                logging.info(f"Task {task_id} has a new run_id ({db_run_id}). This worker ({run_id}) will exit.")
-                return
-        except (json.JSONDecodeError, TypeError, KeyError):
-            logging.error(f"Could not verify run_id for task {task_id}. Data might be corrupt. Exiting.")
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', "任务数据损坏，无法继续执行。", task_id))
-            return
-
-        attempt_count += 1
-        status_data['attempt_count'] = attempt_count
-        force_update = False
+    function renderPagination(currentPage, totalPages) {
+        const paginationContainer = document.getElementById('profilePagination');
+        paginationContainer.innerHTML = '';
+        if (totalPages <= 1) return;
         
-        current_ad_index = (attempt_count - 1) % len(availability_domains)
-        current_ad_name = availability_domains[current_ad_index]
-        
-        if 'details' not in status_data: status_data['details'] = {}
-        status_data['details']['ad'] = current_ad_name
-        
-        try:
-            launch_details_dict = base_launch_details.copy()
-            launch_details_dict['availability_domain'] = current_ad_name
-            launch_details = LaunchInstanceDetails(**launch_details_dict)
-            
-            status_data['last_message'] = f"正在 {current_ad_name} 中尝试..."
-            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
-            force_update = True 
-            
-            instance = compute_client.launch_instance(launch_details).data
-            
-            status_data['last_message'] = f"第 {status_data['attempt_count']} 次尝试成功！实例 {instance.display_name} 正在置备..."
-            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
-            oci.wait_until(compute_client, compute_client.get_instance(instance.id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
-            
-            public_ip = "获取中..."
-            try:
-                vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=tenancy_ocid, instance_id=instance.id).data
-                if vnic_attachments:
-                    vnic = vnet_client.get_vnic(vnic_attachments[0].vnic_id).data
-                    public_ip = vnic.public_ip or "无"
-            except Exception as ip_e:
-                public_ip = "获取失败"
-            
-            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
-            
-            dns_update_msg = ""
-            if auto_bind_domain and public_ip != "无" and public_ip != "获取失败":
-                dns_update_msg = _update_cloudflare_dns(instance.display_name, public_ip, 'A')
-                db_msg += f"\n{dns_update_msg}"
+        let paginationHtml = '<nav><ul class="pagination pagination-sm">';
+        paginationHtml += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${currentPage - 1}">&laquo;</a></li>`;
+        for (let i = 1; i <= totalPages; i++) {
+            paginationHtml += `<li class="page-item ${i === currentPage ? 'active' : ''}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
+        }
+        paginationHtml += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${currentPage + 1}">&raquo;</a></li>`;
+        paginationHtml += '</ul></nav>';
+        paginationContainer.innerHTML = paginationHtml;
+    }
 
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
-            
-            result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
-            if dns_update_msg:
-                result_for_tg += f"\n{dns_update_msg}"
-
-            tg_msg = (f"🔔 *任务完成通知*\n\n"
-                      f"*账户*: `{alias}`\n"
-                      f"*任务名称*: `{details.get('display_name_prefix', 'snatch-instance')}`\n\n"
-                      f"*结果*:\n{result_for_tg}")
-            
-            send_tg_notification(tg_msg)
-            
-            return
-        except ServiceError as e:
-            force_update = True
-            if e.status == 429 or "TooManyRequests" in e.code or "Out of host capacity" in str(e.message) or "LimitExceeded" in e.code:
-                status_data['last_message'] = f"在 {current_ad_name} 中资源不足 ({e.code})"
-            else:
-                status_data['last_message'] = f"在 {current_ad_name} 中遇到API错误 ({e.code})"
-        except Exception as e:
-            force_update = True
-            status_data['last_message'] = f"在 {current_ad_name} 中遇到未知错误 ({str(e)[:50]}...)"
+    document.getElementById('profilePagination').addEventListener('click', function(e) {
+        e.preventDefault();
+        if (e.target.tagName === 'A' && e.target.dataset.page) {
+            loadProfiles(parseInt(e.target.dataset.page, 10));
+        }
+    });
+    
+    addNewProfileBtn.addEventListener('click', () => {
+        const alias = newProfileAlias.value.trim();
+        const configText = newProfileConfigText.value.trim();
+        const sshKey = newProfileSshKey.value.trim();
+        const keyFile = newProfileKeyFile.files[0];
+        if (!alias || !configText || !sshKey || !keyFile) return addLog('所有字段都不能为空', 'error');
         
-        task_record_check = query_db('SELECT status FROM tasks WHERE id = ?', [task_id], one=True)
-        if not task_record_check or task_record_check['status'] not in ['running', 'pending']:
-            logging.info(f"Snatching task {task_id} has been stopped or paused. Exiting loop.")
-            return
+        addLog(`正在添加账号: ${alias}...`);
+        const profileData = {};
+        configText.split('\n').forEach(line => {
+            const parts = line.split('=').map(p => p.trim());
+            if (parts.length === 2) profileData[parts[0]] = parts[1];
+        });
+        profileData['default_ssh_public_key'] = sshKey;
+        
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            profileData['key_content'] = event.target.result;
+            try {
+                await apiRequest('/oci/api/profiles', { 
+                    method: 'POST', 
+                    headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ alias, profile_data: profileData }) 
+                });
+                addLog(`账号 ${alias} 添加成功!`, 'success');
+                [newProfileAlias, newProfileConfigText, newProfileSshKey].forEach(el => el.value = '');
+                newProfileKeyFile.value = '';
+                loadProfiles(1);
+            } catch (error) {}
+        };
+        reader.readAsText(keyFile);
+    });
 
-        delay = random.randint(details.get('min_delay', 30), details.get('max_delay', 90))
-        status_data['last_message'] += f"，将在 {delay} 秒后重试..."
-        current_time = time.time()
-        if (current_time - last_update_time > 5) or force_update:
-            _db_execute_celery('UPDATE tasks SET result = ? WHERE id = ?', (json.dumps(status_data), task_id))
-            last_update_time = current_time
-        time.sleep(delay)
+    profileList.addEventListener('click', async (e) => {
+        const connectBtn = e.target.closest('.connect-link-btn');
+        const proxyBtn = e.target.closest('.proxy-btn');
+        const editBtn = e.target.closest('.edit-btn');
+        const deleteBtn = e.target.closest('.delete-btn');
+    
+        if (connectBtn) {
+            const alias = connectBtn.dataset.alias;
+            const row = connectBtn.closest('tr');
+    
+            if (row.classList.contains('profile-disabled')) {
+                addLog(`账号 ${alias} 已连接或正在连接中，请稍候。`, 'warning');
+                return;
+            }
+    
+            addLog(`正在连接到 ${alias}...`);
+            
+            document.querySelectorAll('#profileList tr').forEach(otherRow => {
+                if (otherRow.dataset.alias !== alias) {
+                    otherRow.classList.add('profile-disabled');
+                }
+            });
+    
+            try {
+                const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
+                addLog(response.message, 'success');
+                await refreshInstances();
+            } catch (error) {
+            } finally {
+                checkSession(false);
+            }
+        } 
+        else if (proxyBtn) {
+            const alias = proxyBtn.dataset.alias;
+            try {
+                addLog(`加载 ${alias} 的代理设置...`);
+                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                proxySettingsAlias.value = alias;
+                proxyUrlInput.value = profileData.proxy || '';
+                proxySettingsModal.show();
+            } catch (error) {}
+        } 
+        else if (editBtn) {
+            const alias = editBtn.dataset.alias;
+            try {
+                addLog(`正在加载账号 ${alias} 的信息...`);
+                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                document.getElementById('editProfileOriginalAlias').value = alias;
+                document.getElementById('editProfileAlias').value = alias;
+                const { default_ssh_public_key, key_content, proxy, ...configParts } = profileData;
+                document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
+                document.getElementById('editProfileSshKey').value = default_ssh_public_key || '';
+                document.getElementById('editProfileKeyFile').value = '';
+                editProfileModal.show();
+            } catch (error) {}
+        } 
+        else if (deleteBtn) {
+            const alias = deleteBtn.dataset.alias;
+            confirmActionModalLabel.textContent = '确认删除账号';
+            confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
+            confirmActionModalTerminateOptions.classList.add('d-none');
+            confirmActionModalConfirmBtn.onclick = async () => {
+                confirmActionModal.hide();
+                try {
+                    addLog(`正在删除账号: ${alias}...`);
+                    await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
+                    addLog('删除成功!', 'success');
+                    loadProfiles(1);
+                } catch (error) {}
+            };
+            confirmActionModal.show();
+        }
+    });
+
+    document.getElementById('saveProfileChangesBtn').addEventListener('click', async () => {
+        const originalAlias = document.getElementById('editProfileOriginalAlias').value;
+        const newAlias = document.getElementById('editProfileAlias').value.trim();
+        const configText = document.getElementById('editProfileConfigText').value.trim();
+        const sshKey = document.getElementById('editProfileSshKey').value.trim();
+        const keyFile = document.getElementById('editProfileKeyFile').files[0];
+        if (!newAlias || !configText || !sshKey) return addLog('账号名称、配置信息和SSH公钥不能为空', 'error');
+
+        addLog(`正在保存对账号 ${originalAlias} 的更改...`);
+        try {
+            const profileData = await apiRequest(`/oci/api/profiles/${originalAlias}`);
+            configText.split('\n').forEach(line => {
+                const parts = line.split('=').map(p => p.trim());
+                if (parts.length === 2) profileData[parts[0]] = parts[1];
+            });
+            profileData['default_ssh_public_key'] = sshKey;
+
+            const saveChanges = async () => {
+                const { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy } = profileData;
+                const cleanProfileData = { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy };
+
+                if (originalAlias !== newAlias) {
+                    await apiRequest(`/oci/api/profiles/${originalAlias}`, { method: 'DELETE' });
+                }
+                await apiRequest('/oci/api/profiles', { 
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, 
+                    body: JSON.stringify({ alias: newAlias, profile_data: cleanProfileData }) 
+                });
+                addLog(`账号 ${newAlias} 保存成功!`, 'success');
+                editProfileModal.hide();
+                loadProfiles(1);
+            };
+
+            if (keyFile) {
+                const reader = new FileReader();
+                reader.onload = (event) => { profileData['key_content'] = event.target.result; saveChanges(); };
+                reader.readAsText(keyFile);
+            } else {
+                saveChanges();
+            }
+        } catch (error) {}
+    });
+    
+    async function saveProxy(remove = false) {
+        const alias = proxySettingsAlias.value;
+        const proxyUrl = remove ? "" : proxyUrlInput.value.trim();
+        
+        if (!alias) return;
+        
+        addLog(`正在为账号 ${alias} ${remove ? '移除' : '保存'} 代理...`);
+        try {
+            const payload = { alias: alias, profile_data: { proxy: proxyUrl } };
+            await apiRequest('/oci/api/profiles', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            addLog(`账号 ${alias} 的代理设置已${remove ? '移除' : '更新'}！`, 'success');
+            proxySettingsModal.hide();
+        } catch (error) {}
+    }
+
+    saveProxyBtn.addEventListener('click', () => saveProxy(false));
+    removeProxyBtn.addEventListener('click', () => saveProxy(true));
+
+    instanceList.addEventListener('click', (e) => {
+        const row = e.target.closest('tr');
+        if (!row || !row.dataset.instanceId) return;
+        
+        document.querySelectorAll('#instanceList tr.table-active').forEach(r => r.classList.remove('table-active'));
+        row.classList.add('table-active');
+        selectedInstance = JSON.parse(row.dataset.instanceData);
+        
+        const state = selectedInstance.lifecycle_state;
+        const isTerminated = ['TERMINATED', 'TERMINATING'].includes(state);
+        Object.values(instanceActionButtons).forEach(btn => btn.disabled = isTerminated);
+        instanceActionButtons.start.disabled = state !== 'STOPPED';
+        instanceActionButtons.stop.disabled = state !== 'RUNNING';
+        instanceActionButtons.restart.disabled = state !== 'RUNNING';
+        instanceActionButtons.changeIp.disabled = state !== 'RUNNING';
+        instanceActionButtons.assignIpv6.disabled = !(state === 'RUNNING' && selectedInstance.vnic_id);
+    });
+    
+    async function loadSnatchTasks() {
+        runningSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
+        completedSnatchTasksList.innerHTML = '<li class="list-group-item">正在加载...</li>';
+        
+        stopSnatchTaskBtn.disabled = true;
+        resumeSnatchTaskBtn.disabled = true;
+        deleteSnatchTaskBtn.disabled = true;
+        deleteCompletedBtn.disabled = true;
+
+        document.getElementById('selectAllRunningTasks').checked = false;
+        document.getElementById('selectAllCompletedTasks').checked = false;
+        
+        try {
+            const [running, completed] = await Promise.all([
+                apiRequest('/oci/api/tasks/snatching/running'),
+                apiRequest('/oci/api/tasks/snatching/completed')
+            ]);
+            
+            if (running && running.length > 0) {
+                if (!window.taskPollers) window.taskPollers = {};
+                running.forEach(task => {
+                    if (task.status === 'running' && !window.taskPollers[task.id]) {
+                        console.log(`Re-initiating poller for running task: ${task.id}`);
+                        pollTaskStatus(task.id, true);
+                    }
+                });
+            }
+
+            runningSnatchTasksList.innerHTML = running.length === 0
+                ? '<li class="list-group-item text-muted">没有正在运行或已暂停的任务。</li>'
+                : running.map(task => {
+                    if (task.result && typeof task.result === 'object' && task.result.details) {
+                        const { details, start_time, attempt_count, last_message } = task.result;
+                        const taskName = details.display_name_prefix || details.name;
+                        const isPaused = task.status === 'paused';
+                        const statusBadge = isPaused 
+                            ? `<span class="badge bg-secondary">已暂停</span>`
+                            : `<span class="badge bg-warning text-dark">第 ${attempt_count} 次尝试</span>`;
+                        const progressBar = isPaused
+                            ? `<div class="progress" style="height: 5px;"><div class="progress-bar bg-secondary" style="width: 100%"></div></div>`
+                            : `<div class="progress" style="height: 5px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div></div>`;
+                        
+                        return `
+                        <li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}">
+                            <div class="row align-items-center">
+                                <div class="col-auto"><input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}" style="transform: scale(1.2);"></div>
+                                <div class="col">
+                                    <div class="d-flex justify-content-between align-items-start">
+                                        <div><strong><span class="badge bg-primary me-2">${task.account_alias}</span><code>${taskName}</code></strong><p class="mb-1 small text-muted">开始于: ${new Date(start_time).toLocaleString()}</p></div>
+                                        <div class="text-end">${statusBadge}</div>
+                                    </div>
+                                    <div class="bg-light p-2 rounded small mt-1"><strong>配置:</strong> ${details.shape} / ${details.ocpus || 'N/A'} OCPU / ${details.memory_in_gbs || 'N/A'} GB / ${details.os_name_version}<br><strong>可用域:</strong> <code>${details.ad || '未知'}</code><br><strong>执行时长:</strong> ${formatElapsedTime(start_time)}</div>
+                                    <div class="mt-2">${progressBar}<p class="mb-0 mt-1 small text-info-emphasis"><strong>最新状态:</strong> ${last_message}</p></div>
+                                </div>
+                            </div>
+                        </li>`;
+                    }
+                    return `<li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}"><div class="d-flex w-100 align-items-center"><input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}"><div class="ms-3 flex-grow-1"><strong><span class="badge bg-primary me-2">${task.account_alias}</span>${task.name}</strong><br><small class="text-muted">${String(task.result)}</small></div></div></li>`;
+                }).join('');
+
+            completedSnatchTasksList.innerHTML = completed.length === 0
+                ? '<li class="list-group-item text-muted">没有已完成的抢占任务记录。</li>'
+                : completed.map(task => `
+                    <li class="list-group-item list-group-item-action" data-task-id="${task.id}">
+                        <div class="d-flex w-100 align-items-center">
+                            <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
+                            <div class="ms-3 flex-grow-1 d-flex justify-content-between align-items-center">
+                                <div><strong><span class="badge bg-secondary me-2">${task.account_alias}</span>${task.name}</strong><br><small class="text-muted">完成于: ${new Date(task.created_at).toLocaleString()}</small></div>
+                                <span class="badge bg-${task.status === 'success' ? 'success' : 'danger'}">${task.status === 'success' ? '成功' : '失败'}</span>
+                            </div>
+                        </div>
+                    </li>`).join('');
+        } catch (e) {
+            runningSnatchTasksList.innerHTML = '<li class="list-group-item list-group-item-danger">加载正在运行任务失败。</li>';
+            completedSnatchTasksList.innerHTML = '<li class="list-group-item list-group-item-danger">加载已完成任务失败。</li>';
+        }
+    }
+    
+    completedSnatchTasksList.addEventListener('dblclick', async e => {
+        const listItem = e.target.closest('li.list-group-item[data-task-id]');
+        if (!listItem) return;
+        try {
+            const data = await apiRequest(`/oci/api/task_status/${listItem.dataset.taskId}`);
+            document.getElementById('taskResultModalLabel').textContent = `任务结果: ${listItem.dataset.taskId}`;
+            document.getElementById('taskResultModalBody').innerHTML = `<pre>${data.result}</pre>`;
+            taskResultModal.show();
+        } catch (error) {}
+    });
+    
+    stopSnatchTaskBtn.addEventListener('click', () => handleTaskAction('stop', '#runningSnatchTasksList'));
+    resumeSnatchTaskBtn.addEventListener('click', () => handleTaskAction('resume', '#runningSnatchTasksList'));
+    deleteSnatchTaskBtn.addEventListener('click', () => handleTaskAction('delete', '#runningSnatchTasksList'));
+    deleteCompletedBtn.addEventListener('click', () => handleTaskAction('delete', '#completedSnatchTasksList'));
+
+    document.getElementById('selectAllRunningTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#runningSnatchTasksList'));
+    document.getElementById('selectAllCompletedTasks').addEventListener('change', (e) => toggleSelectAll(e.target, '#completedSnatchTasksList'));
+    
+    runningSnatchTasksList.addEventListener('change', () => updateRunningActionButtons());
+    completedSnatchTasksList.addEventListener('change', () => updateCompletedActionButtons());
+    
+    function toggleSelectAll(masterCheckbox, listSelector) {
+        document.querySelectorAll(`${listSelector} .task-checkbox`).forEach(chk => chk.checked = masterCheckbox.checked);
+        if (listSelector === '#runningSnatchTasksList') {
+            updateRunningActionButtons();
+        } else {
+            updateCompletedActionButtons();
+        }
+    }
+
+    function updateRunningActionButtons() {
+        const checked = Array.from(document.querySelectorAll('#runningSnatchTasksList .task-checkbox:checked'));
+        if (checked.length === 0) {
+            stopSnatchTaskBtn.disabled = true;
+            resumeSnatchTaskBtn.disabled = true;
+            deleteSnatchTaskBtn.disabled = true;
+            return;
+        }
+        
+        const statuses = checked.map(chk => chk.closest('li').dataset.taskStatus);
+        
+        const allPaused = statuses.every(s => s === 'paused');
+        const anyRunning = statuses.some(s => s === 'running');
+        const anyPaused = statuses.some(s => s === 'paused');
+        
+        stopSnatchTaskBtn.disabled = !anyRunning || anyPaused;
+        resumeSnatchTaskBtn.disabled = !anyPaused || anyRunning;
+        deleteSnatchTaskBtn.disabled = !allPaused;
+    }
+
+    function updateCompletedActionButtons() {
+        deleteCompletedBtn.disabled = document.querySelectorAll('#completedSnatchTasksList .task-checkbox:checked').length === 0;
+    }
+    
+    async function handleTaskAction(action, listSelector) {
+        const checked = document.querySelectorAll(`${listSelector} .task-checkbox:checked`);
+        if (checked.length === 0) return addLog('请先选择任务', 'warning');
+
+        const taskIds = Array.from(checked).map(cb => cb.dataset.taskId);
+        const actionTextMap = { 'stop': '暂停', 'delete': '删除', 'resume': '恢复' };
+        const actionText = actionTextMap[action];
+
+        confirmActionModalLabel.textContent = `确认${actionText}任务`;
+        confirmActionModalBody.textContent = `确定要${actionText}选中的 ${taskIds.length} 个任务吗？`;
+        confirmActionModalConfirmBtn.onclick = async () => {
+            confirmActionModal.hide();
+            addLog(`正在${actionText} ${taskIds.length} 个任务...`);
+            
+            try {
+                if (action === 'resume') {
+                    const response = await apiRequest(`/oci/api/tasks/resume`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ task_ids: taskIds })
+                    });
+                    addLog(response.message, 'success');
+                } else {
+                    const endpoint = action === 'stop' ? '/stop' : '';
+                    const method = action === 'stop' ? 'POST' : 'DELETE';
+                    await Promise.all(taskIds.map(id => apiRequest(`/oci/api/tasks/${id}${endpoint}`, { method })));
+                    addLog(`任务${actionText}请求已发送`, 'success');
+                }
+                loadSnatchTasks();
+            } catch (error) {}
+        };
+        confirmActionModal.show();
+    }
+    
+    Object.entries(instanceActionButtons).forEach(([key, button]) => {
+        if (key !== 'editInstance') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
+    });
+    
+    async function performInstanceAction(action) {
+        if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
+        let message = `确定要对实例 "${selectedInstance.display_name}" 执行 "${action}" 操作吗?`;
+        let title = `请确认: ${action}`;
+        if (action === 'terminate') {
+            title = `!!! 警告: 终止实例 !!!`;
+            message = `此操作无法撤销，确定要终止实例 "${selectedInstance.display_name}" 吗?`;
+            confirmActionModalTerminateOptions.classList.remove('d-none');
+            confirmDeleteVolumeCheck.checked = false; 
+        } else {
+            confirmActionModalTerminateOptions.classList.add('d-none');
+        }
+        if (action === 'changeip') message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。如果已配置Cloudflare，将自动更新DNS解析。`;
+        if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配/更换一个 IPV6 地址吗？如果已配置Cloudflare，将自动更新DNS解析。`;
+        
+        confirmActionModalLabel.textContent = title;
+        confirmActionModalBody.innerHTML = message.replace(/\n/g, '<br>');
+        confirmActionModalConfirmBtn.onclick = async () => {
+            confirmActionModal.hide(); 
+            const payload = {
+                action,
+                instance_id: selectedInstance.id,
+                instance_name: selectedInstance.display_name,
+                vnic_id: selectedInstance.vnic_id,
+                subnet_id: selectedInstance.subnet_id,
+                preserve_boot_volume: action === 'terminate' ? !confirmDeleteVolumeCheck.checked : undefined
+            };
+            addLog(`正在为实例 ${selectedInstance.display_name} 提交 ${action} 请求...`);
+            try {
+                const response = await apiRequest('/oci/api/instance-action', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                addLog(response.message, 'success');
+                if (response.task_id) pollTaskStatus(response.task_id);
+            } catch(e) {}
+        };
+        confirmActionModal.show();
+    }
+
+    instanceActionButtons.editInstance.addEventListener('click', async () => {
+        if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
+        try {
+            addLog(`正在获取实例 ${selectedInstance.display_name} 的详细信息...`);
+            const details = await apiRequest(`/oci/api/instance-details/${selectedInstance.id}`);
+            editDisplayName.value = details.display_name;
+            editBootVolumeSize.value = details.boot_volume_size_in_gbs;
+            editVpus.value = details.vpus_per_gb;
+            editFlexInstanceConfig.classList.toggle('d-none', !details.shape.toLowerCase().includes('flex'));
+            if (details.shape.toLowerCase().includes('flex')) {
+                editOcpus.value = details.ocpus;
+                editMemory.value = details.memory_in_gbs;
+            }
+            editInstanceModal.show();
+        } catch(error) {}
+    });
+    async function handleInstanceUpdateRequest(action, payload) {
+        addLog(`正在提交 ${action} 请求...`);
+        try {
+            const response = await apiRequest('/oci/api/update-instance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            addLog(response.message, 'success');
+            if (response.task_id) pollTaskStatus(response.task_id);
+            editInstanceModal.hide();
+            setTimeout(refreshInstances, 3000);
+        } catch(e) {}
+    }
+    saveDisplayNameBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改名称', { action: 'update_display_name', instance_id: selectedInstance.id, display_name: editDisplayName.value }));
+    saveFlexConfigBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改CPU/内存', { action: 'update_shape', instance_id: selectedInstance.id, ocpus: parseInt(editOcpus.value, 10), memory_in_gbs: parseInt(editMemory.value, 10) }));
+    saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
+    saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
+    
+    networkSettingsBtn.addEventListener('click', async () => {
+        try {
+            addLog("正在获取网络安全规则...");
+            const data = await apiRequest('/oci/api/network/security-list');
+            currentSecurityList = data.security_list;
+            document.getElementById('currentVcnName').textContent = data.vcn_name || 'N/A';
+            document.getElementById('currentSlName').textContent = currentSecurityList.display_name || 'N/A';
+            renderRules('ingress', currentSecurityList.ingress_security_rules);
+            renderRules('egress', currentSecurityList.egress_security_rules);
+        } catch (error) {
+            document.getElementById('currentVcnName').textContent = '获取失败';
+            document.getElementById('currentSlName').textContent = '获取失败';
+        }
+    });
+
+    function renderRules(type, rules) {
+        const tableBody = type === 'ingress' ? ingressRulesTable : egressRulesTable;
+        tableBody.innerHTML = !rules || rules.length === 0 
+            ? `<tr><td colspan="6" class="text-center text-muted">没有规则</td></tr>`
+            : rules.map(rule => createRuleRow(type, rule).outerHTML).join('');
+        tableBody.querySelectorAll('.remove-rule-btn').forEach(btn => btn.onclick = () => btn.closest('tr').remove());
+    }
+
+    function createRuleRow(type, rule = {}) {
+        const tr = document.createElement('tr');
+        tr.className = 'rule-row';
+        const sourceOrDest = type === 'ingress' ? (rule.source || '0.0.0.0/0') : (rule.destination || '0.0.0.0/0');
+        const protocol = rule.protocol || '6';
+        const protocolOptions = {'all': '所有', '1': 'ICMP', '6': 'TCP', '17': 'UDP'};
+        const portRange = (options) => ({ min: options?.min || '', max: options?.max || '' });
+        const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
+        const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
+        tr.innerHTML = `
+            <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${rule.is_stateless ? 'checked' : ''}></td>
+            <td><input type="text" class="form-control form-control-sm" data-key="${type === 'ingress' ? 'source' : 'destination'}" value="${sourceOrDest}"></td>
+            <td><select class="form-select form-select-sm" data-key="protocol">${Object.entries(protocolOptions).map(([k, v]) => `<option value="${k}" ${protocol == k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
+            <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="src_port_min" value="${srcPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="src_port_max" value="${srcPorts.max}"></div></td>
+            <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="dest_port_min" value="${destPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="dest_port_max" value="${destPorts.max}"></div></td>
+            <td><button class="btn btn-sm btn-danger remove-rule-btn"><i class="bi bi-trash"></i></button></td>`;
+        return tr;
+    }
+    
+    addIngressRuleBtn.addEventListener('click', () => {
+        const placeholderRow = ingressRulesTable.querySelector('td[colspan="6"]');
+        if (placeholderRow) placeholderRow.parentElement.remove();
+        ingressRulesTable.appendChild(createRuleRow('ingress'));
+    });
+    addEgressRuleBtn.addEventListener('click', () => {
+        const placeholderRow = egressRulesTable.querySelector('td[colspan="6"]');
+        if (placeholderRow) placeholderRow.parentElement.remove();
+        egressRulesTable.appendChild(createRuleRow('egress'));
+    });
+
+    saveNetworkRulesBtn.addEventListener('click', async () => {
+        const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
+        saveNetworkRulesBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        try {
+            const rules = {
+                ingress_security_rules: collectRulesFromTable(ingressRulesTable, 'ingress'),
+                egress_security_rules: collectRulesFromTable(egressRulesTable, 'egress')
+            };
+            await apiRequest('/oci/api/network/update-security-rules', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ security_list_id: currentSecurityList.id, rules }) 
+            });
+            addLog('网络规则保存成功', 'success');
+            networkSettingsModal.hide();
+        } finally {
+            saveNetworkRulesBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
+
+    function collectRulesFromTable(tableBody, type) {
+        return Array.from(tableBody.querySelectorAll('.rule-row')).map(tr => {
+            const rule = { is_stateless: tr.querySelector('[data-key="is_stateless"]').checked, protocol: tr.querySelector('[data-key="protocol"]').value };
+            rule[type === 'ingress' ? 'source' : 'destination'] = tr.querySelector(`[data-key="${type === 'ingress' ? 'source' : 'destination'}"]`).value;
+            rule[`${type === 'ingress' ? 'source' : 'destination'}_type`] = 'CIDR_BLOCK';
+            
+            if (['6', '17'].includes(rule.protocol)) {
+                const dest_min = parseInt(tr.querySelector('[data-key="dest_port_min"]').value, 10);
+                const dest_max = parseInt(tr.querySelector('[data-key="dest_port_max"]').value, 10);
+                const src_min = parseInt(tr.querySelector('[data-key="src_port_min"]').value, 10);
+                const src_max = parseInt(tr.querySelector('[data-key="src_port_max"]').value, 10);
+                const options = {};
+                if (!isNaN(dest_min) && !isNaN(dest_max)) options.destination_port_range = { min: dest_min, max: dest_max };
+                if (!isNaN(src_min) && !isNaN(src_max)) options.source_port_range = { min: src_min, max: src_max };
+                
+                if (rule.protocol === '6') rule.tcp_options = options;
+                else rule.udp_options = options;
+            }
+            return rule;
+        });
+    }
+
+    // --- Initial Load ---
+    loadProfiles();
+    checkSession();
+    loadTgConfig();
+    // 新增: 页面加载时获取 Cloudflare 配置
+    loadCloudflareConfig();
+});
