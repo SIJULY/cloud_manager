@@ -232,9 +232,9 @@
                             <select class="form-select" id="instanceOS">
                                 <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
                                 <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
-                                <option value="Oracle Linux-9">Oracle Linux 9</option>
+
                             </select>
-                        </div>
+                            </div>
                         <div class="col-md-4 mb-3">
                            <label for="bootVolumeSize" class="form-label">磁盘大小 (GB)</label>
                            <input type="number" class="form-control" id="bootVolumeSize" value="50" min="50">
@@ -243,10 +243,9 @@
                     <div class="mb-3">
                         <label for="instanceShape" class="form-label">实例规格 (Shape)</label>
                         <select class="form-select" id="instanceShape">
-                            <option value="VM.Standard.A1.Flex">VM.Standard.A1.Flex (ARM)</option>
-                            <option value="VM.Standard.E2.1.Micro">VM.Standard.E2.1.Micro (AMD)</option>
+                            <option value="">请先选择操作系统...</option>
                         </select>
-                    </div>
+                        </div>
                     <div id="flexShapeConfig" class="row">
                         <div class="col-md-6 mb-3">
                             <label for="instanceOcpus" class="form-label">OCPU 数量</label>
