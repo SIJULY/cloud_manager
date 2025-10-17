@@ -304,12 +304,26 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     return subnet.id
 
 def get_user_data(password, startup_script=None):
+    # 默认依赖安装脚本
+    default_script = """
+echo "Waiting for apt lock to be released..."
+while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
+   echo "Another apt/dpkg process is running. Waiting 10 seconds..."
+   sleep 10
+done
+
+echo "Starting package installation with retries..."
+for i in 1 2 3; do
+  apt-get update && apt-get install -y curl wget unzip git socat cron && break
+  echo "APT commands failed (attempt $i/3), retrying in 15 seconds..."
+  sleep 15
+done
+"""
+    
     script_parts = [
         "#cloud-config",
         "chpasswd:",
-        # --- ✅ Bug 修复点: 移除行末多余的逗号 ---
         "  expire: False",
-        # --- ✅ 修复结束 ---
         "  list:",
         f"    - ubuntu:{password}",
         "runcmd:",
@@ -317,13 +331,16 @@ def get_user_data(password, startup_script=None):
         "  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"",
         "  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
         "  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"",
+        # 2. 将默认脚本作为一个独立的命令项
+        f"  - [ bash, -c, {json.dumps(default_script)} ]",
     ]
 
+    # 3. 如果有用户脚本，也将其作为独立的命令项
     if startup_script and startup_script.strip():
-        # 使用 bash -c 来正确执行高级脚本
-        script_parts.append(f"  - bash -c '{json.dumps(startup_script.strip())[1:-1]}'")
+        # 使用更安全的列表格式来传递命令，避免复杂的转义
+        script_parts.append(f"  - [ bash, -c, {json.dumps(startup_script.strip())} ]")
 
-    # 重启SSH服务以应用所有更改
+    # 4. 最后重启SSH服务
     script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
 
     script = "\n".join(script_parts)
@@ -799,10 +816,7 @@ def instance_action(alias):
         config_with_alias = profile_config.copy()
         config_with_alias['alias'] = alias
 
-        # --- ✨ MODIFICATION START ✨ ---
-        # 为来自 Web 的任务添加来源标签
         data['_source'] = 'web'
-        # --- ✨ MODIFICATION END ✨ ---
 
         _instance_action_task.delay(task_id, config_with_alias, action, instance_id, data)
         return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
@@ -831,6 +845,72 @@ def get_instance_details(instance_id):
         return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
     except Exception as e:
         return jsonify({"error": f"获取实例详情失败: {e}"}), 500
+
+@oci_bp.route('/api/available-shapes')
+@login_required
+@oci_clients_required
+@timeout(45)  # Increased timeout for a potentially longer API call
+def get_available_shapes():
+    try:
+        os_name_version = request.args.get('os_name_version')
+        if not os_name_version:
+            return jsonify({"error": "缺少 os_name_version 参数"}), 400
+
+        os_name, os_version = os_name_version.split('-')
+        compute_client = g.oci_clients['compute']
+        tenancy_ocid = g.oci_config['tenancy']
+        
+        # 1. Fetch all available shapes in the compartment
+        logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
+        all_shapes = oci.pagination.list_call_get_all_results(
+            compute_client.list_shapes,
+            compartment_id=tenancy_ocid
+        ).data
+        logging.info(f"Found {len(all_shapes)} total shapes.")
+
+        # 2. Filter for ARM (Ampere) and AMD shapes first, and only for VMs
+        architecture_shapes = []
+        for shape in all_shapes:
+            # --- ✅ 修正点: 增加 startswith('VM.') 判断 ---
+            if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
+                proc_desc = shape.processor_description.lower()
+                if 'ampere' in proc_desc or 'amd' in proc_desc:
+                    architecture_shapes.append(shape.shape)
+        
+        logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
+
+        # 3. Check OS image compatibility for the filtered list
+        valid_shapes_for_os = []
+        for shape_name in architecture_shapes:
+            try:
+                # We only need to check for existence, so limit=1 is efficient
+                images = compute_client.list_images(
+                    tenancy_ocid,
+                    operating_system=os_name,
+                    operating_system_version=os_version,
+                    shape=shape_name,
+                    limit=1
+                ).data
+                if images:
+                    valid_shapes_for_os.append(shape_name)
+            except ServiceError as se:
+                # This can happen for shapes that are visible but not usable in the region.
+                # It's safe to ignore these and continue.
+                logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
+                continue
+        
+        logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
+        
+        # Prioritize free-tier shapes to appear first in the dropdown
+        valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
+
+        return jsonify(valid_shapes_for_os)
+
+    except TimeoutException:
+        return jsonify({"error": "获取可用实例规格超时。"}), 504
+    except Exception as e:
+        logging.error(f"Failed to get available shapes: {e}", exc_info=True)
+        return jsonify({"error": f"获取可用实例规格失败: {e}"}), 500
 
 @oci_bp.route('/api/update-instance', methods=['POST'])
 @login_required
@@ -921,50 +1001,16 @@ def launch_instance(alias, endpoint):
         auto_bind_domain = data.get('auto_bind_domain', False)
         
         compute_client = clients['compute']
-        bs_client = clients['bs']
         compartment_id = profile_config['tenancy']
 
         try:
             all_instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
-            
-            # --- ✅ Bug 修复点 ---
-            #
-            # 筛选出所有“活着”的实例，用于后续的配额计算。
-            # 忽略 'TERMINATED' (已终止) 和 'TERMINATING' (正在终止) 的实例。
-            #
             active_instances = [
                 inst for inst in all_instances 
                 if inst.lifecycle_state not in ['TERMINATED', 'TERMINATING']
             ]
-            # --- ✅ 修复结束 ---
-
-            requested_boot_volume_size = data.get('boot_volume_size', 50)
-            new_requested_total_size = instance_count * requested_boot_volume_size
-            current_total_boot_volume_size = 0
-
-            # 使用筛选后的 active_instances 列表进行计算
-            for instance in active_instances:
-                try:
-                    attachments = oci.pagination.list_call_get_all_results(
-                        compute_client.list_boot_volume_attachments,
-                        availability_domain=instance.availability_domain,
-                        compartment_id=compartment_id,
-                        instance_id=instance.id
-                    ).data
-                    if attachments:
-                        boot_volume_id = attachments[0].boot_volume_id
-                        boot_volume = bs_client.get_boot_volume(boot_volume_id).data
-                        current_total_boot_volume_size += int(boot_volume.size_in_gbs)
-                except Exception as e:
-                    logging.warning(f"无法获取实例 {instance.id} 的引导卷信息，计算总量时将忽略: {e}")
-                    continue
             
-            if (current_total_boot_volume_size + new_requested_total_size) > 200:
-                error_msg = f"总磁盘容量超出200 GB的免费额度。您当前已使用 {current_total_boot_volume_size} GB，本次请求将导致总量达到 {current_total_boot_volume_size + new_requested_total_size} GB。"
-                return jsonify({"error": error_msg}), 400
-
             if shape == 'VM.Standard.E2.1.Micro':
-                # 使用筛选后的 active_instances 列表进行计算
                 existing_amd_count = sum(1 for inst in active_instances if inst.shape == shape)
                 if (existing_amd_count + instance_count) > 2:
                     error_msg = f"免费账户最多只能创建2个AMD实例，您当前已有 {existing_amd_count} 个活动实例。"
@@ -1041,7 +1087,6 @@ def _update_instance_details_task(task_id, profile_config, data):
     except Exception as e:
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
 
-# --- ✨ MODIFICATION START (添加通知抑制逻辑) ✨ ---
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
     _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('running', '正在执行操作...', task_id))
@@ -1110,7 +1155,6 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
         
-        # 只有当任务来源不是 'web' 时才发送通知
         if data.get('_source') != 'web':
             tg_msg = (f"🔔 *任务完成通知*\n\n"
                       f"*账户*: `{alias}`\n"
@@ -1124,15 +1168,12 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         error_message = f"❌ 操作失败: {e}"
         _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
         
-        # 只有当任务来源不是 'web' 时才发送通知
         if data.get('_source') != 'web':
             tg_msg = (f"🔔 *任务失败通知*\n\n"
                       f"*账户*: `{alias}`\n"
                       f"*任务*: `{task_title}`\n\n"
                       f"*原因*:\n`{e}`")
             send_tg_notification(tg_msg)
-# --- ✨ MODIFICATION END ✨ ---
-
 
 @celery.task
 def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_bind_domain=False):
@@ -1179,31 +1220,8 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         
         instance_password = generate_oci_password()
         
-        default_script = """
-# --- 默认依赖 (自动执行) ---
-echo "Waiting for apt lock to be released..."
-while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
-   echo "Another apt/dpkg process is running. Waiting 10 seconds..."
-   sleep 10
-done
-
-echo "Starting package installation with retries..."
-for i in 1 2 3; do
-  apt-get update && apt-get install -y curl wget unzip git socat cron && break
-  echo "APT commands failed (attempt $i/3), retrying in 15 seconds..."
-  sleep 15
-done
-"""
-        
         user_script = details.get('startup_script', '')
-        
-        final_script_parts = [default_script.strip()]
-        if user_script and user_script.strip():
-            final_script_parts.append(user_script.strip())
-        
-        final_script = " && \\\n".join(final_script_parts)
-        
-        user_data_encoded = get_user_data(instance_password, final_script)
+        user_data_encoded = get_user_data(instance_password, user_script)
         
         base_launch_details = {
             "compartment_id": tenancy_ocid,
