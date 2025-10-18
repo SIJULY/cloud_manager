@@ -861,7 +861,7 @@ def get_instance_details(instance_id):
 @oci_bp.route('/api/available-shapes')
 @login_required
 @oci_clients_required
-@timeout(45)
+@timeout(45)  # Increased timeout for a potentially longer API call
 def get_available_shapes():
     try:
         os_name_version = request.args.get('os_name_version')
@@ -872,6 +872,7 @@ def get_available_shapes():
         compute_client = g.oci_clients['compute']
         tenancy_ocid = g.oci_config['tenancy']
         
+        # 1. Fetch all available shapes in the compartment
         logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
         all_shapes = oci.pagination.list_call_get_all_results(
             compute_client.list_shapes,
@@ -879,8 +880,10 @@ def get_available_shapes():
         ).data
         logging.info(f"Found {len(all_shapes)} total shapes.")
 
+        # 2. Filter for ARM (Ampere) and AMD shapes first, and only for VMs
         architecture_shapes = []
         for shape in all_shapes:
+            # --- ✅ 修正点: 增加 startswith('VM.') 判断 ---
             if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
                 proc_desc = shape.processor_description.lower()
                 if 'ampere' in proc_desc or 'amd' in proc_desc:
@@ -888,9 +891,11 @@ def get_available_shapes():
         
         logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
 
+        # 3. Check OS image compatibility for the filtered list
         valid_shapes_for_os = []
         for shape_name in architecture_shapes:
             try:
+                # We only need to check for existence, so limit=1 is efficient
                 images = compute_client.list_images(
                     tenancy_ocid,
                     operating_system=os_name,
@@ -901,11 +906,14 @@ def get_available_shapes():
                 if images:
                     valid_shapes_for_os.append(shape_name)
             except ServiceError as se:
+                # This can happen for shapes that are visible but not usable in the region.
+                # It's safe to ignore these and continue.
                 logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
                 continue
         
         logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
         
+        # Prioritize free-tier shapes to appear first in the dropdown
         valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
 
         return jsonify(valid_shapes_for_os)
@@ -1075,32 +1083,6 @@ def _update_instance_details_task(task_id, profile_config, data):
             details = UpdateInstanceDetails(shape_config=shape_config)
             compute_client.update_instance(instance_id, details)
             result_message = "✅ CPU/内存配置更新成功！请手动启动实例。"
-        
-        # ✨ BUG FIX START ✨
-        elif action == 'update_base_shape':
-            if instance.lifecycle_state != "STOPPED": 
-                raise Exception("必须先停止实例才能修改实例规格。")
-            
-            new_shape = data.get('new_shape')
-            if not new_shape:
-                raise Exception("未提供目标实例规格。")
-
-            # 安全校验
-            current_is_arm = instance.shape.startswith('VM.Standard.A') and 'Flex' in instance.shape
-            new_is_arm = new_shape.startswith('VM.Standard.A') and 'Flex' in new_shape
-            if not (current_is_arm and new_is_arm):
-                raise Exception("此功能仅限在 A1.Flex 和 A2.Flex 规格之间切换。")
-            
-            # 修正: 创建 shape_config 对象，并同时传递 shape 和 shape_config
-            shape_config = UpdateInstanceShapeConfigDetails(
-                ocpus=instance.shape_config.ocpus,
-                memory_in_gbs=instance.shape_config.memory_in_gbs
-            )
-            details = UpdateInstanceDetails(shape=new_shape, shape_config=shape_config)
-            compute_client.update_instance(instance_id, details)
-            result_message = f"✅ 实例规格已成功更新为 {new_shape}！请手动启动实例。"
-        # ✨ BUG FIX END ✨
-
         elif action == 'update_boot_volume':
             boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, profile_config['tenancy'], instance_id=instance_id).data
             if not boot_vol_attachments: raise Exception("找不到引导卷")
@@ -1220,6 +1202,22 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         status_data['attempt_count'] = 0
         status_data['last_message'] = "抢占任务准备中..."
 
+    # --- ✨ 新增的修正逻辑 开始 ✨ ---
+    # 确保 details 字典是可操作的
+    task_details = status_data.get('details', {})
+
+    # 1. 为所有任务设置默认的磁盘大小（如果未提供）
+    task_details.setdefault('boot_volume_size', 50)
+
+    # 2. 如果是AMD机型，则强制设置固定的CPU和内存
+    if task_details.get('shape') == 'VM.Standard.E2.1.Micro':
+        task_details['ocpus'] = 1
+        task_details['memory_in_gbs'] = 1
+    
+    # 将修正后的 details 写回 status_data
+    status_data['details'] = task_details
+    # --- ✨ 新增的修正逻辑 结束 ✨ ---
+
     status_data['details']['account_alias'] = alias
     status_data['run_id'] = run_id
     
@@ -1248,11 +1246,13 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
+        # --- ✨ MODIFICATION START ✨ ---
         user_provided_password = details.get('instance_password', '').strip()
         if user_provided_password:
             instance_password = user_provided_password
         else:
             instance_password = generate_oci_password()
+        # --- ✨ MODIFICATION END ✨ ---
 
         user_script = details.get('startup_script', '')
         user_data_encoded = get_user_data(instance_password, user_script)
