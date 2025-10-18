@@ -20,7 +20,9 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Modals
     const launchInstanceModal = new bootstrap.Modal(document.getElementById('createLaunchInstanceModal'));
+    // --- ✨ MODIFICATION START ✨ ---
     const launchInstanceModalEl = document.getElementById('createLaunchInstanceModal');
+    // --- ✨ MODIFICATION END ✨ ---
     const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
     const viewSnatchTasksModalEl = document.getElementById('viewSnatchTasksModal'); 
     const taskResultModal = new bootstrap.Modal(document.getElementById('taskResultModal'));
@@ -29,6 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
     const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
+    // 新增: Cloudflare Modal
     const cloudflareSettingsModal = new bootstrap.Modal(document.getElementById('cloudflareSettingsModal'));
 
     const instanceCountInput = document.getElementById('instanceCount');
@@ -59,11 +62,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const editOcpus = document.getElementById('editOcpus');
     const editMemory = document.getElementById('editMemory');
     const saveFlexConfigBtn = document.getElementById('saveFlexConfigBtn');
-    // ✨ MODIFICATION START ✨
-    const editShapeConfig = document.getElementById('editShapeConfig');
-    const editShapeSelect = document.getElementById('editShapeSelect');
-    const saveShapeBtn = document.getElementById('saveShapeBtn');
-    // ✨ MODIFICATION END ✨
     const editBootVolumeSize = document.getElementById('editBootVolumeSize');
     const saveBootVolumeSizeBtn = document.getElementById('saveBootVolumeSizeBtn');
     const editVpus = document.getElementById('editVpus');
@@ -79,10 +77,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const getApiKeyBtn = document.getElementById('getApiKeyBtn');
     const apiKeyInput = document.getElementById('apiKeyInput');
     
+    // 新增: Cloudflare DOM 元素
     const cloudflareApiTokenInput = document.getElementById('cloudflareApiToken');
     const cloudflareZoneIdInput = document.getElementById('cloudflareZoneId');
     const cloudflareDomainInput = document.getElementById('cloudflareDomain');
     const saveCloudflareConfigBtn = document.getElementById('saveCloudflareConfigBtn');
+    // 新增: 创建实例时绑定域名的复选框
     const autoBindDomainCheck = document.getElementById('autoBindDomainCheck');
 
 
@@ -121,6 +121,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     launchInstanceShapeSelect.dispatchEvent(new Event('change'));
 
+    // --- ✨ MODIFICATION START ✨ ---
     submitLaunchInstanceBtn.addEventListener('click', () => {
         const proceedWithLaunch = async () => {
             const shape = launchInstanceShapeSelect.value;
@@ -206,7 +207,9 @@ document.addEventListener('DOMContentLoaded', function() {
         
         proceedWithLaunch();
     });
+    // --- ✨ MODIFICATION END ✨ ---
 
+    // Add event listeners for the new dynamic shape functionality
     launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
     document.getElementById('instanceOS').addEventListener('change', updateAvailableShapes);
 
@@ -254,20 +257,23 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // --- Core and Helper Functions ---
 
+    // --- ✨ NEW FUNCTION START ✨ ---
     async function updateAvailableShapes() {
         const os_name_version = document.getElementById('instanceOS').value;
         const shapeSelect = document.getElementById('instanceShape');
         
         shapeSelect.innerHTML = '<option value="">正在刷新实例规格...</option>';
         shapeSelect.disabled = true;
+        // Also disable the launch button while refreshing
         submitLaunchInstanceBtn.disabled = true;
 
         try {
             const shapes = await apiRequest(`/oci/api/available-shapes?os_name_version=${os_name_version}`);
-            shapeSelect.innerHTML = '';
+            shapeSelect.innerHTML = ''; // Clear previous options
             if (shapes.length === 0) {
                 shapeSelect.innerHTML = '<option value="">当前系统无可用规格</option>';
             } else {
+                // Ensure ARM Flex is the default option if available
                 shapes.sort((a, b) => a.includes('A1.Flex') ? -1 : (b.includes('A1.Flex') ? 1 : 0));
                 shapes.forEach(shape => {
                     const option = document.createElement('option');
@@ -275,6 +281,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     option.textContent = shape;
                     shapeSelect.appendChild(option);
                 });
+                // Re-enable the launch button if shapes were found
                 submitLaunchInstanceBtn.disabled = false;
             }
         } catch (error) {
@@ -282,9 +289,11 @@ document.addEventListener('DOMContentLoaded', function() {
             addLog('自动刷新实例规格失败，请检查网络或账号权限。', 'error');
         } finally {
             shapeSelect.disabled = false;
+            // Manually trigger a change event to update the UI for Flex options
             shapeSelect.dispatchEvent(new Event('change'));
         }
     }
+    // --- ✨ NEW FUNCTION END ✨ ---
     
     function addLog(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
@@ -560,6 +569,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // 新增: 加载 Cloudflare 配置
     async function loadCloudflareConfig() {
         try {
             const config = await apiRequest('/oci/api/cloudflare-config');
@@ -592,6 +602,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
+    // 新增: 保存 Cloudflare 配置
     saveCloudflareConfigBtn.addEventListener('click', async () => {
         const apiToken = cloudflareApiTokenInput.value.trim();
         const zoneId = cloudflareZoneIdInput.value.trim();
@@ -887,6 +898,11 @@ document.addEventListener('DOMContentLoaded', function() {
                             ? `<div class="progress" style="height: 5px;"><div class="progress-bar bg-secondary" style="width: 100%"></div></div>`
                             : `<div class="progress" style="height: 5px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div></div>`;
                         
+                        // --- ✨ 修正点 START ✨ ---
+                        // 在此添加了 details.boot_volume_size
+                        const configString = `<strong>配置:</strong> ${details.shape} / ${details.ocpus || 'N/A'} OCPU / ${details.memory_in_gbs || 'N/A'} GB / ${details.boot_volume_size || 'N/A'} GB<br><strong>系统:</strong> ${details.os_name_version}`;
+                        // --- ✨ 修正点 END ✨ ---
+
                         return `
                         <li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}">
                             <div class="row align-items-center">
@@ -896,7 +912,7 @@ document.addEventListener('DOMContentLoaded', function() {
                                         <div><strong><span class="badge bg-primary me-2">${task.account_alias}</span><code>${taskName}</code></strong><p class="mb-1 small text-muted">开始于: ${new Date(start_time).toLocaleString()}</p></div>
                                         <div class="text-end">${statusBadge}</div>
                                     </div>
-                                    <div class="bg-light p-2 rounded small mt-1"><strong>配置:</strong> ${details.shape} / ${details.ocpus || 'N/A'} OCPU / ${details.memory_in_gbs || 'N/A'} GB / ${details.os_name_version}<br><strong>可用域:</strong> <code>${details.ad || '未知'}</code><br><strong>执行时长:</strong> ${formatElapsedTime(start_time)}</div>
+                                    <div class="bg-light p-2 rounded small mt-1">${configString}<br><strong>可用域:</strong> <code>${details.ad || '未知'}</code><br><strong>执行时长:</strong> ${formatElapsedTime(start_time)}</div>
                                     <div class="mt-2">${progressBar}<p class="mb-0 mt-1 small text-info-emphasis"><strong>最新状态:</strong> ${last_message}</p></div>
                                 </div>
                             </div>
@@ -1053,42 +1069,6 @@ document.addEventListener('DOMContentLoaded', function() {
         confirmActionModal.show();
     }
 
-    // ✨ MODIFICATION START ✨
-    async function refreshAvailableShapesForEdit(currentShape) {
-        editShapeSelect.innerHTML = '<option value="">正在刷新可用规格...</option>';
-        editShapeSelect.disabled = true;
-        saveShapeBtn.disabled = true;
-
-        const targetFamily = currentShape.includes('A1.Flex') ? 'A2.Flex' : 'A1.Flex';
-        
-        try {
-            // We use a dummy OS version here as the endpoint requires it, 
-            // but we will filter by shape name anyway.
-            const allShapes = await apiRequest(`/oci/api/available-shapes?os_name_version=Canonical Ubuntu-22.04`);
-            const compatibleShapes = allShapes.filter(s => s.includes(targetFamily));
-            
-            // Remove duplicates
-            const uniqueShapes = [...new Set(compatibleShapes)];
-
-            editShapeSelect.innerHTML = '';
-            if (uniqueShapes.length > 0) {
-                uniqueShapes.forEach(shape => {
-                    const option = document.createElement('option');
-                    option.value = shape;
-                    option.textContent = shape;
-                    editShapeSelect.appendChild(option);
-                });
-                editShapeSelect.disabled = false;
-                saveShapeBtn.disabled = false;
-            } else {
-                editShapeSelect.innerHTML = `<option value="">无可用 ${targetFamily} 规格</option>`;
-            }
-        } catch (error) {
-            editShapeSelect.innerHTML = '<option value="">获取规格失败</option>';
-            addLog('刷新可更换的实例规格失败。', 'error');
-        }
-    }
-
     instanceActionButtons.editInstance.addEventListener('click', async () => {
         if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
         try {
@@ -1097,16 +1077,7 @@ document.addEventListener('DOMContentLoaded', function() {
             editDisplayName.value = details.display_name;
             editBootVolumeSize.value = details.boot_volume_size_in_gbs;
             editVpus.value = details.vpus_per_gb;
-
-            const isArmFlex = details.shape.toLowerCase().includes('a1.flex') || details.shape.toLowerCase().includes('a2.flex');
-            
-            editShapeConfig.classList.toggle('d-none', !isArmFlex);
             editFlexInstanceConfig.classList.toggle('d-none', !details.shape.toLowerCase().includes('flex'));
-            
-            if (isArmFlex) {
-                refreshAvailableShapesForEdit(details.shape);
-            }
-
             if (details.shape.toLowerCase().includes('flex')) {
                 editOcpus.value = details.ocpus;
                 editMemory.value = details.memory_in_gbs;
@@ -1114,8 +1085,6 @@ document.addEventListener('DOMContentLoaded', function() {
             editInstanceModal.show();
         } catch(error) {}
     });
-    // ✨ MODIFICATION END ✨
-
     async function handleInstanceUpdateRequest(action, payload) {
         addLog(`正在提交 ${action} 请求...`);
         try {
@@ -1127,20 +1096,6 @@ document.addEventListener('DOMContentLoaded', function() {
         } catch(e) {}
     }
     saveDisplayNameBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改名称', { action: 'update_display_name', instance_id: selectedInstance.id, display_name: editDisplayName.value }));
-    // ✨ MODIFICATION START ✨
-    saveShapeBtn.addEventListener('click', () => {
-        const newShape = editShapeSelect.value;
-        if (!newShape) {
-            addLog('请选择一个有效的目标规格', 'error');
-            return;
-        }
-        handleInstanceUpdateRequest('修改实例规格', { 
-            action: 'update_base_shape', 
-            instance_id: selectedInstance.id, 
-            new_shape: newShape 
-        });
-    });
-    // ✨ MODIFICATION END ✨
     saveFlexConfigBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改CPU/内存', { action: 'update_shape', instance_id: selectedInstance.id, ocpus: parseInt(editOcpus.value, 10), memory_in_gbs: parseInt(editMemory.value, 10) }));
     saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
     saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
@@ -1246,5 +1201,6 @@ document.addEventListener('DOMContentLoaded', function() {
     loadProfiles();
     checkSession();
     loadTgConfig();
+    // 新增: 页面加载时获取 Cloudflare 配置
     loadCloudflareConfig();
 });
