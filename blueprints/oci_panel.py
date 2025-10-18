@@ -20,6 +20,8 @@ KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
 TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
+DEFAULT_SSH_KEY = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDuxGi8wfpz+Us1flHLhTFErH0MkejwK68vMomuW1toccSBTl0VK/aTV7zn2KB6B0rWc6cZoK6m02ZW8dieTa4x0CBDl7FxlyqJhOlfyIWJ7/qh3NlEFJ5l/17KeugUYSJxck9rKMsyZgjrPoWQub48CQLFgqxwDNUavAGeJIkxELDTIxPJQNpZOBrAGcQeWNAfwznwOME7lbXPQhPlI26O7gFRA1+9zekwxy3x8/axrr9ygzOLAMgGsK3tM/NF4QHTivrH8Gj8QpkSEVTTEIE2SV2varAgzP3vwwogQ7OSiIW5rr2pdkX9/ZTcVaV9qEDL+GOhcOCkDMbqsF/d/7vt ssh-key-2025-09-27"
+
 
 # --- 通用请求超时处理 ---
 class TimeoutException(Exception):
@@ -552,8 +554,18 @@ def manage_profiles():
         alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
         if not alias or not new_profile_data:
             return jsonify({"error": "Missing alias or profile_data"}), 400
-        profiles[alias] = profiles.get(alias, {})
-        profiles[alias].update(new_profile_data)
+        
+        # Get the existing profile, if any, or start with an empty dictionary.
+        updated_profile = profiles.get(alias, {})
+        # Apply the new data sent by the user.
+        updated_profile.update(new_profile_data)
+
+        # Ensure a default SSH key exists if one isn't provided or is empty.
+        if not updated_profile.get('default_ssh_public_key'):
+            updated_profile['default_ssh_public_key'] = DEFAULT_SSH_KEY
+        
+        # Save the final profile configuration.
+        profiles[alias] = updated_profile
         save_profiles(profiles)
         return jsonify({"success": True, "alias": alias})
 
@@ -849,7 +861,7 @@ def get_instance_details(instance_id):
 @oci_bp.route('/api/available-shapes')
 @login_required
 @oci_clients_required
-@timeout(45)  # Increased timeout for a potentially longer API call
+@timeout(45)
 def get_available_shapes():
     try:
         os_name_version = request.args.get('os_name_version')
@@ -860,7 +872,6 @@ def get_available_shapes():
         compute_client = g.oci_clients['compute']
         tenancy_ocid = g.oci_config['tenancy']
         
-        # 1. Fetch all available shapes in the compartment
         logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
         all_shapes = oci.pagination.list_call_get_all_results(
             compute_client.list_shapes,
@@ -868,10 +879,8 @@ def get_available_shapes():
         ).data
         logging.info(f"Found {len(all_shapes)} total shapes.")
 
-        # 2. Filter for ARM (Ampere) and AMD shapes first, and only for VMs
         architecture_shapes = []
         for shape in all_shapes:
-            # --- ✅ 修正点: 增加 startswith('VM.') 判断 ---
             if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
                 proc_desc = shape.processor_description.lower()
                 if 'ampere' in proc_desc or 'amd' in proc_desc:
@@ -879,11 +888,9 @@ def get_available_shapes():
         
         logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
 
-        # 3. Check OS image compatibility for the filtered list
         valid_shapes_for_os = []
         for shape_name in architecture_shapes:
             try:
-                # We only need to check for existence, so limit=1 is efficient
                 images = compute_client.list_images(
                     tenancy_ocid,
                     operating_system=os_name,
@@ -894,14 +901,11 @@ def get_available_shapes():
                 if images:
                     valid_shapes_for_os.append(shape_name)
             except ServiceError as se:
-                # This can happen for shapes that are visible but not usable in the region.
-                # It's safe to ignore these and continue.
                 logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
                 continue
         
         logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
         
-        # Prioritize free-tier shapes to appear first in the dropdown
         valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
 
         return jsonify(valid_shapes_for_os)
@@ -1071,6 +1075,32 @@ def _update_instance_details_task(task_id, profile_config, data):
             details = UpdateInstanceDetails(shape_config=shape_config)
             compute_client.update_instance(instance_id, details)
             result_message = "✅ CPU/内存配置更新成功！请手动启动实例。"
+        
+        # ✨ BUG FIX START ✨
+        elif action == 'update_base_shape':
+            if instance.lifecycle_state != "STOPPED": 
+                raise Exception("必须先停止实例才能修改实例规格。")
+            
+            new_shape = data.get('new_shape')
+            if not new_shape:
+                raise Exception("未提供目标实例规格。")
+
+            # 安全校验
+            current_is_arm = instance.shape.startswith('VM.Standard.A') and 'Flex' in instance.shape
+            new_is_arm = new_shape.startswith('VM.Standard.A') and 'Flex' in new_shape
+            if not (current_is_arm and new_is_arm):
+                raise Exception("此功能仅限在 A1.Flex 和 A2.Flex 规格之间切换。")
+            
+            # 修正: 创建 shape_config 对象，并同时传递 shape 和 shape_config
+            shape_config = UpdateInstanceShapeConfigDetails(
+                ocpus=instance.shape_config.ocpus,
+                memory_in_gbs=instance.shape_config.memory_in_gbs
+            )
+            details = UpdateInstanceDetails(shape=new_shape, shape_config=shape_config)
+            compute_client.update_instance(instance_id, details)
+            result_message = f"✅ 实例规格已成功更新为 {new_shape}！请手动启动实例。"
+        # ✨ BUG FIX END ✨
+
         elif action == 'update_boot_volume':
             boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, profile_config['tenancy'], instance_id=instance_id).data
             if not boot_vol_attachments: raise Exception("找不到引导卷")
@@ -1218,8 +1248,12 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
-        instance_password = generate_oci_password()
-        
+        user_provided_password = details.get('instance_password', '').strip()
+        if user_provided_password:
+            instance_password = user_provided_password
+        else:
+            instance_password = generate_oci_password()
+
         user_script = details.get('startup_script', '')
         user_data_encoded = get_user_data(instance_password, user_script)
         
