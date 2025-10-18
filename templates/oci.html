@@ -227,6 +227,12 @@
                         </div>
                     </div>
                     <div class="row">
+                        <div class="col-12 mb-3">
+                            <label for="instancePassword" class="form-label">实例登录密码 (可选)</label>
+                            <input type="password" class="form-control" id="instancePassword" placeholder="留空则使用随机生成的安全密码">
+                        </div>
+                    </div>
+                    <div class="row">
                         <div class="col-md-8 mb-3">
                             <label for="instanceOS" class="form-label">操作系统</label>
                             <select class="form-select" id="instanceOS">
@@ -387,6 +393,18 @@
                     </div>
                 </div>
                 <hr>
+                <div id="editShapeConfig" class="d-none">
+                    <label class="form-label">实例规格 (Shape)</label>
+                    <div class="input-group">
+                        <select class="form-select" id="editShapeSelect"></select>
+                        <button class="btn btn-outline-primary" id="saveShapeBtn">
+                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                            保存规格
+                        </button>
+                    </div>
+                    <small class="form-text text-muted">仅限 A1/A2 系列互转。修改此配置需要先停止实例。</small>
+                    <hr>
+                </div>
                 <div id="editFlexInstanceConfig" class="d-none">
                     <label class="form-label">CPU与内存 (仅限ARM机型)</label>
                     <div class="row">
