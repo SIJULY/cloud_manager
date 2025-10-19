@@ -1,7 +1,7 @@
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for, current_app
 from functools import wraps
-from datetime import timezone
+from datetime import timezone, timedelta
 import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
@@ -63,6 +63,26 @@ def close_connection(exception):
     if db is not None:
         db.close()
 
+def update_db_schema():
+    """检查并更新数据库表结构，确保关键列存在。"""
+    try:
+        db = get_db_connection()
+        cursor = db.cursor()
+        
+        cursor.execute("PRAGMA table_info(tasks)")
+        columns = [info['name'] for info in cursor.fetchall()]
+        
+        if 'completed_at' not in columns:
+            logging.info("Schema update: Adding 'completed_at' column to 'tasks' table.")
+            cursor.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
+            db.commit()
+            logging.info("'completed_at' column added successfully.")
+
+        db.close()
+    except Exception as e:
+        logging.error(f"Failed to update database schema: {e}")
+
+
 def init_db():
     db = get_db_connection()
     cursor = db.cursor()
@@ -74,11 +94,13 @@ def init_db():
         cursor.executescript("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY, type TEXT, name TEXT, status TEXT NOT NULL,
-            result TEXT, created_at TEXT, account_alias TEXT
+            result TEXT, created_at TEXT, account_alias TEXT, completed_at TEXT
         );
         """)
         db.commit()
         logging.info("'tasks' table created successfully in OCI database.")
+    else:
+        update_db_schema()
     db.close()
 
 def query_db(query, args=(), one=False):
@@ -96,6 +118,27 @@ def _db_execute_celery(query, params=()):
     db.close()
 
 # --- 核心辅助函数 ---
+# --- ✨ 新增的辅助函数 ✨ ---
+def _format_timedelta(duration: timedelta) -> str:
+    """将 timedelta 对象格式化为人类可读的字符串。"""
+    seconds = duration.total_seconds()
+    if seconds < 60:
+        return f"{int(seconds)}秒"
+    
+    days, remainder = divmod(seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{int(days)}天")
+    if hours > 0:
+        parts.append(f"{int(hours)}小时")
+    if minutes > 0:
+        parts.append(f"{int(minutes)}分钟")
+        
+    return "".join(parts) if parts else "不到1分钟"
+
 def load_profiles():
     if not os.path.exists(KEYS_FILE): return {}
     try:
@@ -184,8 +227,9 @@ def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
         result_data = response.json()
 
         if result_data['success']:
-            msg = f"✅ 成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}"
-            logging.info(msg)
+            # --- ✨ 这里是唯一的修改点 ✨ ---
+            msg = f"✅ Cloudflare DNS 记录: {full_domain} -> {ip_address}"
+            logging.info(f"成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}") # 内部日志仍然保留详细信息
             return msg
         else:
             errors = result_data.get('errors', [{'message': '未知错误'}])
@@ -202,7 +246,7 @@ def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
         msg = f"❌ 更新 Cloudflare DNS 时发生未知错误: {e}"
         logging.error(msg)
         return msg
-
+        
 def send_tg_notification(message):
     tg_config = load_tg_config()
     bot_token = tg_config.get('bot_token')
@@ -555,16 +599,12 @@ def manage_profiles():
         if not alias or not new_profile_data:
             return jsonify({"error": "Missing alias or profile_data"}), 400
         
-        # Get the existing profile, if any, or start with an empty dictionary.
         updated_profile = profiles.get(alias, {})
-        # Apply the new data sent by the user.
         updated_profile.update(new_profile_data)
 
-        # Ensure a default SSH key exists if one isn't provided or is empty.
         if not updated_profile.get('default_ssh_public_key'):
             updated_profile['default_ssh_public_key'] = DEFAULT_SSH_KEY
         
-        # Save the final profile configuration.
         profiles[alias] = updated_profile
         save_profiles(profiles)
         return jsonify({"success": True, "alias": alias})
@@ -600,7 +640,7 @@ def get_running_snatching_tasks():
 @oci_bp.route('/api/tasks/snatching/completed', methods=['GET'])
 @login_required
 def get_completed_snatching_tasks():
-    tasks = query_db("SELECT id, name, status, result, created_at, account_alias FROM tasks WHERE type = 'snatch' AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 50")
+    tasks = query_db("SELECT id, name, status, result, created_at, completed_at, account_alias FROM tasks WHERE type = 'snatch' AND (status = 'success' OR status = 'failure') ORDER BY created_at DESC LIMIT 50")
     return jsonify([dict(task) for task in tasks])
 
 @oci_bp.route('/api/tasks/<task_id>', methods=['DELETE'])
@@ -659,7 +699,7 @@ def resume_tasks():
 
         if not profile_config:
             failed_tasks.append(task_id)
-            _db_execute_celery("UPDATE tasks SET status = ?, result = ? WHERE id = ?", ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id))
+            _db_execute_celery("UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?", ('failure', '任务因关联的账号配置被删除而恢复失败。', datetime.datetime.now(timezone.utc).isoformat(), task_id))
             continue
 
         try:
@@ -681,7 +721,7 @@ def resume_tasks():
         except Exception as e:
             logging.error(f"恢复任务 {task_id} 失败: {e}")
             failed_tasks.append(task_id)
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f'手动恢复任务失败: {e}', task_id))
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('failure', f'手动恢复任务失败: {e}', datetime.datetime.now(timezone.utc).isoformat(), task_id))
 
     message = f"成功恢复 {resumed_count} 个任务。"
     if failed_tasks:
@@ -861,7 +901,7 @@ def get_instance_details(instance_id):
 @oci_bp.route('/api/available-shapes')
 @login_required
 @oci_clients_required
-@timeout(45)  # Increased timeout for a potentially longer API call
+@timeout(45)
 def get_available_shapes():
     try:
         os_name_version = request.args.get('os_name_version')
@@ -872,7 +912,6 @@ def get_available_shapes():
         compute_client = g.oci_clients['compute']
         tenancy_ocid = g.oci_config['tenancy']
         
-        # 1. Fetch all available shapes in the compartment
         logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
         all_shapes = oci.pagination.list_call_get_all_results(
             compute_client.list_shapes,
@@ -880,10 +919,8 @@ def get_available_shapes():
         ).data
         logging.info(f"Found {len(all_shapes)} total shapes.")
 
-        # 2. Filter for ARM (Ampere) and AMD shapes first, and only for VMs
         architecture_shapes = []
         for shape in all_shapes:
-            # --- ✅ 修正点: 增加 startswith('VM.') 判断 ---
             if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
                 proc_desc = shape.processor_description.lower()
                 if 'ampere' in proc_desc or 'amd' in proc_desc:
@@ -891,11 +928,9 @@ def get_available_shapes():
         
         logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
 
-        # 3. Check OS image compatibility for the filtered list
         valid_shapes_for_os = []
         for shape_name in architecture_shapes:
             try:
-                # We only need to check for existence, so limit=1 is efficient
                 images = compute_client.list_images(
                     tenancy_ocid,
                     operating_system=os_name,
@@ -906,14 +941,11 @@ def get_available_shapes():
                 if images:
                     valid_shapes_for_os.append(shape_name)
             except ServiceError as se:
-                # This can happen for shapes that are visible but not usable in the region.
-                # It's safe to ignore these and continue.
                 logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
                 continue
         
         logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
         
-        # Prioritize free-tier shapes to appear first in the dropdown
         valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
 
         return jsonify(valid_shapes_for_os)
@@ -1095,9 +1127,10 @@ def _update_instance_details_task(task_id, profile_config, data):
             bs_client.update_boot_volume(boot_volume_id, details)
             result_message = "✅ 引导卷更新成功！"
         else: raise Exception(f"未知的更新操作: {action}")
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+        
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('success', result_message, datetime.datetime.now(timezone.utc).isoformat(), task_id))
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", task_id))
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('failure', f"❌ 操作失败: {e}", datetime.datetime.now(timezone.utc).isoformat(), task_id))
 
 @celery.task
 def _instance_action_task(task_id, profile_config, action, instance_id, data):
@@ -1165,7 +1198,7 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
 
         else: raise Exception(f"未知的操作: {action}")
         
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', result_message, task_id))
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('success', result_message, datetime.datetime.now(timezone.utc).isoformat(), task_id))
         
         if data.get('_source') != 'web':
             tg_msg = (f"🔔 *任务完成通知*\n\n"
@@ -1178,7 +1211,7 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
         alias = profile_config.get('alias', '未知账户')
         task_title = f"{action.upper()} on instance"
         error_message = f"❌ 操作失败: {e}"
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', error_message, task_id))
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('failure', error_message, datetime.datetime.now(timezone.utc).isoformat(), task_id))
         
         if data.get('_source') != 'web':
             tg_msg = (f"🔔 *任务失败通知*\n\n"
@@ -1202,21 +1235,12 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         status_data['attempt_count'] = 0
         status_data['last_message'] = "抢占任务准备中..."
 
-    # --- ✨ 新增的修正逻辑 开始 ✨ ---
-    # 确保 details 字典是可操作的
     task_details = status_data.get('details', {})
-
-    # 1. 为所有任务设置默认的磁盘大小（如果未提供）
     task_details.setdefault('boot_volume_size', 50)
-
-    # 2. 如果是AMD机型，则强制设置固定的CPU和内存
     if task_details.get('shape') == 'VM.Standard.E2.1.Micro':
         task_details['ocpus'] = 1
         task_details['memory_in_gbs'] = 1
-    
-    # 将修正后的 details 写回 status_data
     status_data['details'] = task_details
-    # --- ✨ 新增的修正逻辑 结束 ✨ ---
 
     status_data['details']['account_alias'] = alias
     status_data['run_id'] = run_id
@@ -1246,13 +1270,11 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
-        # --- ✨ MODIFICATION START ✨ ---
         user_provided_password = details.get('instance_password', '').strip()
         if user_provided_password:
             instance_password = user_provided_password
         else:
             instance_password = generate_oci_password()
-        # --- ✨ MODIFICATION END ✨ ---
 
         user_script = details.get('startup_script', '')
         user_data_encoded = get_user_data(instance_password, user_script)
@@ -1268,7 +1290,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         }
 
     except Exception as e:
-        _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", task_id))
+        _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('failure', f"❌ 抢占任务准备阶段失败: {e}", datetime.datetime.now(timezone.utc).isoformat(), task_id))
         return
 
     last_update_time = time.time()
@@ -1292,7 +1314,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
                 return
         except (json.JSONDecodeError, TypeError, KeyError):
             logging.error(f"Could not verify run_id for task {task_id}. Data might be corrupt. Exiting.")
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('failure', "任务数据损坏，无法继续执行。", task_id))
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('failure', "任务数据损坏，无法继续执行。", datetime.datetime.now(timezone.utc).isoformat(), task_id))
             return
 
         attempt_count += 1
@@ -1336,9 +1358,26 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
                 dns_update_msg = _update_cloudflare_dns(instance.display_name, public_ip, 'A')
                 db_msg += f"\n{dns_update_msg}"
 
-            _db_execute_celery('UPDATE tasks SET status = ?, result = ? WHERE id = ?', ('success', db_msg, task_id))
+            _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('success', db_msg, datetime.datetime.now(timezone.utc).isoformat(), task_id))
             
-            result_for_tg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名: ubuntu\n- 密码: {instance_password}"
+            # --- ✨ 修正点: 计算总用时并添加到TG消息中 ✨ ---
+            duration_str = "未知"
+            try:
+                start_time = datetime.datetime.fromisoformat(status_data['start_time'])
+                end_time = datetime.datetime.now(timezone.utc)
+                duration = end_time - start_time
+                duration_str = _format_timedelta(duration)
+            except (KeyError, TypeError):
+                logging.warning(f"无法为任务 {task_id} 计算总用时。")
+
+            result_for_tg = (f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n"
+                             f"- 总用时: {duration_str}\n"
+                             f"- 实例名: {instance.display_name}\n"
+                             f"- 可用区: {current_ad_name}\n"
+                             f"- 公网IP: {public_ip}\n"
+                             f"- 登陆用户名: ubuntu\n"
+                             f"- 密码: {instance_password}")
+            
             if dns_update_msg:
                 result_for_tg += f"\n{dns_update_msg}"
 
