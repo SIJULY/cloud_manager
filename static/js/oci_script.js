@@ -20,9 +20,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Modals
     const launchInstanceModal = new bootstrap.Modal(document.getElementById('createLaunchInstanceModal'));
-    // --- ✨ MODIFICATION START ✨ ---
     const launchInstanceModalEl = document.getElementById('createLaunchInstanceModal');
-    // --- ✨ MODIFICATION END ✨ ---
     const viewSnatchTasksModal = new bootstrap.Modal(document.getElementById('viewSnatchTasksModal'));
     const viewSnatchTasksModalEl = document.getElementById('viewSnatchTasksModal'); 
     const taskResultModal = new bootstrap.Modal(document.getElementById('taskResultModal'));
@@ -31,7 +29,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const confirmActionModal = new bootstrap.Modal(document.getElementById('confirmActionModal'));
     const editProfileModal = new bootstrap.Modal(document.getElementById('editProfileModal'));
     const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
-    // 新增: Cloudflare Modal
     const cloudflareSettingsModal = new bootstrap.Modal(document.getElementById('cloudflareSettingsModal'));
 
     const instanceCountInput = document.getElementById('instanceCount');
@@ -77,12 +74,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const getApiKeyBtn = document.getElementById('getApiKeyBtn');
     const apiKeyInput = document.getElementById('apiKeyInput');
     
-    // 新增: Cloudflare DOM 元素
     const cloudflareApiTokenInput = document.getElementById('cloudflareApiToken');
     const cloudflareZoneIdInput = document.getElementById('cloudflareZoneId');
     const cloudflareDomainInput = document.getElementById('cloudflareDomain');
     const saveCloudflareConfigBtn = document.getElementById('saveCloudflareConfigBtn');
-    // 新增: 创建实例时绑定域名的复选框
     const autoBindDomainCheck = document.getElementById('autoBindDomainCheck');
 
 
@@ -121,7 +116,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     launchInstanceShapeSelect.dispatchEvent(new Event('change'));
 
-    // --- ✨ MODIFICATION START ✨ ---
     submitLaunchInstanceBtn.addEventListener('click', () => {
         const proceedWithLaunch = async () => {
             const shape = launchInstanceShapeSelect.value;
@@ -207,9 +201,7 @@ document.addEventListener('DOMContentLoaded', function() {
         
         proceedWithLaunch();
     });
-    // --- ✨ MODIFICATION END ✨ ---
 
-    // Add event listeners for the new dynamic shape functionality
     launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
     document.getElementById('instanceOS').addEventListener('change', updateAvailableShapes);
 
@@ -257,23 +249,20 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // --- Core and Helper Functions ---
 
-    // --- ✨ NEW FUNCTION START ✨ ---
     async function updateAvailableShapes() {
         const os_name_version = document.getElementById('instanceOS').value;
         const shapeSelect = document.getElementById('instanceShape');
         
         shapeSelect.innerHTML = '<option value="">正在刷新实例规格...</option>';
         shapeSelect.disabled = true;
-        // Also disable the launch button while refreshing
         submitLaunchInstanceBtn.disabled = true;
 
         try {
             const shapes = await apiRequest(`/oci/api/available-shapes?os_name_version=${os_name_version}`);
-            shapeSelect.innerHTML = ''; // Clear previous options
+            shapeSelect.innerHTML = ''; 
             if (shapes.length === 0) {
                 shapeSelect.innerHTML = '<option value="">当前系统无可用规格</option>';
             } else {
-                // Ensure ARM Flex is the default option if available
                 shapes.sort((a, b) => a.includes('A1.Flex') ? -1 : (b.includes('A1.Flex') ? 1 : 0));
                 shapes.forEach(shape => {
                     const option = document.createElement('option');
@@ -281,7 +270,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     option.textContent = shape;
                     shapeSelect.appendChild(option);
                 });
-                // Re-enable the launch button if shapes were found
                 submitLaunchInstanceBtn.disabled = false;
             }
         } catch (error) {
@@ -289,11 +277,9 @@ document.addEventListener('DOMContentLoaded', function() {
             addLog('自动刷新实例规格失败，请检查网络或账号权限。', 'error');
         } finally {
             shapeSelect.disabled = false;
-            // Manually trigger a change event to update the UI for Flex options
             shapeSelect.dispatchEvent(new Event('change'));
         }
     }
-    // --- ✨ NEW FUNCTION END ✨ ---
     
     function addLog(message, type = 'info') {
         const timestamp = new Date().toLocaleTimeString();
@@ -556,8 +542,35 @@ document.addEventListener('DOMContentLoaded', function() {
         if (days > 0) parts.push(`${days}天`);
         if (hours > 0) parts.push(`${hours}小时`);
         if (minutes > 0) parts.push(`${minutes}分钟`);
-        return parts.join('');
+        return parts.join('') || '不到1分钟';
     }
+    
+    // --- ✨ 新增的辅助函数 ✨ ---
+    function formatDuration(startTimeString, endTimeString) {
+        if (!startTimeString || !endTimeString) {
+            return '未知';
+        }
+        const startTime = new Date(startTimeString);
+        const endTime = new Date(endTimeString);
+        let seconds = Math.floor((endTime - startTime) / 1000);
+
+        if (isNaN(seconds) || seconds < 0) return '未知';
+        if (seconds < 60) return `${seconds}秒`;
+
+        const days = Math.floor(seconds / (3600 * 24));
+        seconds -= days * 3600 * 24;
+        const hours = Math.floor(seconds / 3600);
+        seconds -= hours * 3600;
+        const minutes = Math.floor(seconds / 60);
+        
+        let parts = [];
+        if (days > 0) parts.push(`${days}天`);
+        if (hours > 0) parts.push(`${hours}小时`);
+        if (minutes > 0) parts.push(`${minutes}分钟`);
+        
+        return parts.join('') || '不到1分钟';
+    }
+
 
     async function loadTgConfig() {
         try {
@@ -569,7 +582,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // 新增: 加载 Cloudflare 配置
     async function loadCloudflareConfig() {
         try {
             const config = await apiRequest('/oci/api/cloudflare-config');
@@ -602,7 +614,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
-    // 新增: 保存 Cloudflare 配置
     saveCloudflareConfigBtn.addEventListener('click', async () => {
         const apiToken = cloudflareApiTokenInput.value.trim();
         const zoneId = cloudflareZoneIdInput.value.trim();
@@ -898,10 +909,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             ? `<div class="progress" style="height: 5px;"><div class="progress-bar bg-secondary" style="width: 100%"></div></div>`
                             : `<div class="progress" style="height: 5px;"><div class="progress-bar progress-bar-striped progress-bar-animated" style="width: 100%"></div></div>`;
                         
-                        // --- ✨ 修正点 START ✨ ---
-                        // 在此添加了 details.boot_volume_size
                         const configString = `<strong>配置:</strong> ${details.shape} / ${details.ocpus || 'N/A'} OCPU / ${details.memory_in_gbs || 'N/A'} GB / ${details.boot_volume_size || 'N/A'} GB<br><strong>系统:</strong> ${details.os_name_version}`;
-                        // --- ✨ 修正点 END ✨ ---
 
                         return `
                         <li class="list-group-item" data-task-id="${task.id}" data-task-status="${task.status}">
@@ -923,16 +931,34 @@ document.addEventListener('DOMContentLoaded', function() {
 
             completedSnatchTasksList.innerHTML = completed.length === 0
                 ? '<li class="list-group-item text-muted">没有已完成的抢占任务记录。</li>'
-                : completed.map(task => `
+                : completed.map(task => {
+                    // --- ✨ 修正点 START ✨ ---
+                    let startTime = null;
+                    try {
+                        const result_json = JSON.parse(task.result);
+                        startTime = result_json.start_time;
+                    } catch(e) {
+                        // For successful tasks, the result might be a plain string
+                        // We can try to parse start_time from older task formats if needed in the future
+                    }
+                    const durationText = formatDuration(startTime, task.completed_at || task.created_at);
+                    const timeInfo = `
+                        <small class="text-muted d-block">完成于: ${new Date(task.completed_at || task.created_at).toLocaleString()}</small>
+                        <small class="text-muted d-block">总用时: ${durationText}</small>
+                    `;
+                    // --- ✨ 修正点 END ✨ ---
+
+                    return `
                     <li class="list-group-item list-group-item-action" data-task-id="${task.id}">
                         <div class="d-flex w-100 align-items-center">
                             <input class="form-check-input task-checkbox" type="checkbox" data-task-id="${task.id}">
                             <div class="ms-3 flex-grow-1 d-flex justify-content-between align-items-center">
-                                <div><strong><span class="badge bg-secondary me-2">${task.account_alias}</span>${task.name}</strong><br><small class="text-muted">完成于: ${new Date(task.created_at).toLocaleString()}</small></div>
+                                <div><strong><span class="badge bg-secondary me-2">${task.account_alias}</span>${task.name}</strong><br>${timeInfo}</div>
                                 <span class="badge bg-${task.status === 'success' ? 'success' : 'danger'}">${task.status === 'success' ? '成功' : '失败'}</span>
                             </div>
                         </div>
-                    </li>`).join('');
+                    </li>`
+                }).join('');
         } catch (e) {
             runningSnatchTasksList.innerHTML = '<li class="list-group-item list-group-item-danger">加载正在运行任务失败。</li>';
             completedSnatchTasksList.innerHTML = '<li class="list-group-item list-group-item-danger">加载已完成任务失败。</li>';
@@ -1201,6 +1227,5 @@ document.addEventListener('DOMContentLoaded', function() {
     loadProfiles();
     checkSession();
     loadTgConfig();
-    // 新增: 页面加载时获取 Cloudflare 配置
     loadCloudflareConfig();
 });
