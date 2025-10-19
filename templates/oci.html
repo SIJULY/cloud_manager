@@ -12,27 +12,21 @@
     .status-running { background-color: #198754; }
     .status-stopped { background-color: #dc3545; }
     .status-other { background-color: #ffc107; }
-    /* 调整 action-group 按钮样式以实现等宽 */
     .action-group { 
         display: flex; 
         flex-wrap: wrap; 
         gap: 0.5rem; 
     }
     .action-group .btn { 
-        flex: 1 1 0; /* 允许按钮等宽增长和缩小，flex-basis: 0; 确保起始等分 */
-        min-width: 0; /* 确保在小屏幕下可以正常收缩 */
+        flex: 1 1 0;
+        min-width: 0;
     }
-    /* 移除或调整 profile-action-btn 的固定宽度，让 flex 属性生效 */
-    /* #instanceList td { text-align: center; vertical-align: middle; } */
     #instanceList td:first-child { text-align: left; }
     #logOutput { white-space: pre-wrap; word-break: break-all; }
     #logOutput pre { margin-bottom: 0; white-space: pre-wrap; }
     #instanceList td { text-align: center; vertical-align: middle; }
     #instanceList td:first-child { text-align: left; }
-    /* .action-group .btn { margin: 0 2px; } */ /* 这行可以移除，gap 已经提供了间距 */
     #viewSnatchTasksModal .list-group-item { cursor: pointer; }
-    /* .action-group .btn { flex-grow: 1; } */ /* 已经整合到 .action-group .btn 的 flex 属性中 */
-    /* .profile-action-btn { width: 85px !important; } */ /* 这个样式会导致宽度不一致，需要移除或调整 */
     .status-cell { display: flex; align-items: center; justify-content: center; }
     .rule-row input { font-size: 0.9rem; }
     .rule-row .btn-sm { padding: 0.2rem 0.5rem; }
@@ -56,10 +50,9 @@
     .table-hover tbody tr.profile-disabled {
         opacity: 0.65;
         cursor: not-allowed;
-        /* pointer-events: none; */ /* 重新启用事件，以便操作按钮仍然可点击 */
     }
     .table-hover tbody tr.profile-disabled .action-buttons {
-        pointer-events: auto; /* 确保在 profile-disabled 状态下，操作按钮仍然可以点击 */
+        pointer-events: auto;
     }
     #viewSnatchTasksModal .modal-footer {
         justify-content: space-between;
@@ -68,6 +61,22 @@
         display: flex;
         gap: 0.5rem;
     }
+
+    /* --- ✨ 新增：更真实的按钮点击反馈效果 --- */
+    .btn {
+        /* 为所有可动画的属性添加平滑过渡效果，让动画更迅速、自然 */
+        transition: all 0.08s ease-out;
+    }
+
+    .btn:active {
+        /* 1. 缩小按钮，产生“向内按压”的感觉 */
+        transform: scale(0.98);
+        /* 2. 添加内阴影，增强凹陷效果 */
+        box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
+        /* 3. 稍微变暗，模拟光线变化 */
+        filter: brightness(0.95);
+    }
+    /* --- ✨ 效果结束 ✨ --- */
 </style>
 {% endblock %}
 
@@ -90,11 +99,20 @@
                     </div>
                     <div class="mb-3">
                         <label for="newProfileConfigText" class="form-label">配置信息</label>
-                        <textarea class="form-control" id="newProfileConfigText" rows="4" placeholder="粘贴 user, fingerprint, tenancy, region 的内容"></textarea>
+                        <textarea class="form-control" id="newProfileConfigText" rows="4" placeholder="user=&#10;fingerprint=&#10;tenancy=&#10;region="></textarea>
                     </div>
                     <div class="mb-3">
                         <label for="newProfileSshKey" class="form-label">默认SSH公钥</label>
                         <textarea class="form-control" id="newProfileSshKey" rows="3" placeholder="用于登录实例 (ssh-rsa ...)"></textarea>
+                        <div class="d-flex justify-content-between gap-2 mt-2">
+                            <button class="btn btn-sm btn-outline-info" id="useDefaultKeyBtn" type="button">
+                                <i class="bi bi-box-arrow-in-down"></i> 使用默认
+                            </button>
+                            <button class="btn btn-sm btn-info" id="saveDefaultKeyBtn" type="button">
+                                <i class="bi bi-save"></i> 保存为默认
+                            </button>
+                        </div>
+                        <div class="form-text">您可以将常用公钥保存为全局默认值，或在此处粘贴一个临时的公钥。</div>
                     </div>
                     <div class="mb-3">
                         <label for="newProfileKeyFile" class="form-label">上传 PEM 私钥文件</label>
@@ -103,7 +121,7 @@
                     <div class="d-grid">
                         <button class="btn btn-info" id="addNewProfileBtn">确认添加</button>
                     </div>
-                    <small class="text-muted d-block mt-2">提示：必须填写SSH公钥才能使用创建和抢占功能。</small>
+                    <small class="text-muted d-block mt-2">提示：如果上方公钥留空，将自动使用已保存的全局默认公钥。</small>
                 </div>
             </div>
         </div>
@@ -393,18 +411,6 @@
                     </div>
                 </div>
                 <hr>
-                <div id="editShapeConfig" class="d-none">
-                    <label class="form-label">实例规格 (Shape)</label>
-                    <div class="input-group">
-                        <select class="form-select" id="editShapeSelect"></select>
-                        <button class="btn btn-outline-primary" id="saveShapeBtn">
-                            <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
-                            保存规格
-                        </button>
-                    </div>
-                    <small class="form-text text-muted">仅限 A1/A2 系列互转。修改此配置需要先停止实例。</small>
-                    <hr>
-                </div>
                 <div id="editFlexInstanceConfig" class="d-none">
                     <label class="form-label">CPU与内存 (仅限ARM机型)</label>
                     <div class="row">
