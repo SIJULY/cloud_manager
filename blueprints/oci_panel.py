@@ -1,6 +1,7 @@
 import os, json, threading, string, random, base64, time, logging, uuid, sqlite3, datetime, signal, requests
 from flask import Blueprint, render_template, jsonify, request, session, g, redirect, url_for, current_app
 from functools import wraps
+from pypinyin import lazy_pinyin
 from datetime import timezone, timedelta
 import oci
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
@@ -596,26 +597,43 @@ def cloudflare_config_handler():
         save_cloudflare_config(config)
         return jsonify({"success": True, "message": "Cloudflare 设置已成功保存"})
 
+
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
 def manage_profiles():
     profiles = load_profiles()
     if request.method == "GET":
-        if 'page' not in request.args:
-            return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
+        # 定义一个基于拼音的排序函数
+        def pinyin_sort_key(name):
+            # 将中文名转换为拼音字符串，例如 "阿布扎比" -> "abuzhabi"
+            return "".join(lazy_pinyin(name)).lower()
 
+        # 对于不分页的请求
+        if 'page' not in request.args:
+            # 使用新的拼音排序规则
+            return jsonify(sorted(list(profiles.keys()), key=pinyin_sort_key))
+
+        # 对于分页请求
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
-        profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
+        
+        # 1. 先获取所有账号名称
+        # 2. 使用新的拼音排序规则对完整列表进行排序
+        profile_names = sorted(list(profiles.keys()), key=pinyin_sort_key)
+        
+        # 3. 然后再对已排序的列表进行分页
         total_items = len(profile_names)
         start = (page - 1) * per_page
         end = start + per_page
         paginated_items = profile_names[start:end]
         total_pages = (total_items + per_page - 1) // per_page
+        
         return jsonify({
             'items': paginated_items, 'total_items': total_items, 'page': page,
             'per_page': per_page, 'total_pages': total_pages
         })
+    
+    # POST 请求的逻辑保持不变
     if request.method == "POST":
         data = request.json
         alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
@@ -639,7 +657,6 @@ def manage_profiles():
         profiles[alias] = updated_profile
         save_profiles(profiles)
         return jsonify({"success": True, "alias": alias})
-
 @oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
 @login_required
 def handle_single_profile(alias):
