@@ -20,7 +20,10 @@ KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
 TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
-DEFAULT_SSH_KEY = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDuxGi8wfpz+Us1flHLhTFErH0MkejwK68vMomuW1toccSBTl0VK/aTV7zn2KB6B0rWc6cZoK6m02ZW8dieTa4x0CBDl7FxlyqJhOlfyIWJ7/qh3NlEFJ5l/17KeugUYSJxck9rKMsyZgjrPoWQub48CQLFgqxwDNUavAGeJIkxELDTIxPJQNpZOBrAGcQeWNAfwznwOME7lbXPQhPlI26O7gFRA1+9zekwxy3x8/axrr9ygzOLAMgGsK3tM/NF4QHTivrH8Gj8QpkSEVTTEIE2SV2varAgzP3vwwogQ7OSiIW5rr2pdkX9/ZTcVaV9qEDL+GOhcOCkDMbqsF/d/7vt ssh-key-2025-09-27"
+# --- ✨ MODIFICATION START ✨ ---
+# 新增一个文件来存储可动态修改的默认SSH公钥
+DEFAULT_KEY_FILE = "default_key.json" 
+# --- ✨ MODIFICATION END ✨ ---
 
 
 # --- 通用请求超时处理 ---
@@ -64,7 +67,6 @@ def close_connection(exception):
         db.close()
 
 def update_db_schema():
-    """检查并更新数据库表结构，确保关键列存在。"""
     try:
         db = get_db_connection()
         cursor = db.cursor()
@@ -118,9 +120,7 @@ def _db_execute_celery(query, params=()):
     db.close()
 
 # --- 核心辅助函数 ---
-# --- ✨ 新增的辅助函数 ✨ ---
 def _format_timedelta(duration: timedelta) -> str:
-    """将 timedelta 对象格式化为人类可读的字符串。"""
     seconds = duration.total_seconds()
     if seconds < 60:
         return f"{int(seconds)}秒"
@@ -227,9 +227,8 @@ def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
         result_data = response.json()
 
         if result_data['success']:
-            # --- ✨ 这里是唯一的修改点 ✨ ---
             msg = f"✅ Cloudflare DNS 记录: {full_domain} -> {ip_address}"
-            logging.info(f"成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}") # 内部日志仍然保留详细信息
+            logging.info(f"成功 {action_log} Cloudflare DNS 记录: {full_domain} -> {ip_address}")
             return msg
         else:
             errors = result_data.get('errors', [{'message': '未知错误'}])
@@ -246,7 +245,7 @@ def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
         msg = f"❌ 更新 Cloudflare DNS 时发生未知错误: {e}"
         logging.error(msg)
         return msg
-        
+
 def send_tg_notification(message):
     tg_config = load_tg_config()
     bot_token = tg_config.get('bot_token')
@@ -350,7 +349,6 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     return subnet.id
 
 def get_user_data(password, startup_script=None):
-    # 默认依赖安装脚本
     default_script = """
 echo "Waiting for apt lock to be released..."
 while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
@@ -373,20 +371,15 @@ done
         "  list:",
         f"    - ubuntu:{password}",
         "runcmd:",
-        # 1. 修正SSH登录的命令
         "  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"",
         "  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
         "  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"",
-        # 2. 将默认脚本作为一个独立的命令项
         f"  - [ bash, -c, {json.dumps(default_script)} ]",
     ]
 
-    # 3. 如果有用户脚本，也将其作为独立的命令项
     if startup_script and startup_script.strip():
-        # 使用更安全的列表格式来传递命令，避免复杂的转义
         script_parts.append(f"  - [ bash, -c, {json.dumps(startup_script.strip())} ]")
 
-    # 4. 最后重启SSH服务
     script_parts.append("  - systemctl restart sshd || service sshd restart || service ssh restart")
 
     script = "\n".join(script_parts)
@@ -543,6 +536,32 @@ def oci_index():
     return render_template("oci.html")
 
 # --- API Routes ---
+@oci_bp.route('/api/default-ssh-key', methods=['GET', 'POST'])
+@login_required
+def default_ssh_key_handler():
+    if request.method == 'GET':
+        try:
+            if os.path.exists(DEFAULT_KEY_FILE):
+                with open(DEFAULT_KEY_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return jsonify(data)
+            return jsonify({'key': ''})
+        except (IOError, json.JSONDecodeError):
+            return jsonify({'key': ''})
+
+    elif request.method == 'POST':
+        data = request.json
+        key = data.get('key', '').strip()
+        if not key.startswith('ssh-rsa'):
+            return jsonify({"error": "无效的 SSH 公钥格式。"}), 400
+        try:
+            with open(DEFAULT_KEY_FILE, 'w', encoding='utf-8') as f:
+                json.dump({'key': key}, f, indent=4)
+            return jsonify({"success": True, "message": "全局默认公钥已成功保存！"})
+        except IOError as e:
+            logging.error(f"保存默认公钥失败: {e}")
+            return jsonify({"error": "保存默认公钥文件时出错。"}), 500
+
 @oci_bp.route('/api/tg-config', methods=['GET', 'POST'])
 @login_required
 def tg_config_handler():
@@ -582,7 +601,7 @@ def manage_profiles():
             return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
 
         page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 9, type=int)
+        per_page = request.args.get('per_page', 10, type=int)
         profile_names = sorted(list(profiles.keys()), key=lambda name: name.lower())
         total_items = len(profile_names)
         start = (page - 1) * per_page
@@ -603,7 +622,15 @@ def manage_profiles():
         updated_profile.update(new_profile_data)
 
         if not updated_profile.get('default_ssh_public_key'):
-            updated_profile['default_ssh_public_key'] = DEFAULT_SSH_KEY
+            try:
+                if os.path.exists(DEFAULT_KEY_FILE):
+                    with open(DEFAULT_KEY_FILE, 'r', encoding='utf-8') as f:
+                        key_data = json.load(f)
+                        updated_profile['default_ssh_public_key'] = key_data.get('key', "")
+                else:
+                    updated_profile['default_ssh_public_key'] = ""
+            except (IOError, json.JSONDecodeError):
+                updated_profile['default_ssh_public_key'] = ""
         
         profiles[alias] = updated_profile
         save_profiles(profiles)
@@ -1360,7 +1387,6 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
 
             _db_execute_celery('UPDATE tasks SET status = ?, result = ?, completed_at = ? WHERE id = ?', ('success', db_msg, datetime.datetime.now(timezone.utc).isoformat(), task_id))
             
-            # --- ✨ 修正点: 计算总用时并添加到TG消息中 ✨ ---
             duration_str = "未知"
             try:
                 start_time = datetime.datetime.fromisoformat(status_data['start_time'])
