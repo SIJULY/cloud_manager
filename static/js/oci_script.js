@@ -6,6 +6,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const newProfileAlias = document.getElementById('newProfileAlias');
     const newProfileConfigText = document.getElementById('newProfileConfigText');
     const newProfileSshKey = document.getElementById('newProfileSshKey');
+    // --- ✨ 这里是唯一的修正点：补上了遗漏的按钮获取代码 ✨ ---
+    const useDefaultKeyBtn = document.getElementById('useDefaultKeyBtn');
+    const saveDefaultKeyBtn = document.getElementById('saveDefaultKeyBtn');
     const newProfileKeyFile = document.getElementById('newProfileKeyFile');
     const refreshInstancesBtn = document.getElementById('refreshInstancesBtn');
     const createInstanceBtn = document.getElementById('createInstanceBtn');
@@ -497,7 +500,7 @@ document.addEventListener('DOMContentLoaded', function() {
     async function loadProfiles(page = 1) {
         profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
         try {
-            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=9`);
+            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=10`);
             profileList.innerHTML = '';
             if (response.items.length === 0 && page === 1) {
                 profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
@@ -545,7 +548,6 @@ document.addEventListener('DOMContentLoaded', function() {
         return parts.join('') || '不到1分钟';
     }
     
-    // --- ✨ 新增的辅助函数 ✨ ---
     function formatDuration(startTimeString, endTimeString) {
         if (!startTimeString || !endTimeString) {
             return '未知';
@@ -682,7 +684,10 @@ document.addEventListener('DOMContentLoaded', function() {
         const configText = newProfileConfigText.value.trim();
         const sshKey = newProfileSshKey.value.trim();
         const keyFile = newProfileKeyFile.files[0];
-        if (!alias || !configText || !sshKey || !keyFile) return addLog('所有字段都不能为空', 'error');
+        if (!alias || !configText || !keyFile) {
+            addLog('账号名称, 配置信息和私钥文件都不能为空', 'error');
+            return;
+        }
         
         addLog(`正在添加账号: ${alias}...`);
         const profileData = {};
@@ -769,7 +774,7 @@ document.addEventListener('DOMContentLoaded', function() {
         else if (deleteBtn) {
             const alias = deleteBtn.dataset.alias;
             confirmActionModalLabel.textContent = '确认删除账号';
-            confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗?`;
+            confirmActionModalBody.textContent = `确定要删除账号 "${alias}" 吗？`;
             confirmActionModalTerminateOptions.classList.add('d-none');
             confirmActionModalConfirmBtn.onclick = async () => {
                 confirmActionModal.hide();
@@ -932,21 +937,17 @@ document.addEventListener('DOMContentLoaded', function() {
             completedSnatchTasksList.innerHTML = completed.length === 0
                 ? '<li class="list-group-item text-muted">没有已完成的抢占任务记录。</li>'
                 : completed.map(task => {
-                    // --- ✨ 修正点 START ✨ ---
                     let startTime = null;
                     try {
                         const result_json = JSON.parse(task.result);
                         startTime = result_json.start_time;
                     } catch(e) {
-                        // For successful tasks, the result might be a plain string
-                        // We can try to parse start_time from older task formats if needed in the future
                     }
                     const durationText = formatDuration(startTime, task.completed_at || task.created_at);
                     const timeInfo = `
                         <small class="text-muted d-block">完成于: ${new Date(task.completed_at || task.created_at).toLocaleString()}</small>
                         <small class="text-muted d-block">总用时: ${durationText}</small>
                     `;
-                    // --- ✨ 修正点 END ✨ ---
 
                     return `
                     <li class="list-group-item list-group-item-action" data-task-id="${task.id}">
@@ -1224,8 +1225,53 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // --- Initial Load ---
+    saveDefaultKeyBtn.addEventListener('click', async () => {
+        const key = newProfileSshKey.value.trim();
+        if (!key || !key.startsWith('ssh-rsa')) {
+            addLog('请输入一个有效的 SSH 公钥 (以 ssh-rsa 开头)。', 'error');
+            return;
+        }
+        try {
+            const response = await apiRequest('/oci/api/default-ssh-key', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key })
+            });
+            addLog(response.message, 'success');
+            newProfileSshKey.placeholder = key;
+        } catch (error) {
+        }
+    });
+
+    useDefaultKeyBtn.addEventListener('click', async () => {
+        try {
+            const response = await apiRequest('/oci/api/default-ssh-key');
+            if (response.key) {
+                newProfileSshKey.value = response.key;
+                addLog('已加载全局默认公钥。', 'success');
+            } else {
+                addLog('尚未保存任何全局默认公钥。', 'warning');
+            }
+        } catch (error) {
+        }
+    });
+
+    async function loadAndDisplayDefaultKey() {
+        try {
+            const response = await apiRequest('/oci/api/default-ssh-key');
+            if (response.key) {
+                newProfileSshKey.placeholder = response.key;
+            } else {
+                newProfileSshKey.placeholder = '尚未设置全局默认公钥。可在此处粘贴并保存。';
+            }
+        } catch (error) {
+            newProfileSshKey.placeholder = '加载默认公钥失败。';
+        }
+    }
+
     loadProfiles();
     checkSession();
     loadTgConfig();
     loadCloudflareConfig();
+    loadAndDisplayDefaultKey();
 });
