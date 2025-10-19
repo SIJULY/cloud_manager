@@ -8,7 +8,11 @@ from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateIntern
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
                              LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
                              UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
-                             AddVcnIpv6CidrDetails, UpdateSubnetDetails)
+                             AddVcnIpv6CidrDetails, UpdateSubnetDetails,
+                             # --- ✨ MODIFICATION START ✨ ---
+                             LaunchInstanceAgentConfigDetails, InstanceAgentPluginConfigDetails
+                             # --- ✨ MODIFICATION END ✨ ---
+                             )
 from oci.exceptions import ServiceError
 from app import celery
 
@@ -1306,6 +1310,28 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         user_script = details.get('startup_script', '')
         user_data_encoded = get_user_data(instance_password, user_script)
         
+        # --- ✨ MODIFICATION START ✨ ---
+        # 根据请求，默认禁用 Oracle Cloud Agent 的两个插件
+        # 1. "计算实例监控" (Compute Instance Monitoring)
+        # 2. "自定义日志监控" (Custom Logs Monitoring)
+        
+        # 配置 "自定义日志监控" 插件
+        plugins_config_list = [
+            oci.core.models.InstanceAgentPluginConfigDetails(
+                name="Custom Logs Monitoring",
+                desired_state="DISABLED"
+            )
+        ]
+        
+        # 创建 Agent 配置
+        # is_monitoring_disabled=True 对应于禁用 "计算实例监控"
+        agent_config_details = oci.core.models.LaunchInstanceAgentConfigDetails(
+            is_monitoring_disabled=True,  # 禁用 "计算实例监控"
+            is_management_disabled=False, # 保持 "管理代理" (Management Agent) 为默认设置（图上未勾选）
+            plugins_config=plugins_config_list # 传入 "自定义日志监控" 的禁用配置
+        )
+        # --- ✨ MODIFICATION END ✨ ---
+        
         base_launch_details = {
             "compartment_id": tenancy_ocid,
             "shape": shape, 
@@ -1313,7 +1339,10 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             "create_vnic_details": CreateVnicDetails(subnet_id=subnet_id, assign_public_ip=True),
             "metadata": {"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
             "source_details": InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
-            "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None
+            "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None,
+            # --- ✨ MODIFICATION START ✨ ---
+            "agent_config": agent_config_details
+            # --- ✨ MODIFICATION END ✨ ---
         }
 
     except Exception as e:
