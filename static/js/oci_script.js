@@ -56,6 +56,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
     const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
     const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
+    const openFirewallBtn = document.getElementById('openFirewallBtn');
     const editDisplayName = document.getElementById('editDisplayName');
     const saveDisplayNameBtn = document.getElementById('saveDisplayNameBtn');
     const editFlexInstanceConfig = document.getElementById('editFlexInstanceConfig');
@@ -1179,6 +1180,65 @@ document.addEventListener('DOMContentLoaded', function() {
         if (placeholderRow) placeholderRow.parentElement.remove();
         egressRulesTable.appendChild(createRuleRow('egress'));
     });
+
+    // --- ✨ MODIFICATION START (Bug Fix) ✨ ---
+    openFirewallBtn.addEventListener('click', () => {
+        let ingressAdded = false;
+        let egressAdded = false;
+
+        // 1. 检查并添加入站规则
+        //
+        const currentIngressRules = collectRulesFromTable(ingressRulesTable, 'ingress');
+        const ingressExists = currentIngressRules.some(rule => rule.protocol === 'all' && rule.source === '0.0.0.0/0');
+
+        if (!ingressExists) {
+            const allowAllIngressRule = {
+                source: '0.0.0.0/0',
+                protocol: 'all',
+                is_stateless: false
+            };
+            const ingressPlaceholder = ingressRulesTable.querySelector('td[colspan="6"]');
+            if (ingressPlaceholder) ingressPlaceholder.parentElement.remove();
+            //
+            ingressRulesTable.appendChild(createRuleRow('ingress', allowAllIngressRule));
+            ingressAdded = true;
+        }
+
+        // 2. 检查并添加出站规则
+        //
+        const currentEgressRules = collectRulesFromTable(egressRulesTable, 'egress');
+        const egressExists = currentEgressRules.some(rule => rule.protocol === 'all' && rule.destination === '0.0.0.0/0');
+
+        if (!egressExists) {
+            const allowAllEgressRule = {
+                destination: '0.0.0.0/0',
+                protocol: 'all',
+                is_stateless: false
+            };
+            const egressPlaceholder = egressRulesTable.querySelector('td[colspan="6"]');
+            if (egressPlaceholder) egressPlaceholder.parentElement.remove();
+            //
+            egressRulesTable.appendChild(createRuleRow('egress', allowAllEgressRule));
+            egressAdded = true;
+        }
+
+        // 3. 提示用户
+        if (ingressAdded || egressAdded) {
+            let message = '已添加 "允许所有" 的';
+            if (ingressAdded && egressAdded) {
+                message += '出入站规则';
+            } else if (ingressAdded) {
+                message += '入站规则';
+            } else {
+                message += '出站规则';
+            }
+            message += '，请点击 "保存更改" 以生效。';
+            addLog(message, 'warning'); //
+        } else {
+            addLog('无需操作，允许所有的出入站规则均已存在。', 'info'); //
+        }
+    });
+    // --- ✨ MODIFICATION END ✨ ---
 
     saveNetworkRulesBtn.addEventListener('click', async () => {
         const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
