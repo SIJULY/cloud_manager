@@ -3,6 +3,7 @@
 {% block title %}OCI 实例管理器 (Web版){% endblock %}
 
 {% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
 <style>
     body { padding-bottom: 20px; background-color: #f8f9fa; }
     .table-hover tbody tr { cursor: pointer; }
@@ -12,12 +13,12 @@
     .status-running { background-color: #198754; }
     .status-stopped { background-color: #dc3545; }
     .status-other { background-color: #ffc107; }
-    .action-group { 
-        display: flex; 
-        flex-wrap: wrap; 
-        gap: 0.5rem; 
+    .action-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
     }
-    .action-group .btn { 
+    .action-group .btn {
         flex: 1 1 0;
         min-width: 0;
     }
@@ -37,15 +38,47 @@
     #networkSettingsModal th {
         white-space: nowrap;
     }
-    .profile-list-card-body {
-        min-height: 580px;
+
+    /* --- 这是修改后的规则 --- */
+    /* 让 card-body 自动填充卡片剩余高度，并成为 flex 容器 */
+    .profile-list-card .card-body {
+        flex: 1 1 auto; /* 填充剩余高度 */
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
+        /* 我们保留 card-body 的默认 padding */
+    }
+
+    /* --- 这是新增的规则 --- */
+    /* 让 table-responsive 填充 card-body，并成为新的滚动容器 */
+    .profile-list-card .card-body .table-responsive {
+        
+        /* --- 唯一的改动：从 flex: 1 1 auto; 改为 flex: 1 1 0; --- */
+        flex: 1 1 0; 
+        
+        overflow-y: auto; /* 关键：让这个 div 负责上下滚动 */
+    }
+
+    /* --- 这是修改后的规则 --- */
+    /* 表头现在会 "粘" 在 .table-responsive 的顶部 */
+    .profile-list-card .table thead th {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background-color: #ffffff; 
+        box-shadow: inset 0 -2px 0 #dee2e6; 
+    }
+
+    .drag-handle {
+        cursor: move;
+        cursor: grab;
+        color: #adb5bd;
+    }
+    .drag-handle:active {
+        cursor: grabbing;
     }
     .bg-confirm-add {
-        background-color: #17a2b8 !important; 
-        color: #fff; 
+        background-color: #17a2b8 !important;
+        color: #fff;
     }
     .table-hover tbody tr.profile-disabled {
         opacity: 0.65;
@@ -61,22 +94,14 @@
         display: flex;
         gap: 0.5rem;
     }
-
-    /* --- ✨ 新增：更真实的按钮点击反馈效果 --- */
     .btn {
-        /* 为所有可动画的属性添加平滑过渡效果，让动画更迅速、自然 */
         transition: all 0.08s ease-out;
     }
-
     .btn:active {
-        /* 1. 缩小按钮，产生“向内按压”的感觉 */
         transform: scale(0.98);
-        /* 2. 添加内阴影，增强凹陷效果 */
         box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.15);
-        /* 3. 稍微变暗，模拟光线变化 */
         filter: brightness(0.95);
     }
-    /* --- ✨ 效果结束 ✨ --- */
 </style>
 {% endblock %}
 
@@ -89,59 +114,28 @@
         </div>
     </div>
     <div class="row mb-4">
-        <div class="col-lg-5">
-            <div class="card h-100">
-                <div class="card-header fw-bold">添加 OCI 账户</div>
-                <div class="card-body">
-                    <div class="mb-3">
-                        <label for="newProfileAlias" class="form-label">账号名称 (自定义)</label>
-                        <input type="text" class="form-control" id="newProfileAlias" placeholder="例如: oracle-sg-account1">
-                    </div>
-                    <div class="mb-3">
-                        <label for="newProfileConfigText" class="form-label">配置信息</label>
-                        <textarea class="form-control" id="newProfileConfigText" rows="4" placeholder="user=&#10;fingerprint=&#10;tenancy=&#10;region="></textarea>
-                    </div>
-                    <div class="mb-3">
-                        <label for="newProfileSshKey" class="form-label">默认SSH公钥</label>
-                        <textarea class="form-control" id="newProfileSshKey" rows="3" placeholder="用于登录实例 (ssh-rsa ...)"></textarea>
-                        <div class="d-flex justify-content-between gap-2 mt-2">
-                            <button class="btn btn-sm btn-outline-info" id="useDefaultKeyBtn" type="button">
-                                <i class="bi bi-box-arrow-in-down"></i> 使用默认
-                            </button>
-                            <button class="btn btn-sm btn-info" id="saveDefaultKeyBtn" type="button">
-                                <i class="bi bi-save"></i> 保存为默认
-                            </button>
-                        </div>
-                        <div class="form-text">您可以将常用公钥保存为全局默认值，或在此处粘贴一个临时的公钥。</div>
-                    </div>
-                    <div class="mb-3">
-                        <label for="newProfileKeyFile" class="form-label">上传 PEM 私钥文件</label>
-                        <input class="form-control" type="file" id="newProfileKeyFile" accept=".pem">
-                    </div>
-                    <div class="d-grid">
-                        <button class="btn btn-info" id="addNewProfileBtn">确认添加</button>
-                    </div>
-                    <small class="text-muted d-block mt-2">提示：如果上方公钥留空，将自动使用已保存的全局默认公钥。</small>
+        <div class="col-12">
+            <div class="card d-flex flex-column profile-list-card" style="height: 360px;">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <span class="fw-bold">账户列表</span>
+                    <button id="showAddAccountModalBtn" class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#addAccountModal">
+                        <i class="bi bi-plus-circle"></i> 添加账户
+                    </button>
                 </div>
-            </div>
-        </div>
-        <div class="col-lg-7">
-            <div class="card h-100">
-                <div class="card-header fw-bold">账户列表</div>
-                <div class="card-body profile-list-card-body">
+                <div class="card-body">
                     <div class="table-responsive">
                         <table class="table table-hover">
                             <thead>
                                 <tr>
-                                    <th class="text-end" style="padding-right: 320px;">选择账户</th>
-                                    <th class="text-end" style="padding-right: 100px;">操作</th>
+                                    <th style="width: 40px;"></th>
+                                    <th style="padding-left: 20px;">选择账户</th>
+                                    <th class="text-end" style="width: 230px; padding-right: 95px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="profileList">
-                            </tbody>
+                                </tbody>
                         </table>
                     </div>
-                    <div id="profilePagination" class="d-flex justify-content-end mt-2"></div>
                 </div>
             </div>
         </div>
@@ -160,7 +154,7 @@
                     <i class="bi bi-list-task"></i> 查看抢占任务
                 </button>
                 <button id="networkSettingsBtn" class="btn btn-info profile-action-btn" disabled data-bs-toggle="modal" data-bs-target="#networkSettingsModal">
-                    <i class="bi bi-shield-gear"></i> 网络设置
+                    <i class="bi bi-diagram-3"></i> 网络设置
                 </button>
                 <button id="cloudflareSettingsBtn" class="btn btn-info profile-action-btn" data-bs-toggle="modal" data-bs-target="#cloudflareSettingsModal">
                     <i class="bi bi-cloud-fill"></i> Cloudflare 设置
@@ -219,6 +213,52 @@
                 <div class="card-body p-2">
                     <div id="logOutput" class="form-control" style="height: 200px; overflow-y: auto;"></div>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="addAccountModal" tabindex="-1" aria-labelledby="addAccountModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="addAccountModalLabel">添加 OCI 账户</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="newProfileAlias" class="form-label">账号名称 (自定义)</label>
+                    <input type="text" class="form-control" id="newProfileAlias" placeholder="例如: oracle-sg-account1">
+                </div>
+                <div class="mb-3">
+                    <label for="newProfileConfigText" class="form-label">配置信息</label>
+                    <textarea class="form-control" id="newProfileConfigText" rows="4" placeholder="user=&#10;fingerprint=&#10;tenancy=&#10;region="></textarea>
+                </div>
+                <div class="mb-3">
+                    <label for="newProfileKeyFile" class="form-label">上传 PEM 私钥文件</label>
+                    <input class="form-control" type="file" id="newProfileKeyFile" accept=".pem">
+                </div>
+                <div class="mb-3">
+                    <label for="accountSshKeyFile" class="form-label">上传SSH公钥文件 (.pub)</label>
+                    <input class="form-control" type="file" id="accountSshKeyFile" accept=".pub">
+                    <small class="text-muted d-block mt-1">提示：如果公钥留空，将自动使用已保存的全局默认公钥。</small>
+                </div>
+                
+                <div class="p-3 mt-4" style="background-color: #f8f9fa; border-radius: .25rem;">
+                    <h6 class="mb-2">全局默认SSH公钥管理</h6>
+                    <div id="defaultSshKeyStatusText" class="form-text mb-2" style="height: 1.2rem;">
+                        </div>
+                    <div class="input-group">
+                        <input class="form-control" type="file" id="globalSshKeyFile" accept=".pub" placeholder="选择一个新的 .pub 公钥文件">
+                        <button class="btn btn-outline-info" type="button" id="saveGlobalSshKeyBtn">
+                            <i class="bi bi-save"></i> <span id="saveGlobalSshKeyBtnText">更新/保存</span>
+                        </button>
+                    </div>
+                </div>
+                </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-primary" id="addNewProfileBtnModal">确认添加</button>
             </div>
         </div>
     </div>
@@ -465,13 +505,19 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
+                
                 <div class="alert alert-info d-flex align-items-center">
                     <i class="bi bi-info-circle flex-shrink-0 me-2"></i>
-                    <div>
-                        管理与默认子网关联的第一个安全列表的规则。当前VCN: <strong id="currentVcnName">加载中...</strong> | 安全列表: <strong id="currentSlName">加载中...</strong>
+                    <div class="d-flex align-items-center w-100">
+                        <span class="me-2" style="white-space: nowrap;">VCN:</span>
+                        <select id="vcnSelect" class="form-select form-select-sm me-3" style="width: auto; min-width: 200px;"></select>
+                        <span class="me-2" style="white-space: nowrap;">安全列表:</span>
+                        <select id="securityListSelect" class="form-select form-select-sm" style="width: auto; min-width: 200px;"></select>
+                        <div id="networkRulesSpinner" class="spinner-border spinner-border-sm ms-3 d-none" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
                     </div>
                 </div>
-                
                 <ul class="nav nav-tabs" id="pills-tab" role="tablist">
                     <li class="nav-item" role="presentation">
                         <button class="nav-link active" id="pills-ingress-tab" data-bs-toggle="pill" data-bs-target="#pills-ingress" type="button" role="tab">入站规则</button>
