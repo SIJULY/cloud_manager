@@ -74,20 +74,44 @@ def require_api_key(f):
 def status():
     return jsonify({"status": "ok", "message": "Cloud Manager OCI API is running"})
 
+# --- ✨ 关键修复点在这里 ✨ ---
 @api_bp.route('/profiles', methods=['GET'])
 @require_api_key
 def get_profiles():
+    """
+    获取OCI账户列表。
+    这个接口现在会解析新的 profiles.json 结构，
+    并返回一个按照用户自定义顺序（或字母顺序）排列的账户名列表。
+    """
     try:
-        profiles = load_profiles()
-        return jsonify(sorted(list(profiles.keys()), key=lambda name: name.lower()))
+        # 1. 加载包含排序信息的完整数据
+        all_data = load_profiles()
+        profiles_dict = all_data.get("profiles", {})
+        profile_order = all_data.get("profile_order", [])
+
+        # 2. 确保返回的列表是完整且有序的
+        #    - 先按用户自定义的顺序排列
+        #    - 再把可能遗漏的（新添加的）账户按字母顺序追加到末尾
+        ordered_profiles = [p for p in profile_order if p in profiles_dict]
+        missing_profiles = sorted(
+            [p for p in profiles_dict if p not in ordered_profiles],
+            key=lambda name: name.lower()
+        )
+        
+        final_order = ordered_profiles + missing_profiles
+        
+        # 3. 返回TGBot期望的、纯净的账户名列表
+        return jsonify(final_order)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+# --- ✨ 修复结束 ✨ ---
 
 @api_bp.route('/<string:alias>/instances', methods=['GET'])
 @require_api_key
 def get_instances_for_alias(alias):
-    profiles = load_profiles()
-    profile_config = profiles.get(alias)
+    # ✨ 逻辑调整：从新的数据结构中获取账户配置
+    all_data = load_profiles()
+    profile_config = all_data.get("profiles", {}).get(alias)
     if not profile_config:
         return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
 
@@ -137,8 +161,10 @@ def instance_action_for_alias(alias):
     action, instance_id = data.get('action'), data.get('instance_id')
     if not all([action, instance_id]):
         return jsonify({"error": "Missing required parameters: action, instance_id"}), 400
-    profiles = load_profiles()
-    profile_config = profiles.get(alias)
+    
+    # ✨ 逻辑调整：从新的数据结构中获取账户配置
+    all_data = load_profiles()
+    profile_config = all_data.get("profiles", {}).get(alias)
     if not profile_config:
         return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
         
@@ -148,10 +174,7 @@ def instance_action_for_alias(alias):
     config_with_alias = profile_config.copy()
     config_with_alias['alias'] = alias
     
-    # --- ✨ MODIFICATION START ✨ ---
-    # 添加来源标签
     data['_source'] = 'bot'
-    # --- ✨ MODIFICATION END ✨ ---
     _instance_action_task.delay(task_id, config_with_alias, action, instance_id, data)
 
     return jsonify({"success": True, "message": f"Action '{action}' for instance '{instance_id}' has been queued.", "task_id": task_id}), 202
@@ -160,8 +183,10 @@ def instance_action_for_alias(alias):
 @require_api_key
 def snatch_instance_for_alias(alias):
     data = request.json
-    profiles = load_profiles()
-    profile_config = profiles.get(alias)
+    
+    # ✨ 逻辑调整：从新的数据结构中获取账户配置
+    all_data = load_profiles()
+    profile_config = all_data.get("profiles", {}).get(alias)
     if not profile_config:
         return jsonify({"error": f"Profile with alias '{alias}' not found"}), 404
         
@@ -171,10 +196,7 @@ def snatch_instance_for_alias(alias):
     run_id = str(uuid.uuid4())
     auto_bind_domain = data.get('auto_bind_domain', False)
     
-    # --- ✨ MODIFICATION START ✨ ---
-    # 添加来源标签
     data['_source'] = 'bot'
-    # --- ✨ MODIFICATION END ✨ ---
     _snatch_instance_task.delay(task_id, profile_config, alias, data, run_id, auto_bind_domain)
 
     return jsonify({"success": True, "message": "抢占实例任务已提交...", "task_id": task_id}), 202
