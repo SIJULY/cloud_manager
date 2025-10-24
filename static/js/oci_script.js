@@ -2,14 +2,17 @@ document.addEventListener('DOMContentLoaded', function() {
     // --- 1. DOM 元素获取 ---
     const profileList = document.getElementById('profileList');
     const currentProfileStatus = document.getElementById('currentProfileStatus');
-    const addNewProfileBtn = document.getElementById('addNewProfileBtn');
+    
+    const addAccountModal = new bootstrap.Modal(document.getElementById('addAccountModal'));
+    // === MODIFICATION START: Add listener for when the modal is shown ===
+    document.getElementById('addAccountModal').addEventListener('shown.bs.modal', loadAndDisplayDefaultKey);
+    // === MODIFICATION END ===
+    
+    const addNewProfileBtnModal = document.getElementById('addNewProfileBtnModal');
     const newProfileAlias = document.getElementById('newProfileAlias');
     const newProfileConfigText = document.getElementById('newProfileConfigText');
-    const newProfileSshKey = document.getElementById('newProfileSshKey');
-    // --- ✨ 这里是唯一的修正点：补上了遗漏的按钮获取代码 ✨ ---
-    const useDefaultKeyBtn = document.getElementById('useDefaultKeyBtn');
-    const saveDefaultKeyBtn = document.getElementById('saveDefaultKeyBtn');
     const newProfileKeyFile = document.getElementById('newProfileKeyFile');
+
     const refreshInstancesBtn = document.getElementById('refreshInstancesBtn');
     const createInstanceBtn = document.getElementById('createInstanceBtn');
     const networkSettingsBtn = document.getElementById('networkSettingsBtn');
@@ -53,6 +56,12 @@ document.addEventListener('DOMContentLoaded', function() {
     const actionAreaProfile = document.getElementById('actionAreaProfile');
     const ingressRulesTable = document.getElementById('ingressRulesTable');
     const egressRulesTable = document.getElementById('egressRulesTable');
+    // --- ✨ MODIFICATION START ✨ ---
+    // 添加新的 VCN 和安全列表下拉菜单的引用
+    const vcnSelect = document.getElementById('vcnSelect');
+    const securityListSelect = document.getElementById('securityListSelect');
+    const networkRulesSpinner = document.getElementById('networkRulesSpinner');
+    // --- ✨ MODIFICATION END ✨ ---
     const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
     const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
     const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
@@ -498,24 +507,24 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    async function loadProfiles(page = 1) {
-        profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">正在加载...</td></tr>`;
+    async function loadProfiles() {
+        profileList.innerHTML = `<tr><td colspan="3" class="text-center text-muted">正在加载...</td></tr>`;
         try {
-            const response = await apiRequest(`/oci/api/profiles?page=${page}&per_page=10`);
+            const profileNames = await apiRequest(`/oci/api/profiles`);
             profileList.innerHTML = '';
-            if (response.items.length === 0 && page === 1) {
-                profileList.innerHTML = `<tr><td colspan="2" class="text-center text-muted">未找到账号，请在左侧添加</td></tr>`;
+            if (profileNames.length === 0) {
+                profileList.innerHTML = `<tr><td colspan="3" class="text-center text-muted">未找到账号，请点击右上角添加</td></tr>`;
             } else {
-                response.items.forEach(name => {
+                profileNames.forEach(name => {
                     const tr = document.createElement('tr');
                     tr.dataset.alias = name;
+                    // --- ✨ 样式修复：为按钮添加固定宽度和居中样式 ✨ ---
                     tr.innerHTML = `
-                        <td>
-                            <a href="#" class="btn btn-info btn-sm connect-link-btn" data-alias="${name}" style="min-width: 8em;" onclick="event.preventDefault();">
-                                ${name}
-                            </a>
+                        <td class="drag-handle text-center align-middle"><i class="bi bi-grip-vertical"></i></td>
+                        <td class="align-middle">
+                            <a href="#" class="btn btn-info btn-sm connect-btn" data-alias="${name}" onclick="event.preventDefault();" style="width: 8em; text-align: center;">${name}</a>
                         </td>
-                        <td class="text-end action-buttons" style="min-width: 295px;">
+                        <td class="text-end action-buttons align-middle">
                             <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
                             <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
                             <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
@@ -524,11 +533,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     profileList.appendChild(tr);
                 });
             }
-            renderPagination(response.page, response.total_pages);
             checkSession(false); 
         } catch (error) {
-            profileList.innerHTML = `<tr><td colspan="2" class="text-center text-danger">加载账号列表失败</td></tr>`;
-            renderPagination(0, 0);
+            profileList.innerHTML = `<tr><td colspan="3" class="text-center text-danger">加载账号列表失败</td></tr>`;
         }
     }
     
@@ -657,34 +664,30 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         } catch (error) {}
     });
-
-    function renderPagination(currentPage, totalPages) {
-        const paginationContainer = document.getElementById('profilePagination');
-        paginationContainer.innerHTML = '';
-        if (totalPages <= 1) return;
-        
-        let paginationHtml = '<nav><ul class="pagination pagination-sm">';
-        paginationHtml += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${currentPage - 1}">&laquo;</a></li>`;
-        for (let i = 1; i <= totalPages; i++) {
-            paginationHtml += `<li class="page-item ${i === currentPage ? 'active' : ''}"><a class="page-link" href="#" data-page="${i}">${i}</a></li>`;
-        }
-        paginationHtml += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}"><a class="page-link" href="#" data-page="${currentPage + 1}">&raquo;</a></li>`;
-        paginationHtml += '</ul></nav>';
-        paginationContainer.innerHTML = paginationHtml;
+    
+    async function saveProfile(alias, profileData) {
+        try {
+            await apiRequest('/oci/api/profiles', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' }, 
+                body: JSON.stringify({ alias, profile_data: profileData }) 
+            });
+            addLog(`账号 ${alias} 添加成功!`, 'success');
+            [newProfileAlias, newProfileConfigText].forEach(el => el.value = '');
+            newProfileKeyFile.value = '';
+            document.getElementById('accountSshKeyFile').value = ''; // Clear file inputs
+            addAccountModal.hide();
+            loadProfiles();
+        } catch (error) {}
     }
 
-    document.getElementById('profilePagination').addEventListener('click', function(e) {
-        e.preventDefault();
-        if (e.target.tagName === 'A' && e.target.dataset.page) {
-            loadProfiles(parseInt(e.target.dataset.page, 10));
-        }
-    });
-    
-    addNewProfileBtn.addEventListener('click', () => {
+    addNewProfileBtnModal.addEventListener('click', () => {
         const alias = newProfileAlias.value.trim();
         const configText = newProfileConfigText.value.trim();
-        const sshKey = newProfileSshKey.value.trim();
-        const keyFile = newProfileKeyFile.files[0];
+        // === MODIFICATION: Read from the correct ID ===
+        const sshKeyFile = document.getElementById('accountSshKeyFile').files[0]; // Get the pubkey file
+        const keyFile = newProfileKeyFile.files[0]; // Get the private key file
+
         if (!alias || !configText || !keyFile) {
             addLog('账号名称, 配置信息和私钥文件都不能为空', 'error');
             return;
@@ -696,28 +699,47 @@ document.addEventListener('DOMContentLoaded', function() {
             const parts = line.split('=').map(p => p.trim());
             if (parts.length === 2) profileData[parts[0]] = parts[1];
         });
-        profileData['default_ssh_public_key'] = sshKey;
         
-        const reader = new FileReader();
-        reader.onload = async (event) => {
+        const privateKeyReader = new FileReader();
+        privateKeyReader.onload = (event) => {
             profileData['key_content'] = event.target.result;
-            try {
-                await apiRequest('/oci/api/profiles', { 
-                    method: 'POST', 
-                    headers: { 'Content-Type': 'application/json' }, 
-                    body: JSON.stringify({ alias, profile_data: profileData }) 
+            
+            // Now check for the public key
+            if (sshKeyFile) {
+                // If user uploaded a specific SSH key, read it
+                addLog('正在读取上传的 SSH 公钥...', 'info');
+                const publicKeyReader = new FileReader();
+                publicKeyReader.onload = (e) => {
+                    profileData['default_ssh_public_key'] = e.target.result;
+                    saveProfile(alias, profileData); // Save with specific pubkey
+                };
+                publicKeyReader.onerror = () => addLog('读取公钥文件失败！', 'error');
+                publicKeyReader.readAsText(sshKeyFile);
+            } else {
+                // No specific key uploaded, fetch global default
+                addLog('未上传SSH公钥，正在尝试使用全局默认公钥...', 'info');
+                apiRequest('/oci/api/default-ssh-key').then(response => {
+                    if (response.key) {
+                        addLog('已应用全局默认公钥。', 'success');
+                        profileData['default_ssh_public_key'] = response.key;
+                    } else {
+                        addLog('未找到全局默认公钥，此账号将不含公钥。', 'warning');
+                        profileData['default_ssh_public_key'] = '';
+                    }
+                    saveProfile(alias, profileData); // Save with global pubkey (or empty)
+                }).catch(error => {
+                    addLog('获取全局公钥失败，将保存为空。', 'error');
+                    profileData['default_ssh_public_key'] = '';
+                    saveProfile(alias, profileData);
                 });
-                addLog(`账号 ${alias} 添加成功!`, 'success');
-                [newProfileAlias, newProfileConfigText, newProfileSshKey].forEach(el => el.value = '');
-                newProfileKeyFile.value = '';
-                loadProfiles(1);
-            } catch (error) {}
+            }
         };
-        reader.readAsText(keyFile);
+        privateKeyReader.onerror = () => addLog('读取私钥文件失败！', 'error');
+        privateKeyReader.readAsText(keyFile);
     });
 
     profileList.addEventListener('click', async (e) => {
-        const connectBtn = e.target.closest('.connect-link-btn');
+        const connectBtn = e.target.closest('.connect-btn');
         const proxyBtn = e.target.closest('.proxy-btn');
         const editBtn = e.target.closest('.edit-btn');
         const deleteBtn = e.target.closest('.delete-btn');
@@ -727,16 +749,14 @@ document.addEventListener('DOMContentLoaded', function() {
             const row = connectBtn.closest('tr');
     
             if (row.classList.contains('profile-disabled')) {
-                addLog(`账号 ${alias} 已连接或正在连接中，请稍候。`, 'warning');
+                addLog(`账号 ${alias} 已连接，无需重复操作。`, 'warning');
                 return;
             }
     
             addLog(`正在连接到 ${alias}...`);
             
             document.querySelectorAll('#profileList tr').forEach(otherRow => {
-                if (otherRow.dataset.alias !== alias) {
-                    otherRow.classList.add('profile-disabled');
-                }
+                otherRow.classList.add('profile-disabled');
             });
     
             try {
@@ -766,7 +786,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('editProfileOriginalAlias').value = alias;
                 document.getElementById('editProfileAlias').value = alias;
                 const { default_ssh_public_key, key_content, proxy, ...configParts } = profileData;
-                document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k}=${v || ''}`).join('\n');
+                document.getElementById('editProfileConfigText').value = Object.entries(configParts).map(([k, v]) => `${k || ''}=${v || ''}`).join('\n');
                 document.getElementById('editProfileSshKey').value = default_ssh_public_key || '';
                 document.getElementById('editProfileKeyFile').value = '';
                 editProfileModal.show();
@@ -783,7 +803,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     addLog(`正在删除账号: ${alias}...`);
                     await apiRequest(`/oci/api/profiles/${alias}`, { method: 'DELETE' });
                     addLog('删除成功!', 'success');
-                    loadProfiles(1);
+                    loadProfiles();
                 } catch (error) {}
             };
             confirmActionModal.show();
@@ -820,7 +840,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 });
                 addLog(`账号 ${newAlias} 保存成功!`, 'success');
                 editProfileModal.hide();
-                loadProfiles(1);
+                loadProfiles();
             };
 
             if (keyFile) {
@@ -938,13 +958,11 @@ document.addEventListener('DOMContentLoaded', function() {
             completedSnatchTasksList.innerHTML = completed.length === 0
                 ? '<li class="list-group-item text-muted">没有已完成的抢占任务记录。</li>'
                 : completed.map(task => {
-                    let startTime = null;
-                    try {
-                        const result_json = JSON.parse(task.result);
-                        startTime = result_json.start_time;
-                    } catch(e) {
-                    }
+                    // --- ✨ 修复开始 ✨ ---
+                    // 直接使用 task.created_at 作为开始时间
+                    const startTime = task.created_at; 
                     const durationText = formatDuration(startTime, task.completed_at || task.created_at);
+                    // --- ✨ 修复结束 ✨ ---
                     const timeInfo = `
                         <small class="text-muted d-block">完成于: ${new Date(task.completed_at || task.created_at).toLocaleString()}</small>
                         <small class="text-muted d-block">总用时: ${durationText}</small>
@@ -1128,20 +1146,102 @@ document.addEventListener('DOMContentLoaded', function() {
     saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
     saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
     
-    networkSettingsBtn.addEventListener('click', async () => {
+    // --- ✨ MODIFICATION START ✨ ---
+    // 缓存网络资源
+    let allNetworkResources = [];
+
+    // 新增: 辅助函数，用于加载特定安全列表的规则
+    async function loadSecurityListRules(securityListId) {
+        if (!securityListId) {
+            renderRules('ingress', []);
+            renderRules('egress', []);
+            return;
+        }
+        
+        networkRulesSpinner.classList.remove('d-none');
+        saveNetworkRulesBtn.disabled = true;
         try {
-            addLog("正在获取网络安全规则...");
-            const data = await apiRequest('/oci/api/network/security-list');
-            currentSecurityList = data.security_list;
-            document.getElementById('currentVcnName').textContent = data.vcn_name || 'N/A';
-            document.getElementById('currentSlName').textContent = currentSecurityList.display_name || 'N/A';
-            renderRules('ingress', currentSecurityList.ingress_security_rules);
-            renderRules('egress', currentSecurityList.egress_security_rules);
+            // 3. 调用新的详情API
+            const slDetails = await apiRequest(`/oci/api/network/security-list/${securityListId}`);
+            currentSecurityList = slDetails; // 存储完整的详情，保存时需要用到ID
+            renderRules('ingress', slDetails.ingress_security_rules);
+            renderRules('egress', slDetails.egress_security_rules);
         } catch (error) {
-            document.getElementById('currentVcnName').textContent = '获取失败';
-            document.getElementById('currentSlName').textContent = '获取失败';
+            addLog(`加载安全列表 ${securityListId} 规则失败`, 'error');
+            renderRules('ingress', []);
+            renderRules('egress', []);
+        } finally {
+            networkRulesSpinner.classList.add('d-none');
+            saveNetworkRulesBtn.disabled = false;
+        }
+    }
+
+    // 新增: VCN 下拉菜单的 'change' 事件监听
+    vcnSelect.addEventListener('change', () => {
+        const selectedVcnId = vcnSelect.value;
+        const vcnData = allNetworkResources.find(v => v.vcn_id === selectedVcnId);
+        
+        securityListSelect.innerHTML = ''; // 清空安全列表下拉
+        if (vcnData && vcnData.security_lists.length > 0) {
+            vcnData.security_lists.forEach(sl => {
+                const option = new Option(sl.display_name, sl.id);
+                securityListSelect.add(option);
+            });
+            securityListSelect.disabled = false;
+            // 自动触发 'change' 以加载第一个安全列表的规则
+            securityListSelect.dispatchEvent(new Event('change')); 
+        } else {
+            securityListSelect.innerHTML = '<option value="">无安全列表</option>';
+            securityListSelect.disabled = true;
+            loadSecurityListRules(null); // 清空规则
         }
     });
+    
+    // 新增: 安全列表下拉菜单的 'change' 事件监听
+    securityListSelect.addEventListener('change', () => {
+        const selectedSlId = securityListSelect.value;
+        loadSecurityListRules(selectedSlId);
+    });
+
+    // 替换 'networkSettingsBtn' 的 'click' 事件监听
+    networkSettingsBtn.addEventListener('click', async () => {
+        // 1. 打开模态框时，重置UI
+        vcnSelect.innerHTML = '<option value="">正在加载 VCN...</option>';
+        securityListSelect.innerHTML = '<option value="">请先选择VCN</option>';
+        vcnSelect.disabled = true;
+        securityListSelect.disabled = true;
+        renderRules('ingress', []);
+        renderRules('egress', []);
+        networkRulesSpinner.classList.remove('d-none');
+        
+        try {
+            addLog("正在获取所有网络资源...");
+            // 2. 调用新的资源API
+            allNetworkResources = await apiRequest('/oci/api/network/resources');
+            networkRulesSpinner.classList.add('d-none');
+            
+            if (allNetworkResources.length === 0) {
+                vcnSelect.innerHTML = '<option value="">未找到VCN</option>';
+                return;
+            }
+
+            vcnSelect.innerHTML = ''; // 清空 "loading"
+            allNetworkResources.forEach(vcn => {
+                const option = new Option(vcn.vcn_name, vcn.vcn_id);
+                vcnSelect.add(option);
+            });
+            vcnSelect.disabled = false;
+            
+            // 自动触发 'change' 来填充第一个VCN的安全列表
+            vcnSelect.dispatchEvent(new Event('change'));
+
+        } catch (error) {
+            networkRulesSpinner.classList.add('d-none');
+            vcnSelect.innerHTML = '<option value="">加载失败</option>';
+            addLog('获取网络资源列表失败。', 'error');
+        }
+    });
+    // --- ✨ MODIFICATION END ✨ ---
 
     function renderRules(type, rules) {
         const tableBody = type === 'ingress' ? ingressRulesTable : egressRulesTable;
@@ -1181,13 +1281,10 @@ document.addEventListener('DOMContentLoaded', function() {
         egressRulesTable.appendChild(createRuleRow('egress'));
     });
 
-    // --- ✨ MODIFICATION START (Bug Fix) ✨ ---
     openFirewallBtn.addEventListener('click', () => {
         let ingressAdded = false;
         let egressAdded = false;
 
-        // 1. 检查并添加入站规则
-        //
         const currentIngressRules = collectRulesFromTable(ingressRulesTable, 'ingress');
         const ingressExists = currentIngressRules.some(rule => rule.protocol === 'all' && rule.source === '0.0.0.0/0');
 
@@ -1199,13 +1296,10 @@ document.addEventListener('DOMContentLoaded', function() {
             };
             const ingressPlaceholder = ingressRulesTable.querySelector('td[colspan="6"]');
             if (ingressPlaceholder) ingressPlaceholder.parentElement.remove();
-            //
             ingressRulesTable.appendChild(createRuleRow('ingress', allowAllIngressRule));
             ingressAdded = true;
         }
 
-        // 2. 检查并添加出站规则
-        //
         const currentEgressRules = collectRulesFromTable(egressRulesTable, 'egress');
         const egressExists = currentEgressRules.some(rule => rule.protocol === 'all' && rule.destination === '0.0.0.0/0');
 
@@ -1217,12 +1311,10 @@ document.addEventListener('DOMContentLoaded', function() {
             };
             const egressPlaceholder = egressRulesTable.querySelector('td[colspan="6"]');
             if (egressPlaceholder) egressPlaceholder.parentElement.remove();
-            //
             egressRulesTable.appendChild(createRuleRow('egress', allowAllEgressRule));
             egressAdded = true;
         }
 
-        // 3. 提示用户
         if (ingressAdded || egressAdded) {
             let message = '已添加 "允许所有" 的';
             if (ingressAdded && egressAdded) {
@@ -1233,12 +1325,11 @@ document.addEventListener('DOMContentLoaded', function() {
                 message += '出站规则';
             }
             message += '，请点击 "保存更改" 以生效。';
-            addLog(message, 'warning'); //
+            addLog(message, 'warning');
         } else {
-            addLog('无需操作，允许所有的出入站规则均已存在。', 'info'); //
+            addLog('无需操作，允许所有的出入站规则均已存在。', 'info');
         }
     });
-    // --- ✨ MODIFICATION END ✨ ---
 
     saveNetworkRulesBtn.addEventListener('click', async () => {
         const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
@@ -1285,53 +1376,98 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // --- Initial Load ---
-    saveDefaultKeyBtn.addEventListener('click', async () => {
-        const key = newProfileSshKey.value.trim();
-        if (!key || !key.startsWith('ssh-rsa')) {
-            addLog('请输入一个有效的 SSH 公钥 (以 ssh-rsa 开头)。', 'error');
+    
+    // === MODIFICATION START: New function to save the global key ===
+    async function saveGlobalSshKey() {
+        // === MODIFICATION: Read from the correct ID ===
+        const sshKeyFile = document.getElementById('globalSshKeyFile').files[0];
+        if (!sshKeyFile) {
+            addLog('请先在“全局默认SSH公钥管理”区域选择一个 .pub 文件。', 'error');
             return;
         }
-        try {
-            const response = await apiRequest('/oci/api/default-ssh-key', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ key: key })
-            });
-            addLog(response.message, 'success');
-            newProfileSshKey.placeholder = key;
-        } catch (error) {
-        }
-    });
 
-    useDefaultKeyBtn.addEventListener('click', async () => {
-        try {
-            const response = await apiRequest('/oci/api/default-ssh-key');
-            if (response.key) {
-                newProfileSshKey.value = response.key;
-                addLog('已加载全局默认公钥。', 'success');
-            } else {
-                addLog('尚未保存任何全局默认公钥。', 'warning');
+        addLog('正在读取公钥文件以保存为全局默认...', 'info');
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const key = event.target.result.trim();
+            if (!key || !(key.startsWith('ssh-rsa') || key.startsWith('ssh-ed25519') || key.startsWith('ecdsa-sha2-nistp'))) {
+                addLog('无效的 SSH 公钥文件。请确保这是一个有效的公钥文件。', 'error');
+                return;
             }
-        } catch (error) {
-        }
-    });
 
+            try {
+                const response = await apiRequest('/oci/api/default-ssh-key', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ key: key })
+                });
+                addLog(response.message, 'success');
+                // Refresh the status display
+                loadAndDisplayDefaultKey();
+                // Clear the file input
+                document.getElementById('globalSshKeyFile').value = '';
+            } catch (error) {
+                // apiRequest already logs the error
+            }
+        };
+        reader.onerror = () => {
+            addLog('读取公钥文件失败！', 'error');
+        };
+        reader.readAsText(sshKeyFile);
+    }
+    // === MODIFICATION END ===
+
+
+    // === MODIFICATION START: Updated loadAndDisplayDefaultKey function ===
     async function loadAndDisplayDefaultKey() {
+        const statusEl = document.getElementById('defaultSshKeyStatusText');
+        const buttonTextEl = document.getElementById('saveGlobalSshKeyBtnText');
+        if (!statusEl || !buttonTextEl) return;
+        
+        statusEl.innerHTML = '<div class="spinner-border spinner-border-sm" role="status" style="width: 0.8rem; height: 0.8rem;"><span class="visually-hidden">Loading...</span></div> 正在检查...';
+        
         try {
             const response = await apiRequest('/oci/api/default-ssh-key');
             if (response.key) {
-                newProfileSshKey.placeholder = response.key;
+                statusEl.innerHTML = '<strong class="text-success">✓ 已设置全局SSH公钥</strong>';
+                buttonTextEl.textContent = '更新';
             } else {
-                newProfileSshKey.placeholder = '尚未设置全局默认公钥。可在此处粘贴并保存。';
+                statusEl.innerHTML = '<strong class="text-warning">! 未设置全局SSH公钥</strong>';
+                buttonTextEl.textContent = '保存';
             }
         } catch (error) {
-            newProfileSshKey.placeholder = '加载默认公钥失败。';
+            statusEl.innerHTML = '<strong class="text-danger">加载默认公钥状态失败。</strong>';
         }
     }
+    // === MODIFICATION END ===
+
+    // === MODIFICATION START: Attach listener for the global key button ===
+    document.getElementById('saveGlobalSshKeyBtn').addEventListener('click', saveGlobalSshKey);
+    // === MODIFICATION END ===
+
+    new Sortable(profileList, {
+        handle: '.drag-handle',
+        animation: 150,
+        onEnd: async function (evt) {
+            const newOrder = Array.from(profileList.querySelectorAll('tr')).map(row => row.dataset.alias);
+            
+            try {
+                await apiRequest('/oci/api/profiles/order', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ order: newOrder })
+                });
+                addLog('账号顺序已保存。', 'success');
+            } catch (error) {
+                addLog('保存账号顺序失败，将自动刷新列表。', 'error');
+                loadProfiles();
+            }
+        },
+    });
 
     loadProfiles();
     checkSession();
     loadTgConfig();
     loadCloudflareConfig();
-    loadAndDisplayDefaultKey();
+    // loadAndDisplayDefaultKey(); // This is now called when the modal opens
 });
