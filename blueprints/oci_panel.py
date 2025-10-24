@@ -145,15 +145,20 @@ def _format_timedelta(duration: timedelta) -> str:
     return "".join(parts) if parts else "不到1分钟"
 
 def load_profiles():
-    if not os.path.exists(KEYS_FILE): return {}
+    if not os.path.exists(KEYS_FILE): return {"profiles": {}, "profile_order": []}
     try:
         with open(KEYS_FILE, 'r', encoding='utf-8') as f:
             content = f.read()
-            return json.loads(content) if content else {}
-    except (IOError, json.JSONDecodeError): return {}
+            data = json.loads(content) if content else {"profiles": {}, "profile_order": []}
+            if "profiles" not in data:
+                data = {"profiles": data, "profile_order": list(data.keys())}
+            if "profile_order" not in data:
+                data["profile_order"] = list(data["profiles"].keys())
+            return data
+    except (IOError, json.JSONDecodeError): return {"profiles": {}, "profile_order": []}
 
-def save_profiles(profiles):
-    with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(profiles, f, indent=4, ensure_ascii=False)
+def save_profiles(data):
+    with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
 
 def load_tg_config():
     if not os.path.exists(TG_CONFIG_FILE): return {}
@@ -307,7 +312,8 @@ def get_oci_clients(profile_config, validate=True):
             os.remove(key_file_path)
 
 def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
-    profiles = load_profiles()
+    all_data = load_profiles()
+    profiles = all_data.get("profiles", {})
     profile_config = profiles.get(alias, {})
     subnet_id = profile_config.get('default_subnet_ocid')
     if subnet_id:
@@ -324,8 +330,8 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
             subnets = vnet_client.list_subnets(compartment_id=tenancy_ocid, vcn_id=default_vcn.id).data
             if subnets:
                 default_subnet = subnets[0]
-                profiles[alias]['default_subnet_ocid'] = default_subnet.id
-                save_profiles(profiles)
+                all_data["profiles"][alias]['default_subnet_ocid'] = default_subnet.id
+                save_profiles(all_data)
                 return default_subnet.id
     except Exception as e:
         logging.error(f"An error occurred during auto-discovery: {e}. Falling back to creation.")
@@ -349,8 +355,8 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     subnet = vnet_client.create_subnet(subnet_details).data
     if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/3) 子网已创建，网络设置完成！', task_id))
     oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE')
-    profiles[alias]['default_subnet_ocid'] = subnet.id
-    save_profiles(profiles)
+    all_data["profiles"][alias]['default_subnet_ocid'] = subnet.id
+    save_profiles(all_data)
     return subnet.id
 
 def get_user_data(password, startup_script=None):
@@ -446,7 +452,7 @@ def recover_snatching_tasks():
             return
 
         logging.info(f"发现 {len(orphaned_tasks)} 个需要自动恢复的抢占任务。")
-        profiles = load_profiles()
+        profiles = load_profiles().get("profiles", {})
 
         for task in orphaned_tasks:
             task_id = task['id']
@@ -523,7 +529,7 @@ def oci_clients_required(f):
         if not alias:
              return jsonify({"error": "请先选择一个OCI账号"}), 403
 
-        profile_config = load_profiles().get(alias)
+        profile_config = load_profiles().get("profiles", {}).get(alias)
         if not profile_config: return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
         
         clients, error = get_oci_clients(profile_config, validate=False)
@@ -601,44 +607,33 @@ def cloudflare_config_handler():
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
 def manage_profiles():
-    profiles = load_profiles()
-    if request.method == "GET":
-        # 定义一个基于拼音的排序函数
-        def pinyin_sort_key(name):
-            # 将中文名转换为拼音字符串，例如 "阿布扎比" -> "abuzhabi"
-            return "".join(lazy_pinyin(name)).lower()
-
-        # 对于不分页的请求
-        if 'page' not in request.args:
-            # 使用新的拼音排序规则
-            return jsonify(sorted(list(profiles.keys()), key=pinyin_sort_key))
-
-        # 对于分页请求
-        page = request.args.get('page', 1, type=int)
-        per_page = request.args.get('per_page', 10, type=int)
-        
-        # 1. 先获取所有账号名称
-        # 2. 使用新的拼音排序规则对完整列表进行排序
-        profile_names = sorted(list(profiles.keys()), key=pinyin_sort_key)
-        
-        # 3. 然后再对已排序的列表进行分页
-        total_items = len(profile_names)
-        start = (page - 1) * per_page
-        end = start + per_page
-        paginated_items = profile_names[start:end]
-        total_pages = (total_items + per_page - 1) // per_page
-        
-        return jsonify({
-            'items': paginated_items, 'total_items': total_items, 'page': page,
-            'per_page': per_page, 'total_pages': total_pages
-        })
+    all_data = load_profiles()
+    profiles = all_data.get("profiles", {})
     
-    # POST 请求的逻辑保持不变
+    if request.method == "GET":
+        profile_order = all_data.get("profile_order", [])
+        
+        ordered_profiles = [p for p in profile_order if p in profiles]
+        missing_profiles = sorted(
+            [p for p in profiles if p not in profile_order],
+            key=lambda name: "".join(lazy_pinyin(name)).lower()
+        )
+        
+        final_order = ordered_profiles + missing_profiles
+        
+        if final_order != profile_order:
+            all_data["profile_order"] = final_order
+            save_profiles(all_data)
+            
+        return jsonify(final_order)
+
     if request.method == "POST":
         data = request.json
         alias, new_profile_data = data.get('alias'), data.get('profile_data', {})
         if not alias or not new_profile_data:
             return jsonify({"error": "Missing alias or profile_data"}), 400
+        
+        is_new_profile = alias not in profiles
         
         updated_profile = profiles.get(alias, {})
         updated_profile.update(new_profile_data)
@@ -654,18 +649,48 @@ def manage_profiles():
             except (IOError, json.JSONDecodeError):
                 updated_profile['default_ssh_public_key'] = ""
         
-        profiles[alias] = updated_profile
-        save_profiles(profiles)
+        all_data["profiles"][alias] = updated_profile
+        
+        if is_new_profile:
+            if "profile_order" not in all_data:
+                all_data["profile_order"] = []
+            if alias not in all_data["profile_order"]:
+                 all_data["profile_order"].append(alias)
+                 
+        save_profiles(all_data)
         return jsonify({"success": True, "alias": alias})
+
+@oci_bp.route("/api/profiles/order", methods=["POST"])
+@login_required
+def save_profile_order():
+    data = request.json
+    new_order = data.get('order')
+    if not isinstance(new_order, list):
+        return jsonify({"error": "Invalid order data"}), 400
+    
+    all_data = load_profiles()
+    all_data['profile_order'] = new_order
+    save_profiles(all_data)
+    
+    return jsonify({"success": True, "message": "Account order saved."})
+
 @oci_bp.route("/api/profiles/<alias>", methods=["GET", "DELETE"])
 @login_required
 def handle_single_profile(alias):
-    profiles = load_profiles()
+    all_data = load_profiles()
+    profiles = all_data.get("profiles", {})
+    
     if alias not in profiles: return jsonify({"error": "账号未找到"}), 404
+    
     if request.method == "GET": return jsonify(profiles[alias])
+    
     if request.method == "DELETE":
-        del profiles[alias]
-        save_profiles(profiles)
+        del all_data["profiles"][alias]
+        if "profile_order" in all_data and alias in all_data["profile_order"]:
+            all_data["profile_order"].remove(alias)
+            
+        save_profiles(all_data)
+        
         if session.get('oci_profile_alias') == alias: session.pop('oci_profile_alias', None)
         return jsonify({"success": True})
 
@@ -734,7 +759,7 @@ def resume_tasks():
 
     resumed_count = 0
     failed_tasks = []
-    profiles = load_profiles()
+    profiles = load_profiles().get("profiles", {})
     
     for task_id in task_ids:
         task = query_db('SELECT result, account_alias FROM tasks WHERE id = ? AND status = ?', [task_id, 'paused'], one=True)
@@ -784,7 +809,7 @@ def oci_session_route():
     try:
         if request.method == "POST":
             alias = request.json.get("alias")
-            profiles = load_profiles()
+            profiles = load_profiles().get("profiles", {})
             if not alias or alias not in profiles: return jsonify({"error": "无效的账号别名"}), 400
             
             profile_config = profiles.get(alias)
@@ -814,7 +839,7 @@ def oci_session_route():
         if request.method == "GET":
             alias = session.get('oci_profile_alias')
             if alias:
-                can_create = bool(load_profiles().get(alias, {}).get('default_ssh_public_key'))
+                can_create = bool(load_profiles().get("profiles", {}).get(alias, {}).get('default_ssh_public_key'))
                 return jsonify({"logged_in": True, "alias": alias, "can_create": can_create})
             return jsonify({"logged_in": False})
         if request.method == "DELETE":
@@ -841,7 +866,7 @@ def get_instances(alias):
             if not alias:
                 return jsonify({"error": "请先选择一个OCI账号"}), 403
 
-        profile_config = load_profiles().get(alias)
+        profile_config = load_profiles().get("profiles", {}).get(alias)
         if not profile_config:
             return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
         clients, error = get_oci_clients(profile_config, validate=False)
@@ -902,7 +927,7 @@ def instance_action(alias):
             if not alias:
                 return jsonify({"error": "请先选择一个OCI账号"}), 403
         
-        profile_config = load_profiles().get(alias)
+        profile_config = load_profiles().get("profiles", {}).get(alias)
         if not profile_config:
             return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
 
@@ -1024,26 +1049,69 @@ def update_instance():
     except Exception as e:
         return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
 
-@oci_bp.route('/api/network/security-list')
+# --- ✨ MODIFICATION START ✨ ---
+# 1. 删除旧的 'get_security_list' 函数 (已删除)
+
+# 2. 新增 'get_network_resources' 路由，用于获取VCN和安全列表
+@oci_bp.route('/api/network/resources')
 @login_required
 @oci_clients_required
-@timeout(20)
-def get_security_list():
+@timeout(45)
+def get_network_resources():
     try:
         vnet_client = g.oci_clients['vnet']
         tenancy_ocid = g.oci_config['tenancy']
-        alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
-        subnet_id = _ensure_subnet_in_profile(None, alias, vnet_client, tenancy_ocid)
-        subnet = vnet_client.get_subnet(subnet_id).data
-        if not subnet.security_list_ids: return jsonify({"error": "默认子网没有关联任何安全列表。"}), 404
-        security_list_id = subnet.security_list_ids[0]
-        security_list = vnet_client.get_security_list(security_list_id).data
-        vcn = vnet_client.get_vcn(subnet.vcn_id).data
-        return jsonify({ "vcn_name": vcn.display_name, "security_list": json.loads(str(security_list)) })
+        
+        vcns = oci.pagination.list_call_get_all_results(
+            vnet_client.list_vcns,
+            compartment_id=tenancy_ocid
+        ).data
+        
+        network_data = []
+        for vcn in vcns:
+            if vcn.lifecycle_state != 'AVAILABLE':
+                continue
+            
+            security_lists = oci.pagination.list_call_get_all_results(
+                vnet_client.list_security_lists,
+                compartment_id=tenancy_ocid,
+                vcn_id=vcn.id
+            ).data
+            
+            sl_list = [
+                {"id": sl.id, "display_name": sl.display_name}
+                for sl in security_lists
+                if sl.lifecycle_state == 'AVAILABLE'
+            ]
+            
+            if sl_list:
+                network_data.append({
+                    "vcn_id": vcn.id,
+                    "vcn_name": vcn.display_name,
+                    "security_lists": sorted(sl_list, key=lambda x: x['display_name'])
+                })
+                
+        return jsonify(sorted(network_data, key=lambda x: x['vcn_name']))
     except TimeoutException:
-        return jsonify({"error": "获取安全列表超时，请稍后重试。"}), 504
+        return jsonify({"error": "获取网络资源列表超时。"}), 504
     except Exception as e:
-        return jsonify({"error": f"获取安全列表失败: {e}"}), 500
+        return jsonify({"error": f"获取网络资源失败: {e}"}), 500
+
+# 3. 新增 'get_security_list_details' 路由，用于获取特定列表的规则
+@oci_bp.route('/api/network/security-list/<security_list_id>')
+@login_required
+@oci_clients_required
+@timeout(20)
+def get_security_list_details(security_list_id):
+    try:
+        vnet_client = g.oci_clients['vnet']
+        security_list = vnet_client.get_security_list(security_list_id).data
+        return jsonify(json.loads(str(security_list)))
+    except TimeoutException:
+        return jsonify({"error": "获取安全列表详情超时。"}), 504
+    except Exception as e:
+        return jsonify({"error": f"获取安全列表详情失败: {e}"}), 500
+# --- ✨ MODIFICATION END ✨ ---
 
 @oci_bp.route('/api/network/update-security-rules', methods=['POST'])
 @login_required
@@ -1077,7 +1145,7 @@ def launch_instance(alias, endpoint):
             if not alias:
                 return jsonify({"error": "请先选择一个OCI账号"}), 403
 
-        profile_config = load_profiles().get(alias)
+        profile_config = load_profiles().get("profiles", {}).get(alias)
         if not profile_config:
             return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
         clients, error = get_oci_clients(profile_config, validate=False)
