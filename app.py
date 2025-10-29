@@ -110,7 +110,10 @@ def logout():
 def index():
     if 'user_logged_in' not in session:
         return redirect(url_for('login'))
-    return redirect(url_for('aws.aws_index')) 
+    # --- 这里是您要修改的地方 ---
+    # 原来是: return redirect(url_for('aws.aws_index'))
+    # 现在改为:
+    return redirect(url_for('oci.oci_index')) 
 
 @app.route('/api/get-app-api-key')
 def get_app_api_key():
@@ -141,4 +144,3 @@ with app.app_context():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=DEBUG_MODE)
-
