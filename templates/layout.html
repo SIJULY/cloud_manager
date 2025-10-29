@@ -20,6 +20,12 @@
                     <li class="nav-item">
                         <a class="nav-link {% if request.path.startswith('/oci') %}active{% endif %}" href="{{ url_for('oci.oci_index') }}">OCI Panel</a>
                     </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path.startswith('/azure') %}active{% endif %}" href="{{ url_for('azure.azure_index') }}">Azure Panel</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if request.path.startswith('/aws') %}active{% endif %}" href="{{ url_for('aws.aws_index') }}">AWS Panel</a>
+                    </li>
                 </ul>
                 <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">登出</a>
             </div>
@@ -34,3 +40,4 @@
     {% block scripts %}{% endblock %}
 </body>
 </html>
+
