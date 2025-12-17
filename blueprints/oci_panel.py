@@ -10,9 +10,7 @@ from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateIntern
                              LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
                              UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
                              AddVcnIpv6CidrDetails, UpdateSubnetDetails,
-                             # --- ✨ MODIFICATION START ✨ ---
                              LaunchInstanceAgentConfigDetails, InstanceAgentPluginConfigDetails
-                             # --- ✨ MODIFICATION END ✨ ---
                              )
 from oci.exceptions import ServiceError
 from app import celery
@@ -25,10 +23,7 @@ KEYS_FILE = "oci_profiles.json"
 DATABASE = 'oci_tasks.db'
 TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
-# --- ✨ MODIFICATION START ✨ ---
-# 新增一个文件来存储可动态修改的默认SSH公钥
 DEFAULT_KEY_FILE = "default_key.json" 
-# --- ✨ MODIFICATION END ✨ ---
 
 
 # --- 通用请求超时处理 ---
@@ -159,6 +154,44 @@ def load_profiles():
 
 def save_profiles(data):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
+
+# --- ✨ 内部辅助函数：获取并保存注册日期 ✨ ---
+def _internal_fetch_and_save_tenancy_date(alias):
+    """
+    内部函数：连接 API 获取 Tenancy 创建时间，并更新到本地 profiles 配置文件中。
+    """
+    try:
+        all_data = load_profiles()
+        profiles = all_data.get("profiles", {})
+        if alias not in profiles:
+            return False, "Profile not found"
+
+        profile_config = profiles[alias]
+        
+        # 获取 Identity Client
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            return False, error
+            
+        identity_client = clients['identity']
+        tenancy_id = profile_config['tenancy']
+
+        # 查询 Root Compartment (Tenancy)
+        compartment = identity_client.get_compartment(compartment_id=tenancy_id).data
+        created_at = compartment.time_created
+        
+        # 格式化日期为 YYYY-MM-DD
+        date_str = created_at.strftime('%Y-%m-%d')
+        
+        # 更新并保存
+        all_data["profiles"][alias]['registration_date'] = date_str
+        save_profiles(all_data)
+        
+        logging.info(f"Successfully updated registration date for {alias}: {date_str}")
+        return True, date_str
+    except Exception as e:
+        logging.error(f"Failed to fetch/save tenancy age for {alias}: {e}")
+        return False, str(e)
 
 def load_tg_config():
     if not os.path.exists(TG_CONFIG_FILE): return {}
@@ -359,7 +392,7 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     save_profiles(all_data)
     return subnet.id
 
-def get_user_data(password, startup_script=None):
+def get_user_data(password=None, startup_script=None, enable_password_auth=False):
     default_script = """
 echo "Waiting for apt lock to be released..."
 while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
@@ -375,18 +408,26 @@ for i in 1 2 3; do
 done
 """
     
-    script_parts = [
-        "#cloud-config",
-        "chpasswd:",
-        "  expire: False",
-        "  list:",
-        f"    - ubuntu:{password}",
-        "runcmd:",
-        "  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"",
-        "  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'",
-        "  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"",
-        f"  - [ bash, -c, {json.dumps(default_script)} ]",
-    ]
+    script_parts = ["#cloud-config"]
+
+    if enable_password_auth and password:
+        script_parts.extend([
+            "chpasswd:",
+            "  expire: False",
+            "  list:",
+            f"    - ubuntu:{password}"
+        ])
+
+    script_parts.append("runcmd:")
+    
+    if enable_password_auth:
+        script_parts.append("  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"")
+    else:
+        script_parts.append("  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication no/' /etc/ssh/sshd_config\"")
+
+    script_parts.append("  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'")
+    script_parts.append("  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"")
+    script_parts.append(f"  - [ bash, -c, {json.dumps(default_script)} ]")
 
     if startup_script and startup_script.strip():
         script_parts.append(f"  - [ bash, -c, {json.dumps(startup_script.strip())} ]")
@@ -613,19 +654,39 @@ def manage_profiles():
     if request.method == "GET":
         profile_order = all_data.get("profile_order", [])
         
-        ordered_profiles = [p for p in profile_order if p in profiles]
-        missing_profiles = sorted(
+        now = datetime.datetime.now(timezone.utc)
+        
+        ordered_keys = [p for p in profile_order if p in profiles]
+        missing_keys = sorted(
             [p for p in profiles if p not in profile_order],
             key=lambda name: "".join(lazy_pinyin(name)).lower()
         )
         
-        final_order = ordered_profiles + missing_profiles
+        final_order_keys = ordered_keys + missing_keys
         
-        if final_order != profile_order:
-            all_data["profile_order"] = final_order
+        if final_order_keys != profile_order:
+            all_data["profile_order"] = final_order_keys
             save_profiles(all_data)
             
-        return jsonify(final_order)
+        # 构造返回给前端的详细对象列表
+        response_list = []
+        for alias in final_order_keys:
+            p_data = profiles.get(alias, {})
+            item = {"alias": alias}
+            if 'registration_date' in p_data:
+                item['registration_date'] = p_data['registration_date']
+                try:
+                    # 假定日期格式为 YYYY-MM-DD，解析为 aware datetime
+                    # 这里要注意，strptime 得到的是 naive time，需要 replace tzinfo
+                    reg_date = datetime.datetime.strptime(p_data['registration_date'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
+                    delta = now - reg_date
+                    item['days_elapsed'] = delta.days
+                except Exception as e:
+                    logging.warning(f"Error calculating days for {alias}: {e}")
+                    pass
+            response_list.append(item)
+            
+        return jsonify(response_list)
 
     if request.method == "POST":
         data = request.json
@@ -658,6 +719,13 @@ def manage_profiles():
                  all_data["profile_order"].append(alias)
                  
         save_profiles(all_data)
+        
+        # 添加新账号后，立即启动后台线程去获取 Tenancy 日期
+        try:
+            threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
+        except Exception:
+            pass
+            
         return jsonify({"success": True, "alias": alias})
 
 @oci_bp.route("/api/profiles/order", methods=["POST"])
@@ -822,6 +890,10 @@ def oci_session_route():
                 g.pop('api_selected_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
+            # --- ✨ MODIFICATION: 如果本地没有保存注册日期，连接成功后异步获取并保存 ✨ ---
+            if 'registration_date' not in profile_config:
+                threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
+
             proxy_info = profile_config.get('proxy')
             if proxy_info:
                 success_message = f"连接成功! 当前账号: {alias} (通过代理: {proxy_info})"
@@ -905,6 +977,42 @@ def get_instances(alias):
         return jsonify({"error": "获取实例列表超时，请稍后重试。"}), 504
     except Exception as e:
         return jsonify({"error": f"获取实例列表失败: {e}"}), 500
+
+@oci_bp.route('/api/<alias>/tenancy-age')
+@login_required
+@timeout(15)
+def get_tenancy_age(alias):
+    try:
+        profiles = load_profiles().get("profiles", {})
+        if alias not in profiles:
+            return jsonify({"error": "账号未找到"}), 404
+        
+        profile_config = profiles[alias]
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            return jsonify({"error": error}), 500
+            
+        identity_client = clients['identity']
+        tenancy_id = profile_config['tenancy']
+
+        compartment = identity_client.get_compartment(compartment_id=tenancy_id).data
+        
+        created_at = compartment.time_created
+        now = datetime.datetime.now(timezone.utc)
+        
+        delta = now - created_at
+        days_elapsed = delta.days
+        date_str = created_at.strftime('%Y-%m-%d')
+        
+        return jsonify({
+            "success": True,
+            "registration_date": date_str,
+            "days_elapsed": days_elapsed
+        })
+
+    except Exception as e:
+        logging.error(f"Failed to fetch tenancy age for {alias}: {e}")
+        return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
 def _create_task_entry(task_type, task_name, alias=None):
     db = get_db()
@@ -1049,10 +1157,6 @@ def update_instance():
     except Exception as e:
         return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
 
-# --- ✨ MODIFICATION START ✨ ---
-# 1. 删除旧的 'get_security_list' 函数 (已删除)
-
-# 2. 新增 'get_network_resources' 路由，用于获取VCN和安全列表
 @oci_bp.route('/api/network/resources')
 @login_required
 @oci_clients_required
@@ -1097,7 +1201,6 @@ def get_network_resources():
     except Exception as e:
         return jsonify({"error": f"获取网络资源失败: {e}"}), 500
 
-# 3. 新增 'get_security_list_details' 路由，用于获取特定列表的规则
 @oci_bp.route('/api/network/security-list/<security_list_id>')
 @login_required
 @oci_clients_required
@@ -1111,7 +1214,6 @@ def get_security_list_details(security_list_id):
         return jsonify({"error": "获取安全列表详情超时。"}), 504
     except Exception as e:
         return jsonify({"error": f"获取安全列表详情失败: {e}"}), 500
-# --- ✨ MODIFICATION END ✨ ---
 
 @oci_bp.route('/api/network/update-security-rules', methods=['POST'])
 @login_required
@@ -1386,21 +1488,19 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         images = oci.pagination.list_call_get_all_results(compute_client.list_images, tenancy_ocid, operating_system=os_name, operating_system_version=os_version, shape=shape, sort_by="TIMECREATED", sort_order="DESC").data
         if not images: raise Exception(f"未找到适用于 {os_name} {os_version} 的兼容镜像")
         
-        user_provided_password = details.get('instance_password', '').strip()
-        if user_provided_password:
-            instance_password = user_provided_password
-        else:
-            instance_password = generate_oci_password()
+        enable_password_auth = details.get('enable_password_auth', False)
+        instance_password = None
+
+        if enable_password_auth:
+            user_provided_password = details.get('instance_password', '').strip()
+            if user_provided_password:
+                instance_password = user_provided_password
+            else:
+                instance_password = generate_oci_password()
 
         user_script = details.get('startup_script', '')
-        user_data_encoded = get_user_data(instance_password, user_script)
+        user_data_encoded = get_user_data(instance_password, user_script, enable_password_auth)
         
-        # --- ✨ MODIFICATION START ✨ ---
-        # 根据请求，默认禁用 Oracle Cloud Agent 的两个插件
-        # 1. "计算实例监控" (Compute Instance Monitoring)
-        # 2. "自定义日志监控" (Custom Logs Monitoring)
-        
-        # 配置 "自定义日志监控" 插件
         plugins_config_list = [
             oci.core.models.InstanceAgentPluginConfigDetails(
                 name="Custom Logs Monitoring",
@@ -1408,14 +1508,11 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             )
         ]
         
-        # 创建 Agent 配置
-        # is_monitoring_disabled=True 对应于禁用 "计算实例监控"
         agent_config_details = oci.core.models.LaunchInstanceAgentConfigDetails(
-            is_monitoring_disabled=True,  # 禁用 "计算实例监控"
-            is_management_disabled=False, # 保持 "管理代理" (Management Agent) 为默认设置（图上未勾选）
-            plugins_config=plugins_config_list # 传入 "自定义日志监控" 的禁用配置
+            is_monitoring_disabled=True,  
+            is_management_disabled=False, 
+            plugins_config=plugins_config_list 
         )
-        # --- ✨ MODIFICATION END ✨ ---
         
         base_launch_details = {
             "compartment_id": tenancy_ocid,
@@ -1425,9 +1522,7 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             "metadata": {"ssh_authorized_keys": ssh_key, "user_data": user_data_encoded},
             "source_details": InstanceSourceViaImageDetails(image_id=images[0].id, boot_volume_size_in_gbs=details['boot_volume_size']),
             "shape_config": LaunchInstanceShapeConfigDetails(ocpus=details.get('ocpus'), memory_in_gbs=details.get('memory_in_gbs')) if "Flex" in shape else None,
-            # --- ✨ MODIFICATION START ✨ ---
             "agent_config": agent_config_details
-            # --- ✨ MODIFICATION END ✨ ---
         }
 
     except Exception as e:
@@ -1492,8 +1587,13 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             except Exception as ip_e:
                 public_ip = "获取失败"
             
-            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu\n- 密码：{instance_password}"
+            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu"
             
+            if enable_password_auth and instance_password:
+                db_msg += f"\n- 密码：{instance_password}"
+            else:
+                db_msg += "\n- 登录方式: 仅 SSH 密钥"
+
             dns_update_msg = ""
             if auto_bind_domain and public_ip != "无" and public_ip != "获取失败":
                 dns_update_msg = _update_cloudflare_dns(instance.display_name, public_ip, 'A')
@@ -1515,9 +1615,13 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
                              f"- 实例名: {instance.display_name}\n"
                              f"- 可用区: {current_ad_name}\n"
                              f"- 公网IP: {public_ip}\n"
-                             f"- 登陆用户名: ubuntu\n"
-                             f"- 密码: {instance_password}")
+                             f"- 登陆用户名: ubuntu")
             
+            if enable_password_auth and instance_password:
+                result_for_tg += f"\n- 密码: {instance_password}"
+            else:
+                result_for_tg += "\n- 登录方式: 仅 SSH 密钥"
+
             if dns_update_msg:
                 result_for_tg += f"\n{dns_update_msg}"
 
