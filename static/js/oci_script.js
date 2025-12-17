@@ -43,9 +43,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const launchFlexConfig = document.getElementById('flexShapeConfig');
     const submitLaunchInstanceBtn = document.getElementById('submitLaunchInstanceBtn');
     
+    // Launch Modal Inputs
     const instancePasswordInput = document.getElementById('instancePassword');
     const enablePasswordLoginCheck = document.getElementById('enablePasswordLoginCheck');
     const passwordInputContainer = document.getElementById('passwordInputContainer');
+    
+    // SSH Key Logic in Launch Modal
+    const sshKeySourceRadios = document.getElementsByName('sshKeySource');
+    const customSshKeyContainer = document.getElementById('customSshKeyContainer');
+    const launchCustomSshKey = document.getElementById('launchCustomSshKey');
 
     const proxySettingsAlias = document.getElementById('proxySettingsAlias');
     const proxyUrlInput = document.getElementById('proxyUrl');
@@ -134,6 +140,17 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     launchInstanceShapeSelect.dispatchEvent(new Event('change'));
 
+    // 监听 SSH Key 来源选择
+    sshKeySourceRadios.forEach(radio => {
+        radio.addEventListener('change', (e) => {
+            if (e.target.value === 'custom') {
+                customSshKeyContainer.classList.remove('d-none');
+            } else {
+                customSshKeyContainer.classList.add('d-none');
+            }
+        });
+    });
+
     if (enablePasswordLoginCheck && passwordInputContainer) {
         enablePasswordLoginCheck.addEventListener('change', function() {
             if (this.checked) {
@@ -150,6 +167,10 @@ document.addEventListener('DOMContentLoaded', function() {
             enablePasswordLoginCheck.checked = false; 
             enablePasswordLoginCheck.dispatchEvent(new Event('change'));
         }
+        // 重置 SSH Key 选择为默认
+        document.getElementById('sshKeySourceDefault').checked = true;
+        customSshKeyContainer.classList.add('d-none');
+        launchCustomSshKey.value = '';
     });
 
     submitLaunchInstanceBtn.addEventListener('click', () => {
@@ -163,11 +184,23 @@ document.addEventListener('DOMContentLoaded', function() {
             const isPasswordEnabled = enablePasswordLoginCheck && enablePasswordLoginCheck.checked;
             const passwordVal = isPasswordEnabled ? instancePasswordInput.value.trim() : "";
             
+            // 处理 SSH Key 逻辑
+            let customSshKey = null;
+            const selectedKeySource = document.querySelector('input[name="sshKeySource"]:checked').value;
+            if (selectedKeySource === 'custom') {
+                customSshKey = launchCustomSshKey.value.trim();
+                if (!customSshKey) {
+                    addLog('选择了自定义 SSH 公钥但内容为空！', 'error');
+                    return;
+                }
+            }
+
             const details = {
                 display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
                 instance_count: parseInt(instanceCountInput.value, 10),
                 instance_password: passwordVal,
                 enable_password_auth: isPasswordEnabled, 
+                custom_ssh_key: customSshKey, // 发送自定义 Key
                 os_name_version: document.getElementById('instanceOS').value,
                 shape: shape,
                 boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
@@ -542,7 +575,6 @@ document.addEventListener('DOMContentLoaded', function() {
     async function loadProfiles() {
         profileList.innerHTML = `<tr><td colspan="4" class="text-center text-muted">正在加载...</td></tr>`;
         try {
-            // ✨ MODIFICATION: 接收对象数组（包含 registration_date 和 days_elapsed） ✨
             const profiles = await apiRequest(`/oci/api/profiles`);
             profileList.innerHTML = '';
             
@@ -553,7 +585,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     const tr = document.createElement('tr');
                     tr.dataset.alias = p.alias;
                     
-                    // ✨ MODIFICATION: 渲染日期逻辑 ✨
                     let dateDisplay = '';
                     if (p.registration_date && p.days_elapsed !== undefined) {
                         dateDisplay = `<span class="text-success" style="font-weight:500;">${p.registration_date} (${p.days_elapsed}天)</span>`;
@@ -781,12 +812,12 @@ document.addEventListener('DOMContentLoaded', function() {
         privateKeyReader.readAsText(keyFile);
     });
 
+    // ✨✨✨ 修复核心：去除连接后的列表闪烁 ✨✨✨
     profileList.addEventListener('click', async (e) => {
         const connectBtn = e.target.closest('.connect-btn');
         const proxyBtn = e.target.closest('.proxy-btn');
         const editBtn = e.target.closest('.edit-btn');
         const deleteBtn = e.target.closest('.delete-btn');
-        // const ageBtn = e.target.closest('.age-btn'); // 移除了 ageBtn 的监听
     
         if (connectBtn) {
             const alias = connectBtn.dataset.alias;
@@ -799,9 +830,14 @@ document.addEventListener('DOMContentLoaded', function() {
     
             addLog(`正在连接到 ${alias}...`);
             
-            // Visual feedback immediately
-            const dateCell = row.querySelector('td:nth-child(3)'); // The 3rd column is Date
-            if(dateCell) dateCell.innerHTML = '<div class="spinner-border spinner-border-sm text-secondary"></div> <span class="text-muted small">同步中...</span>';
+            const dateCell = row.querySelector('td:nth-child(3)');
+            if(dateCell) {
+                const currentText = dateCell.innerText.trim();
+                // 只有当日期单元格内容是 "待同步" 或空时，才显示 Loading 动画
+                if(currentText === '' || currentText.includes('待同步')) {
+                    dateCell.innerHTML = '<div class="spinner-border spinner-border-sm text-secondary"></div> <span class="text-muted small">同步中...</span>';
+                }
+            }
 
             document.querySelectorAll('#profileList tr').forEach(otherRow => {
                 otherRow.classList.add('profile-disabled');
@@ -813,14 +849,18 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 await refreshInstances();
 
-                // Crucial Fix: Wait for the background thread to finish writing the date, then reload
-                setTimeout(() => {
-                    loadProfiles();
-                }, 2000); // 2 second delay
+                // 移除：setTimeout(() => { loadProfiles(); }, 2000); 
+                // 原因：这会导致列表清空并重建（闪烁），而且由于后端已优化不再查询 API，此处重新加载没有意义。
+                
+                // 修正：如果之前因为是待同步状态而显示了转圈，现在连接成功了但没数据，暂时给个反馈。
+                // 真正的日期会在下次后台任务完成后，用户手动刷新页面时出现，不影响当前操作。
+                if (dateCell && dateCell.innerHTML.includes('spinner')) {
+                     dateCell.innerHTML = '<span class="text-success small">已连接 (刷新后更新日期)</span>';
+                }
 
             } catch (error) {
-                // ...
-                loadProfiles(); // Reload to restore original state on error
+                // 如果连接失败，我们需要恢复列表的可点击状态，所以这里才需要 reload
+                loadProfiles(); 
             } finally {
                 checkSession(false);
             }
@@ -885,8 +925,9 @@ document.addEventListener('DOMContentLoaded', function() {
             profileData['default_ssh_public_key'] = sshKey;
 
             const saveChanges = async () => {
-                const { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy } = profileData;
-                const cleanProfileData = { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy };
+                const { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy, registration_date } = profileData;
+                // Preserve registration_date when editing
+                const cleanProfileData = { user, fingerprint, tenancy, region, key_content, default_ssh_public_key, proxy, registration_date };
 
                 if (originalAlias !== newAlias) {
                     await apiRequest(`/oci/api/profiles/${originalAlias}`, { method: 'DELETE' });
@@ -1200,11 +1241,9 @@ document.addEventListener('DOMContentLoaded', function() {
     saveBootVolumeSizeBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷大小', { action: 'update_boot_volume', instance_id: selectedInstance.id, size_in_gbs: parseInt(editBootVolumeSize.value, 10) }));
     saveVpusBtn.addEventListener('click', () => handleInstanceUpdateRequest('修改引导卷性能', { action: 'update_boot_volume', instance_id: selectedInstance.id, vpus_per_gb: parseInt(editVpus.value, 10) }));
     
-    // --- ✨ MODIFICATION START ✨ ---
     // 缓存网络资源
     let allNetworkResources = [];
 
-    // 新增: 辅助函数，用于加载特定安全列表的规则
     async function loadSecurityListRules(securityListId) {
         if (!securityListId) {
             renderRules('ingress', []);
@@ -1215,9 +1254,8 @@ document.addEventListener('DOMContentLoaded', function() {
         networkRulesSpinner.classList.remove('d-none');
         saveNetworkRulesBtn.disabled = true;
         try {
-            // 3. 调用新的详情API
             const slDetails = await apiRequest(`/oci/api/network/security-list/${securityListId}`);
-            currentSecurityList = slDetails; // 存储完整的详情，保存时需要用到ID
+            currentSecurityList = slDetails;
             renderRules('ingress', slDetails.ingress_security_rules);
             renderRules('egress', slDetails.egress_security_rules);
         } catch (error) {
@@ -1230,7 +1268,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
-    // 新增: VCN 下拉菜单的 'change' 事件监听
     vcnSelect.addEventListener('change', () => {
         const selectedVcnId = vcnSelect.value;
         const vcnData = allNetworkResources.find(v => v.vcn_id === selectedVcnId);
@@ -1251,15 +1288,12 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     
-    // 新增: 安全列表下拉菜单的 'change' 事件监听
     securityListSelect.addEventListener('change', () => {
         const selectedSlId = securityListSelect.value;
         loadSecurityListRules(selectedSlId);
     });
 
-    // 替换 'networkSettingsBtn' 的 'click' 事件监听
     networkSettingsBtn.addEventListener('click', async () => {
-        // 1. 打开模态框时，重置UI
         vcnSelect.innerHTML = '<option value="">正在加载 VCN...</option>';
         securityListSelect.innerHTML = '<option value="">请先选择VCN</option>';
         vcnSelect.disabled = true;
@@ -1270,7 +1304,6 @@ document.addEventListener('DOMContentLoaded', function() {
         
         try {
             addLog("正在获取所有网络资源...");
-            // 2. 调用新的资源API
             allNetworkResources = await apiRequest('/oci/api/network/resources');
             networkRulesSpinner.classList.add('d-none');
             
@@ -1286,7 +1319,6 @@ document.addEventListener('DOMContentLoaded', function() {
             });
             vcnSelect.disabled = false;
             
-            // 自动触发 'change' 来填充第一个VCN的安全列表
             vcnSelect.dispatchEvent(new Event('change'));
 
         } catch (error) {
@@ -1295,7 +1327,6 @@ document.addEventListener('DOMContentLoaded', function() {
             addLog('获取网络资源列表失败。', 'error');
         }
     });
-    // --- ✨ MODIFICATION END ✨ ---
 
     function renderRules(type, rules) {
         const tableBody = type === 'ingress' ? ingressRulesTable : egressRulesTable;
@@ -1431,9 +1462,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // --- Initial Load ---
     
-    // === MODIFICATION START: New function to save the global key ===
     async function saveGlobalSshKey() {
-        // === MODIFICATION: Read from the correct ID ===
         const sshKeyFile = document.getElementById('globalSshKeyFile').files[0];
         if (!sshKeyFile) {
             addLog('请先在“全局默认SSH公钥管理”区域选择一个 .pub 文件。', 'error');
@@ -1456,12 +1485,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     body: JSON.stringify({ key: key })
                 });
                 addLog(response.message, 'success');
-                // Refresh the status display
                 loadAndDisplayDefaultKey();
-                // Clear the file input
                 document.getElementById('globalSshKeyFile').value = '';
             } catch (error) {
-                // apiRequest already logs the error
             }
         };
         reader.onerror = () => {
@@ -1469,10 +1495,7 @@ document.addEventListener('DOMContentLoaded', function() {
         };
         reader.readAsText(sshKeyFile);
     }
-    // === MODIFICATION END ===
 
-
-    // === MODIFICATION START: Updated loadAndDisplayDefaultKey function ===
     async function loadAndDisplayDefaultKey() {
         const statusEl = document.getElementById('defaultSshKeyStatusText');
         const buttonTextEl = document.getElementById('saveGlobalSshKeyBtnText');
@@ -1493,34 +1516,23 @@ document.addEventListener('DOMContentLoaded', function() {
             statusEl.innerHTML = '<strong class="text-danger">加载默认公钥状态失败。</strong>';
         }
     }
-    // === MODIFICATION END ===
 
-    // === MODIFICATION START: Attach listener for the global key button ===
     document.getElementById('saveGlobalSshKeyBtn').addEventListener('click', saveGlobalSshKey);
-    // === MODIFICATION END ===
 
-    // ✨ MODIFICATION START: 新增断开连接按钮逻辑 ✨
     if (disconnectAccountBtn) {
         disconnectAccountBtn.addEventListener('click', async () => {
             if (!confirm('确定要断开当前账号的连接吗？')) return;
-            
-            // 禁用按钮防止重复点击
             disconnectAccountBtn.disabled = true;
-            
             try {
-                // 调用后端 API 清除 Session
                 await apiRequest('/oci/api/session', { method: 'DELETE' });
                 addLog('账号已断开连接。', 'success');
-                
-                // 刷新会话状态，这将重置 UI、清空列表并禁用按钮
                 await checkSession(false);
             } catch (error) {
                 addLog('断开连接失败: ' + error.message, 'error');
-                disconnectAccountBtn.disabled = false; // 失败时恢复按钮
+                disconnectAccountBtn.disabled = false; 
             }
         });
     }
-    // ✨ MODIFICATION END ✨
 
     new Sortable(profileList, {
         handle: '.drag-handle',
@@ -1546,5 +1558,4 @@ document.addEventListener('DOMContentLoaded', function() {
     checkSession();
     loadTgConfig();
     loadCloudflareConfig();
-    // loadAndDisplayDefaultKey(); // This is now called when the modal opens
 });
