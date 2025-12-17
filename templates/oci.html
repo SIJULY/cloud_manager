@@ -39,27 +39,18 @@
         white-space: nowrap;
     }
 
-    /* --- 这是修改后的规则 --- */
-    /* 让 card-body 自动填充卡片剩余高度，并成为 flex 容器 */
+    /* --- 卡片布局优化 --- */
     .profile-list-card .card-body {
-        flex: 1 1 auto; /* 填充剩余高度 */
+        flex: 1 1 auto; 
         display: flex;
         flex-direction: column;
-        /* 我们保留 card-body 的默认 padding */
     }
 
-    /* --- 这是新增的规则 --- */
-    /* 让 table-responsive 填充 card-body，并成为新的滚动容器 */
     .profile-list-card .card-body .table-responsive {
-        
-        /* --- 唯一的改动：从 flex: 1 1 auto; 改为 flex: 1 1 0; --- */
         flex: 1 1 0; 
-        
-        overflow-y: auto; /* 关键：让这个 div 负责上下滚动 */
+        overflow-y: auto; 
     }
 
-    /* --- 这是修改后的规则 --- */
-    /* 表头现在会 "粘" 在 .table-responsive 的顶部 */
     .profile-list-card .table thead th {
         position: sticky;
         top: 0;
@@ -276,7 +267,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted small">创建将以**抢占模式**执行（资源不足时自动重试）。请确保当前账号已配置<strong class="text-danger">默认SSH公钥</strong>。</p>
+                <p class="text-muted small">创建将以**抢占模式**执行（资源不足时自动重试）。</p>
                 <form id="createLaunchInstanceForm">
                     <div class="row">
                         <div class="col-md-8 mb-3">
@@ -289,26 +280,53 @@
                         </div>
                     </div>
                     
-                    <div class="mb-3">
-                        <div class="form-check form-switch">
-                            <input class="form-check-input" type="checkbox" role="switch" id="enablePasswordLoginCheck">
-                            <label class="form-check-label" for="enablePasswordLoginCheck">启用密码登录 (默认仅使用 SSH 密钥)</label>
+                    <div class="card mb-3">
+                        <div class="card-header py-2 bg-light">
+                            <h6 class="mb-0 small fw-bold">登录认证设置</h6>
+                        </div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="form-label">SSH 公钥配置</label>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="sshKeySource" id="sshKeySourceDefault" value="default" checked>
+                                    <label class="form-check-label" for="sshKeySourceDefault">
+                                        使用账号默认公钥 (推荐)
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="sshKeySource" id="sshKeySourceCustom" value="custom">
+                                    <label class="form-check-label" for="sshKeySourceCustom">
+                                        手动输入/上传本次专用的公钥
+                                    </label>
+                                </div>
+                            </div>
+
+                            <div class="mb-3 d-none" id="customSshKeyContainer">
+                                <textarea class="form-control" id="launchCustomSshKey" rows="3" placeholder="在此粘贴 ssh-rsa 开头的公钥..."></textarea>
+                            </div>
+
+                            <hr class="my-2">
+
+                            <div class="mt-2">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" role="switch" id="enablePasswordLoginCheck">
+                                    <label class="form-check-label" for="enablePasswordLoginCheck">同时启用密码登录 (可选)</label>
+                                </div>
+                            </div>
+                            <div class="row d-none mt-2" id="passwordInputContainer">
+                                <div class="col-12">
+                                    <input type="password" class="form-control" id="instancePassword" placeholder="在此输入自定义密码 (留空则使用随机密码)">
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <div class="row d-none" id="passwordInputContainer">
-                        <div class="col-12 mb-3">
-                            <label for="instancePassword" class="form-label">实例登录密码</label>
-                            <input type="password" class="form-control" id="instancePassword" placeholder="在此输入自定义密码 (留空则使用随机密码)">
-                        </div>
-                    </div>
                     <div class="row">
                         <div class="col-md-8 mb-3">
                             <label for="instanceOS" class="form-label">操作系统</label>
                             <select class="form-select" id="instanceOS">
                                 <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
                                 <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
-
                             </select>
                             </div>
                         <div class="col-md-4 mb-3">
@@ -334,7 +352,7 @@
                     </div>
                     <div class="mb-3">
                         <label for="startupScript" class="form-label">开机脚本 (可选)</label>
-                        <textarea class="form-control" id="startupScript" rows="5" spellcheck="false" 
+                        <textarea class="form-control" id="startupScript" rows="3" spellcheck="false" 
                                   placeholder="在此输入您自定义的开机脚本（可选）"></textarea>
                         <div class="form-text">实例启动时将自动执行此脚本。常用依赖（如curl, git等）会自动安装，无需在此填写。</div>
                     </div>
