@@ -811,8 +811,46 @@ document.addEventListener('DOMContentLoaded', function() {
         privateKeyReader.onerror = () => addLog('读取私钥文件失败！', 'error');
         privateKeyReader.readAsText(keyFile);
     });
+    
+    // ✨✨✨ 新增：智能轮询函数，专门用于首次连接时的无感更新 ✨✨✨
+    function pollForRegistrationDate(alias, dateCell) {
+        let attempts = 0;
+        const maxAttempts = 15; // 30秒 (15次 * 2秒)
+        
+        const intervalId = setInterval(async () => {
+            attempts++;
+            try {
+                // 仅请求单个账号的数据，轻量级
+                const profileData = await apiRequest(`/oci/api/profiles/${alias}`);
+                
+                if (profileData && profileData.registration_date) {
+                    // 后台线程完成了！获取到了日期
+                    clearInterval(intervalId);
+                    
+                    // 前端简单计算天数
+                    const regDate = new Date(profileData.registration_date);
+                    const now = new Date();
+                    const diffTime = Math.abs(now - regDate);
+                    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                    
+                    // 更新 UI，无闪烁
+                    dateCell.innerHTML = `<span class="text-success" style="font-weight:500;">${profileData.registration_date} (${diffDays}天)</span>`;
+                    addLog(`账号 ${alias} 注册时间已自动同步完成！`, 'success');
+                }
+            } catch (e) {
+                console.warn("Polling date failed:", e);
+            }
 
-    // ✨✨✨ 修复核心：去除连接后的列表闪烁 ✨✨✨
+            if (attempts >= maxAttempts) {
+                clearInterval(intervalId);
+                // 如果30秒还没查到，变回提示文字
+                if (dateCell.innerHTML.includes('spinner')) {
+                     dateCell.innerHTML = '<span class="text-muted small">同步超时 (请刷新重试)</span>';
+                }
+            }
+        }, 2000); // 每2秒查一次
+    }
+
     profileList.addEventListener('click', async (e) => {
         const connectBtn = e.target.closest('.connect-btn');
         const proxyBtn = e.target.closest('.proxy-btn');
@@ -831,11 +869,14 @@ document.addEventListener('DOMContentLoaded', function() {
             addLog(`正在连接到 ${alias}...`);
             
             const dateCell = row.querySelector('td:nth-child(3)');
+            let needsPolling = false;
+
             if(dateCell) {
                 const currentText = dateCell.innerText.trim();
-                // 只有当日期单元格内容是 "待同步" 或空时，才显示 Loading 动画
+                // 如果内容是空的或者显示待同步，说明是新账号，需要启动轮询
                 if(currentText === '' || currentText.includes('待同步')) {
                     dateCell.innerHTML = '<div class="spinner-border spinner-border-sm text-secondary"></div> <span class="text-muted small">同步中...</span>';
+                    needsPolling = true;
                 }
             }
 
@@ -849,17 +890,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 await refreshInstances();
 
-                // 移除：setTimeout(() => { loadProfiles(); }, 2000); 
-                // 原因：这会导致列表清空并重建（闪烁），而且由于后端已优化不再查询 API，此处重新加载没有意义。
-                
-                // 修正：如果之前因为是待同步状态而显示了转圈，现在连接成功了但没数据，暂时给个反馈。
-                // 真正的日期会在下次后台任务完成后，用户手动刷新页面时出现，不影响当前操作。
-                if (dateCell && dateCell.innerHTML.includes('spinner')) {
-                     dateCell.innerHTML = '<span class="text-success small">已连接 (刷新后更新日期)</span>';
+                // ✨ 如果是新账号，启动轮询器 ✨
+                if (needsPolling && dateCell) {
+                    pollForRegistrationDate(alias, dateCell);
                 }
 
             } catch (error) {
-                // 如果连接失败，我们需要恢复列表的可点击状态，所以这里才需要 reload
                 loadProfiles(); 
             } finally {
                 checkSession(false);
