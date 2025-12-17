@@ -673,6 +673,8 @@ def manage_profiles():
         for alias in final_order_keys:
             p_data = profiles.get(alias, {})
             item = {"alias": alias}
+            
+            # --- ✨ MODIFICATION: 如果本地有日期，直接计算，无需API ---
             if 'registration_date' in p_data:
                 item['registration_date'] = p_data['registration_date']
                 try:
@@ -720,7 +722,7 @@ def manage_profiles():
                  
         save_profiles(all_data)
         
-        # 添加新账号后，立即启动后台线程去获取 Tenancy 日期
+        # 添加新账号后，尝试获取 Tenancy 日期 (因为是新号，肯定没有日期)
         try:
             threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
         except Exception:
@@ -890,9 +892,13 @@ def oci_session_route():
                 g.pop('api_selected_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
-            # --- ✨ MODIFICATION: 如果本地没有保存注册日期，连接成功后异步获取并保存 ✨ ---
+            # --- ✨ MODIFICATION: 检查本地是否已有 registration_date ---
+            # 只有当本地没有记录时，才启动线程去查询 API
             if 'registration_date' not in profile_config:
+                logging.info(f"No registration date found locally for {alias}, fetching from API in background...")
                 threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
+            else:
+                logging.info(f"Local registration date found for {alias} ({profile_config['registration_date']}), skipping API fetch.")
 
             proxy_info = profile_config.get('proxy')
             if proxy_info:
@@ -1469,8 +1475,20 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         clients, error = get_oci_clients(profile_config, validate=False)
         if error: raise Exception(error)
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
-        tenancy_ocid, ssh_key = profile_config.get('tenancy'), profile_config.get('default_ssh_public_key')
-        if not ssh_key: raise Exception("账号配置缺少默认SSH公钥")
+        
+        # --- ✨ MODIFICATION: 处理自定义 SSH Key 逻辑 ---
+        tenancy_ocid = profile_config.get('tenancy')
+        
+        # 1. 尝试使用本次任务自定义的 Key
+        ssh_key = details.get('custom_ssh_key')
+        
+        # 2. 如果没有自定义 Key，尝试使用账号默认 Key
+        if not ssh_key:
+            ssh_key = profile_config.get('default_ssh_public_key')
+            
+        # 3. 最终检查：必须有 Key (即使开启了密码登录，OCI 通常也需要 SSH Key 进行初始化或调试)
+        if not ssh_key:
+             raise Exception("未提供 SSH 公钥 (既无自定义公钥，账号也无默认公钥)")
 
         ad_objects = identity_client.list_availability_domains(tenancy_ocid).data
         if not ad_objects:
