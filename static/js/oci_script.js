@@ -4,9 +4,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const currentProfileStatus = document.getElementById('currentProfileStatus');
     
     const addAccountModal = new bootstrap.Modal(document.getElementById('addAccountModal'));
-    // === MODIFICATION START: Add listener for when the modal is shown ===
+    
     document.getElementById('addAccountModal').addEventListener('shown.bs.modal', loadAndDisplayDefaultKey);
-    // === MODIFICATION END ===
     
     const addNewProfileBtnModal = document.getElementById('addNewProfileBtnModal');
     const newProfileAlias = document.getElementById('newProfileAlias');
@@ -37,10 +36,17 @@ document.addEventListener('DOMContentLoaded', function() {
     const proxySettingsModal = new bootstrap.Modal(document.getElementById('proxySettingsModal'));
     const cloudflareSettingsModal = new bootstrap.Modal(document.getElementById('cloudflareSettingsModal'));
 
+    const disconnectAccountBtn = document.getElementById('disconnectAccountBtn');
+
     const instanceCountInput = document.getElementById('instanceCount');
     const launchInstanceShapeSelect = document.getElementById('instanceShape');
     const launchFlexConfig = document.getElementById('flexShapeConfig');
     const submitLaunchInstanceBtn = document.getElementById('submitLaunchInstanceBtn');
+    
+    const instancePasswordInput = document.getElementById('instancePassword');
+    const enablePasswordLoginCheck = document.getElementById('enablePasswordLoginCheck');
+    const passwordInputContainer = document.getElementById('passwordInputContainer');
+
     const proxySettingsAlias = document.getElementById('proxySettingsAlias');
     const proxyUrlInput = document.getElementById('proxyUrl');
     const saveProxyBtn = document.getElementById('saveProxyBtn');
@@ -56,12 +62,11 @@ document.addEventListener('DOMContentLoaded', function() {
     const actionAreaProfile = document.getElementById('actionAreaProfile');
     const ingressRulesTable = document.getElementById('ingressRulesTable');
     const egressRulesTable = document.getElementById('egressRulesTable');
-    // --- ✨ MODIFICATION START ✨ ---
-    // 添加新的 VCN 和安全列表下拉菜单的引用
+
     const vcnSelect = document.getElementById('vcnSelect');
     const securityListSelect = document.getElementById('securityListSelect');
     const networkRulesSpinner = document.getElementById('networkRulesSpinner');
-    // --- ✨ MODIFICATION END ✨ ---
+
     const addIngressRuleBtn = document.getElementById('addIngressRuleBtn');
     const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
     const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
@@ -129,6 +134,24 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     launchInstanceShapeSelect.dispatchEvent(new Event('change'));
 
+    if (enablePasswordLoginCheck && passwordInputContainer) {
+        enablePasswordLoginCheck.addEventListener('change', function() {
+            if (this.checked) {
+                passwordInputContainer.classList.remove('d-none');
+            } else {
+                passwordInputContainer.classList.add('d-none');
+                instancePasswordInput.value = ''; 
+            }
+        });
+    }
+
+    launchInstanceModalEl.addEventListener('show.bs.modal', () => {
+        if (enablePasswordLoginCheck) {
+            enablePasswordLoginCheck.checked = false; 
+            enablePasswordLoginCheck.dispatchEvent(new Event('change'));
+        }
+    });
+
     submitLaunchInstanceBtn.addEventListener('click', () => {
         const proceedWithLaunch = async () => {
             const shape = launchInstanceShapeSelect.value;
@@ -137,10 +160,14 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
 
+            const isPasswordEnabled = enablePasswordLoginCheck && enablePasswordLoginCheck.checked;
+            const passwordVal = isPasswordEnabled ? instancePasswordInput.value.trim() : "";
+            
             const details = {
                 display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
                 instance_count: parseInt(instanceCountInput.value, 10),
-                instance_password: document.getElementById('instancePassword').value.trim(),
+                instance_password: passwordVal,
+                enable_password_auth: isPasswordEnabled, 
                 os_name_version: document.getElementById('instanceOS').value,
                 shape: shape,
                 boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
@@ -410,6 +437,11 @@ document.addEventListener('DOMContentLoaded', function() {
         refreshInstancesBtn.disabled = !enabled;
         createInstanceBtn.disabled = !canCreate;
         networkSettingsBtn.disabled = !enabled;
+        
+        if (disconnectAccountBtn) {
+            disconnectAccountBtn.disabled = !enabled;
+        }
+
         if (!enabled) {
             instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
             Object.values(instanceActionButtons).forEach(btn => btn.disabled = true);
@@ -508,34 +540,49 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     async function loadProfiles() {
-        profileList.innerHTML = `<tr><td colspan="3" class="text-center text-muted">正在加载...</td></tr>`;
+        profileList.innerHTML = `<tr><td colspan="4" class="text-center text-muted">正在加载...</td></tr>`;
         try {
-            const profileNames = await apiRequest(`/oci/api/profiles`);
+            // ✨ MODIFICATION: 接收对象数组（包含 registration_date 和 days_elapsed） ✨
+            const profiles = await apiRequest(`/oci/api/profiles`);
             profileList.innerHTML = '';
-            if (profileNames.length === 0) {
-                profileList.innerHTML = `<tr><td colspan="3" class="text-center text-muted">未找到账号，请点击右上角添加</td></tr>`;
+            
+            if (profiles.length === 0) {
+                profileList.innerHTML = `<tr><td colspan="4" class="text-center text-muted">未找到账号，请点击右上角添加</td></tr>`;
             } else {
-                profileNames.forEach(name => {
+                profiles.forEach(p => {
                     const tr = document.createElement('tr');
-                    tr.dataset.alias = name;
-                    // --- ✨ 样式修复：为按钮添加固定宽度和居中样式 ✨ ---
+                    tr.dataset.alias = p.alias;
+                    
+                    // ✨ MODIFICATION: 渲染日期逻辑 ✨
+                    let dateDisplay = '';
+                    if (p.registration_date && p.days_elapsed !== undefined) {
+                        dateDisplay = `<span class="text-success" style="font-weight:500;">${p.registration_date} (${p.days_elapsed}天)</span>`;
+                    } else {
+                        dateDisplay = `<span class="text-muted small">待同步 (连接后自动获取)</span>`;
+                    }
+
                     tr.innerHTML = `
                         <td class="drag-handle text-center align-middle"><i class="bi bi-grip-vertical"></i></td>
                         <td class="align-middle">
-                            <a href="#" class="btn btn-info btn-sm connect-btn" data-alias="${name}" onclick="event.preventDefault();" style="width: 8em; text-align: center;">${name}</a>
+                            <a href="#" class="btn btn-info btn-sm connect-btn" data-alias="${p.alias}" onclick="event.preventDefault();" style="width: 15em; text-align: center;">${p.alias}</a>
+                        </td>
+                        <td class="text-center align-middle" style="white-space: nowrap;">
+                            ${dateDisplay}
                         </td>
                         <td class="text-end action-buttons align-middle">
-                            <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${name}"><i class="bi bi-shield-lock"></i> 代理</button>
-                            <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${name}"><i class="bi bi-pencil"></i> 编辑</button>
-                            <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${name}"><i class="bi bi-trash"></i> 删除</button>
+                            <button class="btn btn-warning btn-sm proxy-btn profile-action-btn" data-alias="${p.alias}"><i class="bi bi-shield-lock"></i> 代理</button>
+                            <button class="btn btn-info btn-sm edit-btn profile-action-btn" data-alias="${p.alias}"><i class="bi bi-pencil"></i> 编辑</button>
+                            <button class="btn btn-danger btn-sm delete-btn profile-action-btn" data-alias="${p.alias}"><i class="bi bi-trash"></i> 删除</button>
                         </td>
                     `;
+                    
                     profileList.appendChild(tr);
                 });
             }
             checkSession(false); 
         } catch (error) {
-            profileList.innerHTML = `<tr><td colspan="3" class="text-center text-danger">加载账号列表失败</td></tr>`;
+            console.error(error);
+            profileList.innerHTML = `<tr><td colspan="4" class="text-center text-danger">加载账号列表失败</td></tr>`;
         }
     }
     
@@ -684,9 +731,8 @@ document.addEventListener('DOMContentLoaded', function() {
     addNewProfileBtnModal.addEventListener('click', () => {
         const alias = newProfileAlias.value.trim();
         const configText = newProfileConfigText.value.trim();
-        // === MODIFICATION: Read from the correct ID ===
-        const sshKeyFile = document.getElementById('accountSshKeyFile').files[0]; // Get the pubkey file
-        const keyFile = newProfileKeyFile.files[0]; // Get the private key file
+        const sshKeyFile = document.getElementById('accountSshKeyFile').files[0]; 
+        const keyFile = newProfileKeyFile.files[0]; 
 
         if (!alias || !configText || !keyFile) {
             addLog('账号名称, 配置信息和私钥文件都不能为空', 'error');
@@ -704,19 +750,16 @@ document.addEventListener('DOMContentLoaded', function() {
         privateKeyReader.onload = (event) => {
             profileData['key_content'] = event.target.result;
             
-            // Now check for the public key
             if (sshKeyFile) {
-                // If user uploaded a specific SSH key, read it
                 addLog('正在读取上传的 SSH 公钥...', 'info');
                 const publicKeyReader = new FileReader();
                 publicKeyReader.onload = (e) => {
                     profileData['default_ssh_public_key'] = e.target.result;
-                    saveProfile(alias, profileData); // Save with specific pubkey
+                    saveProfile(alias, profileData);
                 };
                 publicKeyReader.onerror = () => addLog('读取公钥文件失败！', 'error');
                 publicKeyReader.readAsText(sshKeyFile);
             } else {
-                // No specific key uploaded, fetch global default
                 addLog('未上传SSH公钥，正在尝试使用全局默认公钥...', 'info');
                 apiRequest('/oci/api/default-ssh-key').then(response => {
                     if (response.key) {
@@ -726,7 +769,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         addLog('未找到全局默认公钥，此账号将不含公钥。', 'warning');
                         profileData['default_ssh_public_key'] = '';
                     }
-                    saveProfile(alias, profileData); // Save with global pubkey (or empty)
+                    saveProfile(alias, profileData); 
                 }).catch(error => {
                     addLog('获取全局公钥失败，将保存为空。', 'error');
                     profileData['default_ssh_public_key'] = '';
@@ -743,6 +786,7 @@ document.addEventListener('DOMContentLoaded', function() {
         const proxyBtn = e.target.closest('.proxy-btn');
         const editBtn = e.target.closest('.edit-btn');
         const deleteBtn = e.target.closest('.delete-btn');
+        // const ageBtn = e.target.closest('.age-btn'); // 移除了 ageBtn 的监听
     
         if (connectBtn) {
             const alias = connectBtn.dataset.alias;
@@ -755,6 +799,10 @@ document.addEventListener('DOMContentLoaded', function() {
     
             addLog(`正在连接到 ${alias}...`);
             
+            // Visual feedback immediately
+            const dateCell = row.querySelector('td:nth-child(3)'); // The 3rd column is Date
+            if(dateCell) dateCell.innerHTML = '<div class="spinner-border spinner-border-sm text-secondary"></div> <span class="text-muted small">同步中...</span>';
+
             document.querySelectorAll('#profileList tr').forEach(otherRow => {
                 otherRow.classList.add('profile-disabled');
             });
@@ -762,8 +810,17 @@ document.addEventListener('DOMContentLoaded', function() {
             try {
                 const response = await apiRequest('/oci/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ alias }) });
                 addLog(response.message, 'success');
+                
                 await refreshInstances();
+
+                // Crucial Fix: Wait for the background thread to finish writing the date, then reload
+                setTimeout(() => {
+                    loadProfiles();
+                }, 2000); // 2 second delay
+
             } catch (error) {
+                // ...
+                loadProfiles(); // Reload to restore original state on error
             } finally {
                 checkSession(false);
             }
@@ -958,11 +1015,8 @@ document.addEventListener('DOMContentLoaded', function() {
             completedSnatchTasksList.innerHTML = completed.length === 0
                 ? '<li class="list-group-item text-muted">没有已完成的抢占任务记录。</li>'
                 : completed.map(task => {
-                    // --- ✨ 修复开始 ✨ ---
-                    // 直接使用 task.created_at 作为开始时间
                     const startTime = task.created_at; 
                     const durationText = formatDuration(startTime, task.completed_at || task.created_at);
-                    // --- ✨ 修复结束 ✨ ---
                     const timeInfo = `
                         <small class="text-muted d-block">完成于: ${new Date(task.completed_at || task.created_at).toLocaleString()}</small>
                         <small class="text-muted d-block">总用时: ${durationText}</small>
@@ -1444,6 +1498,29 @@ document.addEventListener('DOMContentLoaded', function() {
     // === MODIFICATION START: Attach listener for the global key button ===
     document.getElementById('saveGlobalSshKeyBtn').addEventListener('click', saveGlobalSshKey);
     // === MODIFICATION END ===
+
+    // ✨ MODIFICATION START: 新增断开连接按钮逻辑 ✨
+    if (disconnectAccountBtn) {
+        disconnectAccountBtn.addEventListener('click', async () => {
+            if (!confirm('确定要断开当前账号的连接吗？')) return;
+            
+            // 禁用按钮防止重复点击
+            disconnectAccountBtn.disabled = true;
+            
+            try {
+                // 调用后端 API 清除 Session
+                await apiRequest('/oci/api/session', { method: 'DELETE' });
+                addLog('账号已断开连接。', 'success');
+                
+                // 刷新会话状态，这将重置 UI、清空列表并禁用按钮
+                await checkSession(false);
+            } catch (error) {
+                addLog('断开连接失败: ' + error.message, 'error');
+                disconnectAccountBtn.disabled = false; // 失败时恢复按钮
+            }
+        });
+    }
+    // ✨ MODIFICATION END ✨
 
     new Sortable(profileList, {
         handle: '.drag-handle',
