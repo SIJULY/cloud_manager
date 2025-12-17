@@ -128,7 +128,8 @@
                             <thead>
                                 <tr>
                                     <th style="width: 40px;"></th>
-                                    <th style="padding-left: 20px;">选择账户</th>
+                                    <th style="padding-left: 20px; width: 350px;">选择账户</th>
+                                    <th class="text-center" style="width: 240px;">租户创建时间</th>
                                     <th class="text-end" style="width: 230px; padding-right: 95px;">操作</th>
                                 </tr>
                             </thead>
@@ -161,6 +162,9 @@
                 </button>
                 <button id="tgSettingsBtn" class="btn btn-info profile-action-btn" data-bs-toggle="modal" data-bs-target="#tgSettingsModal">
                     <i class="bi bi-telegram"></i> TG & API 设置
+                </button>
+                <button id="disconnectAccountBtn" class="btn btn-danger profile-action-btn" disabled>
+                    <i class="bi bi-power"></i> 断开连接
                 </button>
             </div>
         </div>
@@ -284,10 +288,18 @@
                             <input type="number" class="form-control" id="instanceCount" value="1" min="1" max="10" required>
                         </div>
                     </div>
-                    <div class="row">
+                    
+                    <div class="mb-3">
+                        <div class="form-check form-switch">
+                            <input class="form-check-input" type="checkbox" role="switch" id="enablePasswordLoginCheck">
+                            <label class="form-check-label" for="enablePasswordLoginCheck">启用密码登录 (默认仅使用 SSH 密钥)</label>
+                        </div>
+                    </div>
+
+                    <div class="row d-none" id="passwordInputContainer">
                         <div class="col-12 mb-3">
-                            <label for="instancePassword" class="form-label">实例登录密码 (可选)</label>
-                            <input type="password" class="form-control" id="instancePassword" placeholder="留空则使用随机生成的安全密码">
+                            <label for="instancePassword" class="form-label">实例登录密码</label>
+                            <input type="password" class="form-control" id="instancePassword" placeholder="在此输入自定义密码 (留空则使用随机密码)">
                         </div>
                     </div>
                     <div class="row">
