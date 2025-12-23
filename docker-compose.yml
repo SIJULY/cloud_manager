@@ -21,7 +21,8 @@ services:
   worker:
     build: .
     restart: always
-    command: celery -A app.celery worker --loglevel=info --concurrency=20
+    # 👇👇👇 重点修改了下面这一行 👇👇👇
+    command: celery -A app.celery worker --pool=threads --concurrency=20 --loglevel=info
     volumes:
       - .:/app
     environment:
