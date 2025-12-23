@@ -4,6 +4,7 @@ from functools import wraps
 from pypinyin import lazy_pinyin
 from datetime import timezone, timedelta
 import oci
+import re
 from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateInternetGatewayDetails,
                              UpdateRouteTableDetails, RouteRule, CreatePublicIpDetails, CreateIpv6Details,
                              LaunchInstanceDetails, CreateVnicDetails, InstanceSourceViaImageDetails,
@@ -1084,6 +1085,54 @@ def get_instance_details(instance_id):
         return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
     except Exception as e:
         return jsonify({"error": f"获取实例详情失败: {e}"}), 500
+
+
+@oci_bp.route('/api/available-os-versions')
+@login_required
+@oci_clients_required
+@timeout(20)
+def get_available_os_versions():
+    try:
+        compute_client = g.oci_clients['compute']
+        tenancy_ocid = g.oci_config['tenancy']
+        
+        logging.info("Fetching available Ubuntu versions...")
+        
+        # 获取所有 Canonical Ubuntu 镜像
+        images = oci.pagination.list_call_get_all_results(
+            compute_client.list_images,
+            compartment_id=tenancy_ocid,
+            operating_system="Canonical Ubuntu",
+            sort_by="TIMECREATED",
+            sort_order="DESC"
+        ).data
+
+        # 使用 set 去重
+        versions = set()
+        for img in images:
+            v = img.operating_system_version
+            # 【关键修改】使用正则严格匹配 "数字.数字" 的格式
+            # 这会过滤掉 "24.04 Minimal", "22.04 aarch64" 等带后缀的版本
+            # 只保留纯净的 "24.04", "22.04", "20.04" 等
+            if v and re.match(r'^\d+\.\d+$', v):
+                versions.add(v)
+        
+        # 排序版本号 (降序，最新的在前面)
+        sorted_versions = sorted(list(versions), reverse=True)
+        
+        # 取前两个最新的版本
+        latest_versions = sorted_versions[:2]
+        
+        # 构造成前端需要的格式
+        result = [f"Canonical Ubuntu-{v}" for v in latest_versions]
+        
+        return jsonify(result)
+
+    except TimeoutException:
+        return jsonify({"error": "获取操作系统列表超时。"}), 504
+    except Exception as e:
+        logging.error(f"Failed to get OS versions: {e}", exc_info=True)
+        return jsonify({"error": f"获取操作系统列表失败: {e}"}), 500
 
 @oci_bp.route('/api/available-shapes')
 @login_required
