@@ -119,8 +119,15 @@
                             <thead>
                                 <tr>
                                     <th style="width: 40px;"></th>
-                                    <th style="padding-left: 20px; width: 350px;">选择账户</th>
-                                    <th class="text-center" style="width: 240px;">租户创建时间</th>
+                                    
+                                    <th id="sortAccountByAlias" style="padding-left: 20px; width: 350px; cursor: pointer;" title="点击按名称拼音排序">
+                                        账户(单击连接) <i id="sortAliasIcon" class="bi bi-arrow-down-up text-muted small"></i>
+                                    </th>
+                                    
+                                    <th class="text-center" id="sortAccountByDate" style="width: 240px; cursor: pointer;" title="点击按时间临时排序">
+                                        租户创建时间 <i id="sortIcon" class="bi bi-arrow-down-up text-muted small"></i>
+                                    </th>
+                                    
                                     <th class="text-end" style="width: 230px; padding-right: 95px;">操作</th>
                                 </tr>
                             </thead>
@@ -325,10 +332,9 @@
                         <div class="col-md-8 mb-3">
                             <label for="instanceOS" class="form-label">操作系统</label>
                             <select class="form-select" id="instanceOS">
-                                <option value="Canonical Ubuntu-22.04">Ubuntu 22.04</option>
-                                <option value="Canonical Ubuntu-20.04">Ubuntu 20.04</option>
+                                <option value="">正在初始化...</option>
                             </select>
-                            </div>
+                        </div>
                         <div class="col-md-4 mb-3">
                            <label for="bootVolumeSize" class="form-label">磁盘大小 (GB)</label>
                            <input type="number" class="form-control" id="bootVolumeSize" value="50" min="50">
