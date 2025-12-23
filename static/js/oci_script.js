@@ -3,6 +3,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const profileList = document.getElementById('profileList');
     const currentProfileStatus = document.getElementById('currentProfileStatus');
     
+    // --- 新增：获取排序表头 ---
+    const sortAccountByDateHeader = document.getElementById('sortAccountByDate');
+    const sortIcon = document.getElementById('sortIcon');
+    
     const addAccountModal = new bootstrap.Modal(document.getElementById('addAccountModal'));
     
     document.getElementById('addAccountModal').addEventListener('shown.bs.modal', loadAndDisplayDefaultKey);
@@ -171,6 +175,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('sshKeySourceDefault').checked = true;
         customSshKeyContainer.classList.add('d-none');
         launchCustomSshKey.value = '';
+
+        // 加载操作系统列表
+        loadAndDisplayOS();
     });
 
     submitLaunchInstanceBtn.addEventListener('click', () => {
@@ -275,7 +282,8 @@ document.addEventListener('DOMContentLoaded', function() {
         proceedWithLaunch();
     });
 
-    launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
+    // 移除原有的 shown.bs.modal 事件，因为现在逻辑在 show.bs.modal 中由 loadAndDisplayOS 驱动
+    // launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
     document.getElementById('instanceOS').addEventListener('change', updateAvailableShapes);
 
 
@@ -322,10 +330,52 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // --- Core and Helper Functions ---
 
+    // 动态加载操作系统
+    async function loadAndDisplayOS() {
+        const osSelect = document.getElementById('instanceOS');
+        const shapeSelect = document.getElementById('instanceShape');
+        
+        osSelect.innerHTML = '<option value="">正在加载系统列表...</option>';
+        osSelect.disabled = true;
+        shapeSelect.innerHTML = '<option value="">等待选择系统...</option>';
+        shapeSelect.disabled = true;
+        submitLaunchInstanceBtn.disabled = true;
+
+        try {
+            const versions = await apiRequest('/oci/api/available-os-versions');
+            osSelect.innerHTML = '';
+            
+            if (versions.length === 0) {
+                osSelect.innerHTML = '<option value="">未找到 Ubuntu 镜像</option>';
+            } else {
+                versions.forEach(ver => {
+                    const parts = ver.split('-');
+                    const displayVer = parts.length > 1 ? `Ubuntu ${parts[1]}` : ver;
+                    
+                    const option = document.createElement('option');
+                    option.value = ver;
+                    option.textContent = displayVer;
+                    osSelect.appendChild(option);
+                });
+                
+                osSelect.disabled = false;
+                osSelect.selectedIndex = 0;
+                await updateAvailableShapes();
+            }
+        } catch (error) {
+            osSelect.innerHTML = '<option value="">加载失败</option>';
+            addLog('获取操作系统版本失败，请检查网络或账号权限。', 'error');
+        } finally {
+            osSelect.disabled = false;
+        }
+    }
+
     async function updateAvailableShapes() {
         const os_name_version = document.getElementById('instanceOS').value;
         const shapeSelect = document.getElementById('instanceShape');
         
+        if (!os_name_version) return;
+
         shapeSelect.innerHTML = '<option value="">正在刷新实例规格...</option>';
         shapeSelect.disabled = true;
         submitLaunchInstanceBtn.disabled = true;
@@ -336,13 +386,24 @@ document.addEventListener('DOMContentLoaded', function() {
             if (shapes.length === 0) {
                 shapeSelect.innerHTML = '<option value="">当前系统无可用规格</option>';
             } else {
+                // 先排序
                 shapes.sort((a, b) => a.includes('A1.Flex') ? -1 : (b.includes('A1.Flex') ? 1 : 0));
+                
+                // --- ✨✨✨ 修复Bug：加入去重逻辑 ✨✨✨
+                const seenShapes = new Set();
+                
                 shapes.forEach(shape => {
-                    const option = document.createElement('option');
-                    option.value = shape;
-                    option.textContent = shape;
-                    shapeSelect.appendChild(option);
+                    // 只有当这个规格还没出现过时，才添加到下拉框
+                    if (!seenShapes.has(shape)) {
+                        seenShapes.add(shape); 
+                        
+                        const option = document.createElement('option');
+                        option.value = shape;
+                        option.textContent = shape;
+                        shapeSelect.appendChild(option);
+                    }
                 });
+                
                 submitLaunchInstanceBtn.disabled = false;
             }
         } catch (error) {
@@ -584,7 +645,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 profiles.forEach(p => {
                     const tr = document.createElement('tr');
                     tr.dataset.alias = p.alias;
-                    
+                    // --- 修改：将日期数据绑定到 DOM 属性上，方便排序 ---
+                    tr.dataset.regDate = p.registration_date || ''; 
+
                     let dateDisplay = '';
                     if (p.registration_date && p.days_elapsed !== undefined) {
                         dateDisplay = `<span class="text-success" style="font-weight:500;">${p.registration_date} (${p.days_elapsed}天)</span>`;
@@ -1589,6 +1652,62 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         },
     });
+
+    // --- ✨✨✨ 新增功能：点击标题进行临时排序 (更新版：支持账户名排序 + 移除日志) ✨✨✨
+    
+    // 1. 按租户创建时间排序
+    let dateSortAsc = true; 
+    if (sortAccountByDateHeader) {
+        sortAccountByDateHeader.addEventListener('click', () => {
+            const rows = Array.from(profileList.querySelectorAll('tr'));
+            
+            rows.sort((a, b) => {
+                const dateA = a.dataset.regDate ? new Date(a.dataset.regDate).getTime() : 0;
+                const dateB = b.dataset.regDate ? new Date(b.dataset.regDate).getTime() : 0;
+                return dateSortAsc ? dateA - dateB : dateB - dateA;
+            });
+
+            rows.forEach(row => profileList.appendChild(row));
+
+            dateSortAsc = !dateSortAsc;
+            if (sortIcon) {
+                sortIcon.className = dateSortAsc 
+                    ? 'bi bi-sort-numeric-down-alt text-primary' 
+                    : 'bi bi-sort-numeric-down text-primary';
+            }
+            // 已移除 addLog 调用
+        });
+    }
+
+    // 2. 按账户名称 (Alias) 拼音首字母排序
+    const sortAccountByAliasHeader = document.getElementById('sortAccountByAlias');
+    const sortAliasIcon = document.getElementById('sortAliasIcon');
+    let aliasSortAsc = true;
+
+    if (sortAccountByAliasHeader) {
+        sortAccountByAliasHeader.addEventListener('click', () => {
+            const rows = Array.from(profileList.querySelectorAll('tr'));
+            
+            rows.sort((a, b) => {
+                const aliasA = a.dataset.alias || '';
+                const aliasB = b.dataset.alias || '';
+                // 使用 localeCompare 进行拼音/字母排序
+                return aliasSortAsc 
+                    ? aliasA.localeCompare(aliasB, 'zh-CN') 
+                    : aliasB.localeCompare(aliasA, 'zh-CN');
+            });
+
+            rows.forEach(row => profileList.appendChild(row));
+
+            aliasSortAsc = !aliasSortAsc;
+            if (sortAliasIcon) {
+                sortAliasIcon.className = aliasSortAsc
+                    ? 'bi bi-sort-alpha-down text-primary'
+                    : 'bi bi-sort-alpha-down-alt text-primary';
+            }
+            // 已移除 addLog 调用
+        });
+    }
 
     loadProfiles();
     checkSession();
