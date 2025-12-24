@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   redis:
     image: redis:6-alpine
@@ -8,43 +10,32 @@ services:
   web:
     build: .
     restart: always
+    # 使用你原来的启动命令，确保参数一致
     command: gunicorn --workers 3 --bind 0.0.0.0:5000 --preload app:app
     volumes:
       - .:/app
     environment:
       - PANEL_PASSWORD=${PANEL_PASSWORD}
       - REDIS_URL=redis://redis:6379/0
-      - TZ=Asia/Shanghai  # 设置时区为北京时间
+      - TZ=Asia/Shanghai
     depends_on:
       - redis
+    # 注意：这里删除了 ports 和 depends_on caddy，这些由脚本动态注入
 
   worker:
     build: .
     restart: always
-    # 👇👇👇 重点修改了下面这一行 👇👇👇
+    # 保留你的并发优化配置：使用 threads 池，并发 20
     command: celery -A app.celery worker --pool=threads --concurrency=20 --loglevel=info
     volumes:
       - .:/app
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - TZ=Asia/Shanghai  # 设置时区为北京时间
+      - TZ=Asia/Shanghai
     depends_on:
       - redis
 
-  caddy:
-    image: caddy:latest
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - caddy_data:/data
-      - caddy_config:/config
-    environment:
-      - DOMAIN_OR_IP=${DOMAIN_OR_IP}
-    depends_on:
-      - web
+# 移除了 caddy 服务，改由脚本根据用户选择动态添加
 
 volumes:
   redis_data:
