@@ -198,8 +198,9 @@
                 <button type="button" id="startBtn" class="btn btn-success" disabled>启动</button>
                 <button type="button" id="restartBtn" class="btn btn-success" disabled>重启</button>
                 <button type="button" id="editInstanceBtn" class="btn btn-success" disabled>修改实例</button>
-                <button type="button" id="changeIpBtn" class="btn btn-success" disabled>更换公网IP (IPV4)</button>
-                <button type="button" id="assignIpv6Btn" class="btn btn-success" disabled>一键附加IPV6</button>
+                <button type="button" id="changeIpBtn" class="btn btn-success" disabled>更换IP(V4) </button>
+                <button type="button" id="addIpBtn" class="btn btn-success" disabled>附加IP(V4)</button>
+                <button type="button" id="assignIpv6Btn" class="btn btn-success" disabled>附加IP(V6)</button>
                 <button type="button" id="stopBtn" class="btn btn-danger" disabled>关机</button>
                 <button type="button" id="terminateBtn" class="btn btn-danger" disabled>终止</button>
             </div>
@@ -486,7 +487,49 @@
                         <button class="btn btn-outline-primary" type="button" id="saveDisplayNameBtn">保存名称</button>
                     </div>
                 </div>
+                
                 <hr>
+                
+                <div class="mb-3">
+                    <label class="form-label">网络 IP 管理 (IPv4)</label>
+                    <div class="table-responsive border rounded p-2" style="max-height: 200px; overflow-y: auto; background-color: #fff;">
+                        <table class="table table-sm table-borderless mb-0 align-middle">
+                            <thead>
+                                <tr class="text-muted" style="font-size: 0.85rem; border-bottom: 1px solid #dee2e6;">
+                                    <th>内网 IP</th>
+                                    <th>公网 IP</th>
+                                    <th class="text-center" style="width: 60px;">类型</th>
+                                    <th class="text-end" style="width: 60px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="editInstanceIpList">
+                                <tr><td colspan="4" class="text-center text-muted small py-2">正在加载 IPv4 信息...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="form-text">提示: 主 IP 无法删除。删除辅助 IP 将立即生效。</div>
+                </div>
+
+                <div class="mb-3 mt-3">
+                    <label class="form-label">网络 IP 管理 (IPv6)</label>
+                    <div class="table-responsive border rounded p-2" style="max-height: 150px; overflow-y: auto; background-color: #fff;">
+                        <table class="table table-sm table-borderless mb-0 align-middle">
+                            <thead>
+                                <tr class="text-muted" style="font-size: 0.85rem; border-bottom: 1px solid #dee2e6;">
+                                    <th>IPv6 地址</th>
+                                    <th class="text-end" style="width: 60px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="editInstanceIpv6List">
+                                <tr><td colspan="2" class="text-center text-muted small py-2">正在加载 IPv6 信息...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="form-text">提示: 删除 IPv6 地址将立即生效。</div>
+                </div>
+                
+                <hr>
+                
                 <div id="editFlexInstanceConfig" class="d-none">
                     <label class="form-label">CPU与内存 (仅限ARM机型)</label>
                     <div class="row">
