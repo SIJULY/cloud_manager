@@ -3,7 +3,6 @@ document.addEventListener('DOMContentLoaded', function() {
     const profileList = document.getElementById('profileList');
     const currentProfileStatus = document.getElementById('currentProfileStatus');
     
-    // --- 新增：获取排序表头 ---
     const sortAccountByDateHeader = document.getElementById('sortAccountByDate');
     const sortIcon = document.getElementById('sortIcon');
     
@@ -81,6 +80,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const addEgressRuleBtn = document.getElementById('addEgressRuleBtn');
     const saveNetworkRulesBtn = document.getElementById('saveNetworkRulesBtn');
     const openFirewallBtn = document.getElementById('openFirewallBtn');
+    
+    // Edit Instance Elements
     const editDisplayName = document.getElementById('editDisplayName');
     const saveDisplayNameBtn = document.getElementById('saveDisplayNameBtn');
     const editFlexInstanceConfig = document.getElementById('editFlexInstanceConfig');
@@ -91,6 +92,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const saveBootVolumeSizeBtn = document.getElementById('saveBootVolumeSizeBtn');
     const editVpus = document.getElementById('editVpus');
     const saveVpusBtn = document.getElementById('saveVpusBtn');
+    // ✨✨✨ IP 列表容器 ✨✨✨
+    const editInstanceIpList = document.getElementById('editInstanceIpList'); 
+    const editInstanceIpv6List = document.getElementById('editInstanceIpv6List'); // 新增 IPv6 容器
+
     const confirmActionModalLabel = document.getElementById('confirmActionModalLabel');
     const confirmActionModalBody = document.getElementById('confirmActionModalBody');
     const confirmActionModalTerminateOptions = document.getElementById('confirmActionModalTerminateOptions');
@@ -115,6 +120,7 @@ document.addEventListener('DOMContentLoaded', function() {
         restart: document.getElementById('restartBtn'),
         editInstance: document.getElementById('editInstanceBtn'),
         changeIp: document.getElementById('changeIpBtn'),
+        addIp: document.getElementById('addIpBtn'), 
         assignIpv6: document.getElementById('assignIpv6Btn'),
         terminate: document.getElementById('terminateBtn'),
     };
@@ -282,8 +288,6 @@ document.addEventListener('DOMContentLoaded', function() {
         proceedWithLaunch();
     });
 
-    // 移除原有的 shown.bs.modal 事件，因为现在逻辑在 show.bs.modal 中由 loadAndDisplayOS 驱动
-    // launchInstanceModalEl.addEventListener('shown.bs.modal', updateAvailableShapes);
     document.getElementById('instanceOS').addEventListener('change', updateAvailableShapes);
 
 
@@ -389,11 +393,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 // 先排序
                 shapes.sort((a, b) => a.includes('A1.Flex') ? -1 : (b.includes('A1.Flex') ? 1 : 0));
                 
-                // --- ✨✨✨ 修复Bug：加入去重逻辑 ✨✨✨
+                // 去重逻辑
                 const seenShapes = new Set();
                 
                 shapes.forEach(shape => {
-                    // 只有当这个规格还没出现过时，才添加到下拉框
                     if (!seenShapes.has(shape)) {
                         seenShapes.add(shape); 
                         
@@ -1087,6 +1090,8 @@ document.addEventListener('DOMContentLoaded', function() {
         instanceActionButtons.stop.disabled = state !== 'RUNNING';
         instanceActionButtons.restart.disabled = state !== 'RUNNING';
         instanceActionButtons.changeIp.disabled = state !== 'RUNNING';
+        // 附加IP按钮：只在运行状态且未终止时可用
+        instanceActionButtons.addIp.disabled = state !== 'RUNNING';
         instanceActionButtons.assignIpv6.disabled = !(state === 'RUNNING' && selectedInstance.vnic_id);
     });
     
@@ -1269,7 +1274,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     Object.entries(instanceActionButtons).forEach(([key, button]) => {
-        if (key !== 'editInstance') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
+        // --- ✨✨✨ 修改：排除 addIp，防止触发通用逻辑 ✨✨✨
+        if (key !== 'editInstance' && key !== 'addIp') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
     });
     
     async function performInstanceAction(action) {
@@ -1309,11 +1315,62 @@ document.addEventListener('DOMContentLoaded', function() {
         confirmActionModal.show();
     }
 
+    // --- ✨✨✨ 新增：删除 IP 的函数 (IPv4) ✨✨✨
+    async function deleteSecondaryIp(ipId, ipAddr) {
+        if(!confirm(`确定要删除辅助 IP ${ipAddr} 吗？\n\n1. 此操作将立即从云端移除该私有 IP。\n2. 您可能还需要手动从 VPS 配置文件中删除它，以免网络报错。`)) {
+            return;
+        }
+
+        addLog(`正在删除辅助 IP ${ipAddr}...`);
+        
+        try {
+            const response = await apiRequest('/oci/api/instance/delete-secondary-ip', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ private_ip_id: ipId })
+            });
+
+            addLog(response.message, 'success');
+            editInstanceModal.hide();
+            setTimeout(refreshInstances, 1500); 
+
+        } catch (error) { }
+    }
+
+    // --- ✨✨✨ 新增：删除 IPv6 的函数 ✨✨✨
+    async function deleteIpv6(ipId, ipAddr) {
+        if(!confirm(`确定要删除 IPv6 地址 ${ipAddr} 吗？\n\n此操作将立即生效。`)) {
+            return;
+        }
+
+        addLog(`正在删除 IPv6 ${ipAddr}...`);
+        
+        try {
+            const response = await apiRequest('/oci/api/instance/delete-ipv6', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ipv6_id: ipId })
+            });
+
+            addLog(response.message, 'success');
+            editInstanceModal.hide();
+            setTimeout(refreshInstances, 1500); 
+
+        } catch (error) { }
+    }
+
+    // --- ✨✨✨ 修改：editInstance 逻辑，增加 IP 列表渲染 ✨✨✨
     instanceActionButtons.editInstance.addEventListener('click', async () => {
         if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
+        
+        editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv4...</td></tr>';
+        editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv6...</td></tr>';
+        
         try {
             addLog(`正在获取实例 ${selectedInstance.display_name} 的详细信息...`);
             const details = await apiRequest(`/oci/api/instance-details/${selectedInstance.id}`);
+            
+            // 填充原有表单
             editDisplayName.value = details.display_name;
             editBootVolumeSize.value = details.boot_volume_size_in_gbs;
             editVpus.value = details.vpus_per_gb;
@@ -1322,9 +1379,71 @@ document.addEventListener('DOMContentLoaded', function() {
                 editOcpus.value = details.ocpus;
                 editMemory.value = details.memory_in_gbs;
             }
+
+            // --- 渲染 IPv4 列表 ---
+            editInstanceIpList.innerHTML = ''; 
+            if (details.ips && details.ips.length > 0) {
+                details.ips.forEach(ip => {
+                    const isPrimary = ip.is_primary;
+                    const deleteBtn = isPrimary ? 
+                        '<span class="text-muted small" style="cursor: not-allowed;" title="主 IP 不可删除">-</span>' : 
+                        `<button class="btn btn-sm btn-outline-danger delete-ip-btn" data-ip-id="${ip.id}" data-ip-addr="${ip.private_ip}" title="删除此辅助 IP"><i class="bi bi-trash"></i></button>`;
+                    
+                    const typeBadge = isPrimary ? 
+                        '<span class="badge bg-primary">主IP</span>' : 
+                        '<span class="badge bg-secondary">辅助</span>';
+
+                    const row = `
+                        <tr>
+                            <td>${ip.private_ip}</td>
+                            <td>${ip.public_ip || '<span class="text-muted">-</span>'}</td>
+                            <td class="text-center">${typeBadge}</td>
+                            <td class="text-end">${deleteBtn}</td>
+                        </tr>
+                    `;
+                    editInstanceIpList.insertAdjacentHTML('beforeend', row);
+                });
+
+                document.querySelectorAll('.delete-ip-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        deleteSecondaryIp(this.dataset.ipId, this.dataset.ipAddr);
+                    });
+                });
+            } else {
+                editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-muted">未找到 IP 信息</td></tr>';
+            }
+
+            // --- 渲染 IPv6 列表 ---
+            editInstanceIpv6List.innerHTML = '';
+            if (details.ipv6s && details.ipv6s.length > 0) {
+                details.ipv6s.forEach(ip => {
+                    const row = `
+                        <tr>
+                            <td>${ip.ip_address}</td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-danger delete-ipv6-btn" data-ipv6-id="${ip.id}" data-ipv6-addr="${ip.ip_address}" title="删除此 IPv6"><i class="bi bi-trash"></i></button>
+                            </td>
+                        </tr>
+                    `;
+                    editInstanceIpv6List.insertAdjacentHTML('beforeend', row);
+                });
+
+                document.querySelectorAll('.delete-ipv6-btn').forEach(btn => {
+                    btn.addEventListener('click', function() {
+                        deleteIpv6(this.dataset.ipv6Id, this.dataset.ipv6Addr);
+                    });
+                });
+            } else {
+                editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-muted">未找到 IPv6 信息</td></tr>';
+            }
+
             editInstanceModal.show();
-        } catch(error) {}
+        } catch(error) {
+            editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-danger">加载失败</td></tr>';
+            editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-danger">加载失败</td></tr>';
+        }
     });
+
     async function handleInstanceUpdateRequest(action, payload) {
         addLog(`正在提交 ${action} 请求...`);
         try {
@@ -1706,6 +1825,51 @@ document.addEventListener('DOMContentLoaded', function() {
                     : 'bi bi-sort-alpha-down-alt text-primary';
             }
             // 已移除 addLog 调用
+        });
+    }
+
+    // --- ✨✨✨ 新增：一键附加 IP 功能 ✨✨✨
+    if (instanceActionButtons.addIp) {
+        instanceActionButtons.addIp.addEventListener('click', async () => {
+            if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
+
+            // 确认框
+            if(!confirm(`确定要为实例 "${selectedInstance.display_name}" 增加一个公网 IP 吗？\n\n注意：\n1. 这将自动申请一个辅助私有IP和公网IP。\n2. 申请后您需要在 VPS 内部执行一条命令才能生效。`)) {
+                return;
+            }
+
+            addLog(`正在为实例 ${selectedInstance.display_name} 申请附加 IP...`);
+            instanceActionButtons.addIp.disabled = true; // 防止重复点击
+
+            try {
+                const response = await apiRequest('/oci/api/instance/add-secondary-ip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        instance_id: selectedInstance.id 
+                    })
+                });
+
+                // 成功后的处理
+                addLog(`IP 附加成功! 新公网IP: ${response.public_ip}`, 'success');
+                
+                // 弹窗显示详细信息和命令
+                alert(`✅ IP 附加成功！\n\n公网 IP: ${response.public_ip}\n内网 IP: ${response.private_ip}\n\n⚠️ 请务必登录 VPS 执行以下命令以启用新 IP (点击确定后请查看日志区复制):\n\n${response.cmd_hint}`);
+                
+                // 将命令打印到日志区方便复制
+                addLog(`📋 请在 VPS 执行: ${response.cmd_hint}`, 'info');
+
+                // 稍微延迟后刷新列表
+                setTimeout(refreshInstances, 2000);
+
+            } catch (error) {
+                // apiRequest handles logging
+            } finally {
+                // 恢复按钮状态 (需检查实例是否仍处于选中且非终止状态)
+                if (selectedInstance && !['TERMINATED', 'TERMINATING'].includes(selectedInstance.lifecycle_state)) {
+                     instanceActionButtons.addIp.disabled = false;
+                }
+            }
         });
     }
 
