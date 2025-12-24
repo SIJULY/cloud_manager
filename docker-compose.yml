@@ -10,7 +10,7 @@ services:
   web:
     build: .
     restart: always
-    # 使用你原来的启动命令，确保参数一致
+    # 使用你原来的启动命令
     command: gunicorn --workers 3 --bind 0.0.0.0:5000 --preload app:app
     volumes:
       - .:/app
@@ -20,12 +20,12 @@ services:
       - TZ=Asia/Shanghai
     depends_on:
       - redis
-    # 注意：这里删除了 ports 和 depends_on caddy，这些由脚本动态注入
+    # 注意：端口映射已移除，等待脚本动态注入
 
   worker:
     build: .
     restart: always
-    # 保留你的并发优化配置：使用 threads 池，并发 20
+    # 保留你的 20 并发线程池配置
     command: celery -A app.celery worker --pool=threads --concurrency=20 --loglevel=info
     volumes:
       - .:/app
@@ -35,7 +35,7 @@ services:
     depends_on:
       - redis
 
-# 移除了 caddy 服务，改由脚本根据用户选择动态添加
+# Caddy 服务已移除，将由安装脚本根据需要动态添加
 
 volumes:
   redis_data:
