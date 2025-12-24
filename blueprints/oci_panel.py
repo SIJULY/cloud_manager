@@ -1070,6 +1070,216 @@ def get_tenancy_age(alias):
         logging.error(f"Failed to fetch tenancy age for {alias}: {e}")
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
+@oci_bp.route('/api/instance-details/<instance_id>')
+@login_required
+@oci_clients_required
+@timeout(10)
+def get_instance_details(instance_id):
+    try:
+        compute_client = g.oci_clients['compute']
+        bs_client = g.oci_clients['bs']
+        vnet_client = g.oci_clients['vnet']
+        compartment_id = g.oci_config['tenancy']
+        
+        instance = compute_client.get_instance(instance_id).data
+        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
+        
+        boot_vol_size = 0
+        vpus = 10
+        boot_volume_id = None
+
+        if boot_vol_attachments: 
+            boot_volume_id = boot_vol_attachments[0].boot_volume_id
+            boot_volume = bs_client.get_boot_volume(boot_volume_id).data
+            boot_vol_size = int(boot_volume.size_in_gbs)
+            vpus = int(boot_volume.vpus_per_gb)
+
+        # --- Fetch IPv4 List for Edit Modal ---
+        ip_list = []
+        # --- ✨ New: Fetch IPv6 List ---
+        ipv6_list = []
+        
+        try:
+            vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
+            if vnic_attachments:
+                vnic_id = vnic_attachments[0].vnic_id
+                
+                # 1. Fetch Private IPs (IPv4)
+                private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
+                for pip in private_ips:
+                    pub_ip_val = "无"
+                    if pip.is_primary:
+                         try:
+                             vnic_info = vnet_client.get_vnic(vnic_id).data
+                             if vnic_info.public_ip: pub_ip_val = vnic_info.public_ip
+                         except: pass
+                    else:
+                        try:
+                            pub_ip_obj = vnet_client.get_public_ip_by_private_ip_id(
+                                        GetPublicIpByPrivateIpIdDetails(private_ip_id=pip.id)
+                                    ).data
+                            pub_ip_val = pub_ip_obj.ip_address
+                        except: pass
+                    
+                    ip_list.append({
+                        'private_ip': pip.ip_address,
+                        'public_ip': pub_ip_val,
+                        'is_primary': pip.is_primary,
+                        'id': pip.id
+                    })
+
+                # 2. ✨ Fetch IPv6s ✨
+                ipv6s = oci.pagination.list_call_get_all_results(vnet_client.list_ipv6s, vnic_id=vnic_id).data
+                for ip in ipv6s:
+                    ipv6_list.append({
+                        'id': ip.id,
+                        'ip_address': ip.ip_address
+                    })
+
+        except Exception as e:
+            logging.error(f"Error fetching IPs for instance details: {e}")
+
+        return jsonify({
+            "display_name": instance.display_name, 
+            "shape": instance.shape, 
+            "ocpus": instance.shape_config.ocpus, 
+            "memory_in_gbs": instance.shape_config.memory_in_gbs, 
+            "boot_volume_id": boot_volume_id, 
+            "boot_volume_size_in_gbs": boot_vol_size, 
+            "vpus_per_gb": vpus,
+            "ips": ip_list,
+            "ipv6s": ipv6_list # ✨ Return IPv6 list
+        })
+    except TimeoutException:
+        return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
+    except Exception as e:
+        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
+
+@oci_bp.route('/api/available-os-versions')
+@login_required
+@oci_clients_required
+@timeout(20)
+def get_available_os_versions():
+    try:
+        compute_client = g.oci_clients['compute']
+        tenancy_ocid = g.oci_config['tenancy']
+        
+        logging.info("Fetching available Ubuntu versions...")
+        
+        # 获取所有 Canonical Ubuntu 镜像
+        images = oci.pagination.list_call_get_all_results(
+            compute_client.list_images,
+            compartment_id=tenancy_ocid,
+            operating_system="Canonical Ubuntu",
+            sort_by="TIMECREATED",
+            sort_order="DESC"
+        ).data
+
+        # 使用 set 去重
+        versions = set()
+        for img in images:
+            v = img.operating_system_version
+            # 【关键修改】使用正则严格匹配 "数字.数字" 的格式
+            # 这会过滤掉 "24.04 Minimal", "22.04 aarch64" 等带后缀的版本
+            # 只保留纯净的 "24.04", "22.04", "20.04" 等
+            if v and re.match(r'^\d+\.\d+$', v):
+                versions.add(v)
+        
+        # 排序版本号 (降序，最新的在前面)
+        sorted_versions = sorted(list(versions), reverse=True)
+        
+        # 取前两个最新的版本
+        latest_versions = sorted_versions[:2]
+        
+        # 构造成前端需要的格式
+        result = [f"Canonical Ubuntu-{v}" for v in latest_versions]
+        
+        return jsonify(result)
+
+    except TimeoutException:
+        return jsonify({"error": "获取操作系统列表超时。"}), 504
+    except Exception as e:
+        logging.error(f"Failed to get OS versions: {e}", exc_info=True)
+        return jsonify({"error": f"获取操作系统列表失败: {e}"}), 500
+
+@oci_bp.route('/api/available-shapes')
+@login_required
+@oci_clients_required
+@timeout(45)
+def get_available_shapes():
+    try:
+        os_name_version = request.args.get('os_name_version')
+        if not os_name_version:
+            return jsonify({"error": "缺少 os_name_version 参数"}), 400
+
+        os_name, os_version = os_name_version.split('-')
+        compute_client = g.oci_clients['compute']
+        tenancy_ocid = g.oci_config['tenancy']
+        
+        logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
+        all_shapes = oci.pagination.list_call_get_all_results(
+            compute_client.list_shapes,
+            compartment_id=tenancy_ocid
+        ).data
+        logging.info(f"Found {len(all_shapes)} total shapes.")
+
+        architecture_shapes = []
+        for shape in all_shapes:
+            if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
+                proc_desc = shape.processor_description.lower()
+                if 'ampere' in proc_desc or 'amd' in proc_desc:
+                    architecture_shapes.append(shape.shape)
+        
+        logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
+
+        valid_shapes_for_os = []
+        for shape_name in architecture_shapes:
+            try:
+                images = compute_client.list_images(
+                    tenancy_ocid,
+                    operating_system=os_name,
+                    operating_system_version=os_version,
+                    shape=shape_name,
+                    limit=1
+                ).data
+                if images:
+                    valid_shapes_for_os.append(shape_name)
+            except ServiceError as se:
+                logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
+                continue
+        
+        logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
+        
+        valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
+
+        return jsonify(valid_shapes_for_os)
+
+    except TimeoutException:
+        return jsonify({"error": "获取可用实例规格超时。"}), 504
+    except Exception as e:
+        logging.error(f"Failed to get available shapes: {e}", exc_info=True)
+        return jsonify({"error": f"获取可用实例规格失败: {e}"}), 500
+
+@oci_bp.route('/api/update-instance', methods=['POST'])
+@login_required
+@oci_clients_required
+@timeout(10)
+def update_instance():
+    try:
+        data = request.json
+        action, instance_id = data.get('action'), data.get('instance_id')
+        if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
+        task_name = f"{action} on instance {instance_id[-6:]}"
+        task_id = _create_task_entry('action', task_name)
+        _update_instance_details_task.delay(task_id, g.oci_config, data)
+        return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
+    except (sqlite3.OperationalError, TimeoutException) as e:
+        if isinstance(e, TimeoutException) or "database is locked" in str(e):
+            return jsonify({"error": "请求超时或数据库繁忙，请稍后重-试。"}), 503
+        raise
+    except Exception as e:
+        return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
+
 @oci_bp.route('/api/instance/add-secondary-ip', methods=['POST'])
 @login_required
 def add_secondary_ip():
@@ -1157,91 +1367,6 @@ def add_secondary_ip():
         return jsonify({'error': f"OCI API 错误: {e.message}"}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-@oci_bp.route('/api/instance-details/<instance_id>')
-@login_required
-@oci_clients_required
-@timeout(10)
-def get_instance_details(instance_id):
-    try:
-        compute_client = g.oci_clients['compute']
-        bs_client = g.oci_clients['bs']
-        vnet_client = g.oci_clients['vnet']
-        compartment_id = g.oci_config['tenancy']
-        
-        instance = compute_client.get_instance(instance_id).data
-        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-        
-        boot_vol_size = 0
-        vpus = 10
-        boot_volume_id = None
-
-        if boot_vol_attachments: 
-            boot_volume_id = boot_vol_attachments[0].boot_volume_id
-            boot_volume = bs_client.get_boot_volume(boot_volume_id).data
-            boot_vol_size = int(boot_volume.size_in_gbs)
-            vpus = int(boot_volume.vpus_per_gb)
-
-        # --- Fetch IPv4 List for Edit Modal ---
-        ip_list = []
-        # --- ✨ New: Fetch IPv6 List ---
-        ipv6_list = []
-        
-        try:
-            vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
-            if vnic_attachments:
-                vnic_id = vnic_attachments[0].vnic_id
-                
-                # 1. Fetch Private IPs (IPv4)
-                private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
-                for pip in private_ips:
-                    pub_ip_val = "无"
-                    if pip.is_primary:
-                         try:
-                             vnic_info = vnet_client.get_vnic(vnic_id).data
-                             if vnic_info.public_ip: pub_ip_val = vnic_info.public_ip
-                         except: pass
-                    else:
-                        try:
-                            pub_ip_obj = vnet_client.get_public_ip_by_private_ip_id(
-                                        GetPublicIpByPrivateIpIdDetails(private_ip_id=pip.id)
-                                    ).data
-                            pub_ip_val = pub_ip_obj.ip_address
-                        except: pass
-                    
-                    ip_list.append({
-                        'private_ip': pip.ip_address,
-                        'public_ip': pub_ip_val,
-                        'is_primary': pip.is_primary,
-                        'id': pip.id
-                    })
-
-                # 2. ✨ Fetch IPv6s ✨
-                ipv6s = oci.pagination.list_call_get_all_results(vnet_client.list_ipv6s, vnic_id=vnic_id).data
-                for ip in ipv6s:
-                    ipv6_list.append({
-                        'id': ip.id,
-                        'ip_address': ip.ip_address
-                    })
-
-        except Exception as e:
-            logging.error(f"Error fetching IPs for instance details: {e}")
-
-        return jsonify({
-            "display_name": instance.display_name, 
-            "shape": instance.shape, 
-            "ocpus": instance.shape_config.ocpus, 
-            "memory_in_gbs": instance.shape_config.memory_in_gbs, 
-            "boot_volume_id": boot_volume_id, 
-            "boot_volume_size_in_gbs": boot_vol_size, 
-            "vpus_per_gb": vpus,
-            "ips": ip_list,
-            "ipv6s": ipv6_list # ✨ Return IPv6 list
-        })
-    except TimeoutException:
-        return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
 
 @oci_bp.route('/api/instance/delete-secondary-ip', methods=['POST'])
 @login_required
