@@ -11,7 +11,8 @@ from oci.core.models import (CreateVcnDetails, CreateSubnetDetails, CreateIntern
                              LaunchInstanceShapeConfigDetails, UpdateSecurityListDetails, EgressSecurityRule, IngressSecurityRule,
                              UpdateInstanceDetails, UpdateBootVolumeDetails, UpdateInstanceShapeConfigDetails,
                              AddVcnIpv6CidrDetails, UpdateSubnetDetails,
-                             LaunchInstanceAgentConfigDetails, InstanceAgentPluginConfigDetails
+                             LaunchInstanceAgentConfigDetails, InstanceAgentPluginConfigDetails,
+                             GetPublicIpByPrivateIpIdDetails, CreatePrivateIpDetails
                              )
 from oci.exceptions import ServiceError
 from app import celery
@@ -26,8 +27,7 @@ TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
 DEFAULT_KEY_FILE = "default_key.json" 
 
-
-# --- 通用请求超时处理 ---
+# --- Timeout Handling ---
 class TimeoutException(Exception):
     pass
 
@@ -48,7 +48,8 @@ def timeout(seconds):
         return wrapper
     return decorator
 
-# --- 数据库核心辅助函数 ---
+# --- 核心函数区域 ---
+
 def get_db_connection(timeout=3):
     conn = sqlite3.connect(DATABASE, timeout=timeout)
     conn.row_factory = sqlite3.Row
@@ -71,20 +72,16 @@ def update_db_schema():
     try:
         db = get_db_connection()
         cursor = db.cursor()
-        
         cursor.execute("PRAGMA table_info(tasks)")
         columns = [info['name'] for info in cursor.fetchall()]
-        
         if 'completed_at' not in columns:
             logging.info("Schema update: Adding 'completed_at' column to 'tasks' table.")
             cursor.execute("ALTER TABLE tasks ADD COLUMN completed_at TEXT")
             db.commit()
             logging.info("'completed_at' column added successfully.")
-
         db.close()
     except Exception as e:
         logging.error(f"Failed to update database schema: {e}")
-
 
 def init_db():
     db = get_db_connection()
@@ -120,7 +117,93 @@ def _db_execute_celery(query, params=()):
     db.commit()
     db.close()
 
-# --- 核心辅助函数 ---
+def _create_task_entry(task_type, task_name, alias=None):
+    db = get_db()
+    task_id = str(uuid.uuid4())
+    if alias is None: alias = session.get('oci_profile_alias') or g.get('api_selected_alias', 'N/A')
+    utc_time = datetime.datetime.now(timezone.utc).isoformat()
+    db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
+               (task_id, task_type, task_name, 'pending', '', utc_time, alias))
+    db.commit()
+    return task_id
+
+def load_profiles():
+    if not os.path.exists(KEYS_FILE): return {"profiles": {}, "profile_order": []}
+    try:
+        with open(KEYS_FILE, 'r', encoding='utf-8') as f:
+            content = f.read()
+            data = json.loads(content) if content else {"profiles": {}, "profile_order": []}
+            if "profiles" not in data:
+                data = {"profiles": data, "profile_order": list(data.keys())}
+            if "profile_order" not in data:
+                data["profile_order"] = list(data["profiles"].keys())
+            return data
+    except (IOError, json.JSONDecodeError): return {"profiles": {}, "profile_order": []}
+
+def recover_snatching_tasks():
+    logging.info("--- 检查并恢复被中断的抢占任务 ---")
+    db = get_db_connection()
+    try:
+        orphaned_tasks = db.execute(
+            "SELECT id, result, account_alias FROM tasks WHERE status = 'running' AND type = 'snatch'"
+        ).fetchall()
+
+        if not orphaned_tasks:
+            logging.info("没有需要自动恢复的抢占任务。")
+            return
+
+        logging.info(f"发现 {len(orphaned_tasks)} 个需要自动恢复的抢占任务。")
+        profiles = load_profiles().get("profiles", {})
+
+        for task in orphaned_tasks:
+            task_id = task['id']
+            alias = task['account_alias']
+            
+            profile_config = profiles.get(alias)
+            if not profile_config:
+                logging.warning(f"任务 {task_id} 对应的账号 '{alias}' 配置已不存在，无法恢复。")
+                db.execute(
+                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
+                    ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id)
+                )
+                db.commit()
+                continue
+
+            try:
+                result_json = json.loads(task['result'])
+                original_details = result_json.get('details')
+                if not original_details:
+                    raise ValueError("在任务 result 中未找到 'details' 字段。")
+                
+                result_json['last_message'] = "服务重启，任务已自动恢复并继续执行..."
+                new_run_id = str(uuid.uuid4())
+                result_json['run_id'] = new_run_id
+                
+                db.execute(
+                    "UPDATE tasks SET result = ? WHERE id = ?",
+                    (json.dumps(result_json), task_id)
+                )
+                db.commit()
+                
+                auto_bind_domain = original_details.get('auto_bind_domain', False)
+                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
+
+                logging.info(f"已成功重新派发任务 {task_id} (账号: {alias})。")
+
+            except (json.JSONDecodeError, ValueError, KeyError) as e:
+                logging.error(f"解析或恢复任务 {task_id} 失败: {e}。")
+                db.execute(
+                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
+                    ('failure', f'任务恢复失败，原因: 无法解析任务参数 ({e})', task_id)
+                )
+                db.commit()
+
+    except Exception as e:
+        logging.error(f"在恢复抢占任务过程中发生未知错误: {e}")
+    finally:
+        db.close()
+        logging.info("--- 抢占任务恢复检查完成 ---")
+
 def _format_timedelta(duration: timedelta) -> str:
     seconds = duration.total_seconds()
     if seconds < 60:
@@ -140,27 +223,10 @@ def _format_timedelta(duration: timedelta) -> str:
         
     return "".join(parts) if parts else "不到1分钟"
 
-def load_profiles():
-    if not os.path.exists(KEYS_FILE): return {"profiles": {}, "profile_order": []}
-    try:
-        with open(KEYS_FILE, 'r', encoding='utf-8') as f:
-            content = f.read()
-            data = json.loads(content) if content else {"profiles": {}, "profile_order": []}
-            if "profiles" not in data:
-                data = {"profiles": data, "profile_order": list(data.keys())}
-            if "profile_order" not in data:
-                data["profile_order"] = list(data["profiles"].keys())
-            return data
-    except (IOError, json.JSONDecodeError): return {"profiles": {}, "profile_order": []}
-
 def save_profiles(data):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
 
-# --- ✨ 内部辅助函数：获取并保存注册日期 ✨ ---
 def _internal_fetch_and_save_tenancy_date(alias):
-    """
-    内部函数：连接 API 获取 Tenancy 创建时间，并更新到本地 profiles 配置文件中。
-    """
     try:
         all_data = load_profiles()
         profiles = all_data.get("profiles", {})
@@ -169,7 +235,6 @@ def _internal_fetch_and_save_tenancy_date(alias):
 
         profile_config = profiles[alias]
         
-        # 获取 Identity Client
         clients, error = get_oci_clients(profile_config, validate=False)
         if error:
             return False, error
@@ -177,14 +242,11 @@ def _internal_fetch_and_save_tenancy_date(alias):
         identity_client = clients['identity']
         tenancy_id = profile_config['tenancy']
 
-        # 查询 Root Compartment (Tenancy)
         compartment = identity_client.get_compartment(compartment_id=tenancy_id).data
         created_at = compartment.time_created
         
-        # 格式化日期为 YYYY-MM-DD
         date_str = created_at.strftime('%Y-%m-%d')
         
-        # 更新并保存
         all_data["profiles"][alias]['registration_date'] = date_str
         save_profiles(all_data)
         
@@ -209,7 +271,6 @@ def save_tg_config(config):
     except Exception as e:
         logging.error(f"Failed to save Telegram config to {TG_CONFIG_FILE}: {e}")
 
-# --- Cloudflare 辅助函数 ---
 def load_cloudflare_config():
     if not os.path.exists(CLOUDFLARE_CONFIG_FILE):
         return {}
@@ -478,72 +539,6 @@ def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
         new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all'))
         vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
         logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
-
-# --- 任务恢复功能 ---
-def recover_snatching_tasks():
-    logging.info("--- 检查并恢复被中断的抢占任务 ---")
-    
-    db = get_db_connection()
-    try:
-        orphaned_tasks = db.execute(
-            "SELECT id, result, account_alias FROM tasks WHERE status = 'running' AND type = 'snatch'"
-        ).fetchall()
-
-        if not orphaned_tasks:
-            logging.info("没有需要自动恢复的抢占任务。")
-            return
-
-        logging.info(f"发现 {len(orphaned_tasks)} 个需要自动恢复的抢占任务。")
-        profiles = load_profiles().get("profiles", {})
-
-        for task in orphaned_tasks:
-            task_id = task['id']
-            alias = task['account_alias']
-            
-            profile_config = profiles.get(alias)
-            if not profile_config:
-                logging.warning(f"任务 {task_id} 对应的账号 '{alias}' 配置已不存在，无法恢复。")
-                db.execute(
-                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
-                    ('failure', '任务因关联的账号配置被删除而恢复失败。', task_id)
-                )
-                db.commit()
-                continue
-
-            try:
-                result_json = json.loads(task['result'])
-                original_details = result_json.get('details')
-                if not original_details:
-                    raise ValueError("在任务 result 中未找到 'details' 字段。")
-                
-                result_json['last_message'] = "服务重启，任务已自动恢复并继续执行..."
-                new_run_id = str(uuid.uuid4())
-                result_json['run_id'] = new_run_id
-                
-                db.execute(
-                    "UPDATE tasks SET result = ? WHERE id = ?",
-                    (json.dumps(result_json), task_id)
-                )
-                db.commit()
-                
-                auto_bind_domain = original_details.get('auto_bind_domain', False)
-                _snatch_instance_task.delay(task_id, profile_config, alias, original_details, new_run_id, auto_bind_domain)
-
-                logging.info(f"已成功重新派发任务 {task_id} (账号: {alias})。")
-
-            except (json.JSONDecodeError, ValueError, KeyError) as e:
-                logging.error(f"解析或恢复任务 {task_id} 失败: {e}。")
-                db.execute(
-                    "UPDATE tasks SET status = ?, result = ? WHERE id = ?",
-                    ('failure', f'任务恢复失败，原因: 无法解析任务参数 ({e})', task_id)
-                )
-                db.commit()
-
-    except Exception as e:
-        logging.error(f"在恢复抢占任务过程中发生未知错误: {e}")
-    finally:
-        db.close()
-        logging.info("--- 抢占任务恢复检查完成 ---")
 
 # --- Decorators ---
 def login_required(f):
@@ -937,7 +932,7 @@ def oci_session_route():
 @oci_bp.route('/api/instances', defaults={'alias': None})
 @oci_bp.route('/api/<alias>/instances')
 @login_required
-@timeout(30)
+@timeout(45) # 增加超时时间，因为查询多个IP需要更多API调用
 def get_instances(alias):
     try:
         if alias is None:
@@ -957,24 +952,78 @@ def get_instances(alias):
 
         instances = oci.pagination.list_call_get_all_results(compute_client.list_instances, compartment_id=compartment_id).data
         instance_details_list = []
+        
         for instance in instances:
-            data = {"display_name": instance.display_name, "id": instance.id, "lifecycle_state": instance.lifecycle_state, "shape": instance.shape, "time_created": instance.time_created.isoformat() if instance.time_created else None, "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), "public_ip": "无", "ipv6_address": "无", "boot_volume_size_gb": "N/A", "vnic_id": None, "subnet_id": None}
+            data = {
+                "display_name": instance.display_name, 
+                "id": instance.id, 
+                "lifecycle_state": instance.lifecycle_state, 
+                "shape": instance.shape, 
+                "time_created": instance.time_created.isoformat() if instance.time_created else None, 
+                "ocpus": getattr(instance.shape_config, 'ocpus', 'N/A'), 
+                "memory_in_gbs": getattr(instance.shape_config, 'memory_in_gbs', 'N/A'), 
+                "public_ip": "无", 
+                "ipv6_address": "无", 
+                "boot_volume_size_gb": "N/A", 
+                "vnic_id": None, 
+                "subnet_id": None
+            }
             try:
                 if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
+                    # 获取网卡信息
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
                     if vnic_attachments:
                         vnic_id = vnic_attachments[0].vnic_id
                         data.update({'vnic_id': vnic_id, 'subnet_id': vnic_attachments[0].subnet_id})
+                        
                         vnic = vnet_client.get_vnic(vnic_id).data
-                        data.update({'public_ip': vnic.public_ip or "无"})
+                        
+                        # --- ✨✨✨ 获取所有 IPv4 (包括辅助IP) ✨✨✨ ---
+                        ipv4_display_list = []
+                        
+                        # 1. 获取网卡上所有的私有IP对象
+                        private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
+                        
+                        # 排序：主IP排在最前面
+                        private_ips.sort(key=lambda x: not x.is_primary)
+
+                        for pip in private_ips:
+                            pub_ip_str = None
+                            if pip.is_primary:
+                                # 主IP直接从VNIC对象拿，节省一次API调用
+                                pub_ip_str = vnic.public_ip
+                            else:
+                                # 辅助IP需要单独查询对应的公网IP
+                                try:
+                                    pub_ip_obj = vnet_client.get_public_ip_by_private_ip_id(
+                                        GetPublicIpByPrivateIpIdDetails(private_ip_id=pip.id)
+                                    ).data
+                                    pub_ip_str = pub_ip_obj.ip_address
+                                except Exception:
+                                    # 并不是所有私有IP都有公网IP，忽略404等错误
+                                    pass
+                            
+                            if pub_ip_str:
+                                ipv4_display_list.append(pub_ip_str)
+                        
+                        # 用换行符拼接所有找到的IP
+                        if ipv4_display_list:
+                            data['public_ip'] = "<br>".join(ipv4_display_list)
+                        # -----------------------------------------------
+
+                        # 获取 IPv6
                         ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
-                        if ipv6s: data['ipv6_address'] = ipv6s[0].ip_address
+                        if ipv6s: 
+                            # 同样支持显示多个IPv6
+                            data['ipv6_address'] = "<br>".join([ip.ip_address for ip in ipv6s])
+
+                    # 获取引导卷大小
                     boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
                     if boot_vol_attachments:
                         boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
                         data['boot_volume_size_gb'] = f"{int(boot_vol.size_in_gbs)} GB"
             except ServiceError as se:
-                if se.status == 404: logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated. Error: {se.message}")
+                if se.status == 404: logging.warning(f"Could not fetch details for instance {instance.display_name} ({instance.id}), it might have been terminated.")
                 else: logging.error(f"OCI ServiceError for instance {instance.display_name}: {se}")
             except Exception as ex:
                 logging.error(f"Generic exception while fetching details for instance {instance.display_name}: {ex}")
@@ -1021,15 +1070,232 @@ def get_tenancy_age(alias):
         logging.error(f"Failed to fetch tenancy age for {alias}: {e}")
         return jsonify({"error": f"查询失败: {str(e)}"}), 500
 
-def _create_task_entry(task_type, task_name, alias=None):
-    db = get_db()
-    task_id = str(uuid.uuid4())
-    if alias is None: alias = session.get('oci_profile_alias') or g.get('api_selected_alias', 'N/A')
-    utc_time = datetime.datetime.now(timezone.utc).isoformat()
-    db.execute('INSERT INTO tasks (id, type, name, status, result, created_at, account_alias) VALUES (?, ?, ?, ?, ?, ?, ?)',
-               (task_id, task_type, task_name, 'pending', '', utc_time, alias))
-    db.commit()
-    return task_id
+@oci_bp.route('/api/instance/add-secondary-ip', methods=['POST'])
+@login_required
+def add_secondary_ip():
+    data = request.json
+    alias = session.get('oci_profile_alias') or g.get('api_selected_alias')
+    instance_id = data.get('instance_id')
+    
+    if not alias or not instance_id:
+        return jsonify({'error': '缺少必要参数'}), 400
+
+    try:
+        profiles = load_profiles().get("profiles", {})
+        profile_config = profiles.get(alias)
+        if not profile_config:
+            return jsonify({"error": f"账号 '{alias}' 未找到"}), 404
+
+        clients, error = get_oci_clients(profile_config, validate=False)
+        if error:
+            return jsonify({"error": error}), 500
+            
+        compute_client = clients['compute']
+        network_client = clients['vnet']
+        config = profile_config
+
+        # 1. 获取实例的主 VNIC (网卡)
+        vnic_attachments = oci.pagination.list_call_get_all_results(
+            compute_client.list_vnic_attachments,
+            compartment_id=config['tenancy'],
+            instance_id=instance_id
+        ).data
+        
+        if not vnic_attachments:
+            return jsonify({'error': '找不到实例的网卡信息'}), 404
+            
+        # 通常取第一个附件就是主网卡
+        vnic_id = vnic_attachments[0].vnic_id
+
+        # 2. 分配一个新的辅助私有 IP (Secondary Private IP)
+        private_ip_details = CreatePrivateIpDetails(
+            vnic_id=vnic_id,
+            display_name="Auto-Panel-Secondary"
+        )
+        private_ip_response = network_client.create_private_ip(private_ip_details)
+        new_private_ip = private_ip_response.data
+        
+        # 3. 申请一个保留公网 IP (Reserved Public IP) 并绑定到刚才的私有 IP 上
+        public_ip_details = CreatePublicIpDetails(
+            compartment_id=config['tenancy'],
+            lifetime='RESERVED',
+            private_ip_id=new_private_ip.id,
+            display_name=f"PubIP-for-{new_private_ip.ip_address}"
+        )
+        
+        public_ip_response = network_client.create_public_ip(public_ip_details)
+        new_public_ip = public_ip_response.data
+
+        # 4. 生成配置命令 (Ubuntu ONLY for cleanest output)
+        ip_addr = new_private_ip.ip_address
+        
+        # 使用 \\n 进行转义，确保在 JSON -> Python -> Shell 传递过程中保持换行符
+        yaml_content = (
+            "network:\\\\n"
+            "  version: 2\\\\n"
+            "  ethernets:\\\\n"
+            "    $IFACE:\\\\n"
+            "      addresses:\\\\n"
+            f"        - {ip_addr}/24"
+        )
+        
+        cmd_hint = (
+            f"IFACE=$(ip route get 1 | awk '{{print $5;exit}}'); "
+            f"sudo printf \"{yaml_content}\" | sudo tee /etc/netplan/99-secondary-ip-{ip_addr.replace('.', '-')}.yaml > /dev/null; "
+            f"sudo netplan apply; "
+            f"echo '✅ IP {ip_addr} added successfully!'"
+        )
+
+        return jsonify({
+            'message': 'IP 附加成功！',
+            'private_ip': new_private_ip.ip_address,
+            'public_ip': new_public_ip.ip_address,
+            'cmd_hint': cmd_hint
+        })
+
+    except ServiceError as e:
+        return jsonify({'error': f"OCI API 错误: {e.message}"}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@oci_bp.route('/api/instance-details/<instance_id>')
+@login_required
+@oci_clients_required
+@timeout(10)
+def get_instance_details(instance_id):
+    try:
+        compute_client = g.oci_clients['compute']
+        bs_client = g.oci_clients['bs']
+        vnet_client = g.oci_clients['vnet']
+        compartment_id = g.oci_config['tenancy']
+        
+        instance = compute_client.get_instance(instance_id).data
+        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
+        
+        boot_vol_size = 0
+        vpus = 10
+        boot_volume_id = None
+
+        if boot_vol_attachments: 
+            boot_volume_id = boot_vol_attachments[0].boot_volume_id
+            boot_volume = bs_client.get_boot_volume(boot_volume_id).data
+            boot_vol_size = int(boot_volume.size_in_gbs)
+            vpus = int(boot_volume.vpus_per_gb)
+
+        # --- Fetch IPv4 List for Edit Modal ---
+        ip_list = []
+        # --- ✨ New: Fetch IPv6 List ---
+        ipv6_list = []
+        
+        try:
+            vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
+            if vnic_attachments:
+                vnic_id = vnic_attachments[0].vnic_id
+                
+                # 1. Fetch Private IPs (IPv4)
+                private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
+                for pip in private_ips:
+                    pub_ip_val = "无"
+                    if pip.is_primary:
+                         try:
+                             vnic_info = vnet_client.get_vnic(vnic_id).data
+                             if vnic_info.public_ip: pub_ip_val = vnic_info.public_ip
+                         except: pass
+                    else:
+                        try:
+                            pub_ip_obj = vnet_client.get_public_ip_by_private_ip_id(
+                                        GetPublicIpByPrivateIpIdDetails(private_ip_id=pip.id)
+                                    ).data
+                            pub_ip_val = pub_ip_obj.ip_address
+                        except: pass
+                    
+                    ip_list.append({
+                        'private_ip': pip.ip_address,
+                        'public_ip': pub_ip_val,
+                        'is_primary': pip.is_primary,
+                        'id': pip.id
+                    })
+
+                # 2. ✨ Fetch IPv6s ✨
+                ipv6s = oci.pagination.list_call_get_all_results(vnet_client.list_ipv6s, vnic_id=vnic_id).data
+                for ip in ipv6s:
+                    ipv6_list.append({
+                        'id': ip.id,
+                        'ip_address': ip.ip_address
+                    })
+
+        except Exception as e:
+            logging.error(f"Error fetching IPs for instance details: {e}")
+
+        return jsonify({
+            "display_name": instance.display_name, 
+            "shape": instance.shape, 
+            "ocpus": instance.shape_config.ocpus, 
+            "memory_in_gbs": instance.shape_config.memory_in_gbs, 
+            "boot_volume_id": boot_volume_id, 
+            "boot_volume_size_in_gbs": boot_vol_size, 
+            "vpus_per_gb": vpus,
+            "ips": ip_list,
+            "ipv6s": ipv6_list # ✨ Return IPv6 list
+        })
+    except TimeoutException:
+        return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
+    except Exception as e:
+        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
+
+@oci_bp.route('/api/instance/delete-secondary-ip', methods=['POST'])
+@login_required
+@oci_clients_required
+@timeout(15)
+def delete_secondary_ip():
+    try:
+        data = request.json
+        private_ip_id = data.get('private_ip_id')
+        
+        if not private_ip_id:
+            return jsonify({"error": "缺少 private_ip_id 参数"}), 400
+
+        vnet_client = g.oci_clients['vnet']
+
+        try:
+            private_ip_obj = vnet_client.get_private_ip(private_ip_id).data
+            if private_ip_obj.is_primary:
+                return jsonify({"error": "无法删除主私有 IP。"}), 400
+        except ServiceError as se:
+            if se.status == 404:
+                return jsonify({"error": "IP 地址不存在或已被删除。"}), 404
+            raise
+
+        vnet_client.delete_private_ip(private_ip_id)
+        return jsonify({"success": True, "message": "IP 删除请求已提交（立即生效）。"})
+
+    except ServiceError as e:
+        return jsonify({'error': f"OCI API 错误: {e.message}"}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# --- ✨ New Route: Delete IPv6 ---
+@oci_bp.route('/api/instance/delete-ipv6', methods=['POST'])
+@login_required
+@oci_clients_required
+@timeout(15)
+def delete_ipv6():
+    try:
+        data = request.json
+        ipv6_id = data.get('ipv6_id')
+        
+        if not ipv6_id:
+            return jsonify({"error": "缺少 ipv6_id 参数"}), 400
+
+        vnet_client = g.oci_clients['vnet']
+        vnet_client.delete_ipv6(ipv6_id)
+        
+        return jsonify({"success": True, "message": "IPv6 删除请求已提交（立即生效）。"})
+
+    except ServiceError as e:
+        return jsonify({'error': f"OCI API 错误: {e.message}"}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @oci_bp.route('/api/instance-action', methods=['POST'], defaults={'alias': None})
 @oci_bp.route('/api/<alias>/instance-action', methods=['POST'])
@@ -1066,151 +1332,6 @@ def instance_action(alias):
         raise
     except Exception as e:
         return jsonify({"error": f"提交实例操作失败: {e}"}), 500
-
-@oci_bp.route('/api/instance-details/<instance_id>')
-@login_required
-@oci_clients_required
-@timeout(10)
-def get_instance_details(instance_id):
-    try:
-        compute_client = g.oci_clients['compute']
-        bs_client = g.oci_clients['bs']
-        compartment_id = g.oci_config['tenancy']
-        instance = compute_client.get_instance(instance_id).data
-        boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
-        if not boot_vol_attachments: return jsonify({"error": "找不到此实例的引导卷"}), 404
-        boot_volume = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
-        return jsonify({"display_name": instance.display_name, "shape": instance.shape, "ocpus": instance.shape_config.ocpus, "memory_in_gbs": instance.shape_config.memory_in_gbs, "boot_volume_id": boot_volume.id, "boot_volume_size_in_gbs": boot_volume.size_in_gbs, "vpus_per_gb": boot_volume.vpus_per_gb})
-    except TimeoutException:
-        return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
-    except Exception as e:
-        return jsonify({"error": f"获取实例详情失败: {e}"}), 500
-
-
-@oci_bp.route('/api/available-os-versions')
-@login_required
-@oci_clients_required
-@timeout(20)
-def get_available_os_versions():
-    try:
-        compute_client = g.oci_clients['compute']
-        tenancy_ocid = g.oci_config['tenancy']
-        
-        logging.info("Fetching available Ubuntu versions...")
-        
-        # 获取所有 Canonical Ubuntu 镜像
-        images = oci.pagination.list_call_get_all_results(
-            compute_client.list_images,
-            compartment_id=tenancy_ocid,
-            operating_system="Canonical Ubuntu",
-            sort_by="TIMECREATED",
-            sort_order="DESC"
-        ).data
-
-        # 使用 set 去重
-        versions = set()
-        for img in images:
-            v = img.operating_system_version
-            # 【关键修改】使用正则严格匹配 "数字.数字" 的格式
-            # 这会过滤掉 "24.04 Minimal", "22.04 aarch64" 等带后缀的版本
-            # 只保留纯净的 "24.04", "22.04", "20.04" 等
-            if v and re.match(r'^\d+\.\d+$', v):
-                versions.add(v)
-        
-        # 排序版本号 (降序，最新的在前面)
-        sorted_versions = sorted(list(versions), reverse=True)
-        
-        # 取前两个最新的版本
-        latest_versions = sorted_versions[:2]
-        
-        # 构造成前端需要的格式
-        result = [f"Canonical Ubuntu-{v}" for v in latest_versions]
-        
-        return jsonify(result)
-
-    except TimeoutException:
-        return jsonify({"error": "获取操作系统列表超时。"}), 504
-    except Exception as e:
-        logging.error(f"Failed to get OS versions: {e}", exc_info=True)
-        return jsonify({"error": f"获取操作系统列表失败: {e}"}), 500
-
-@oci_bp.route('/api/available-shapes')
-@login_required
-@oci_clients_required
-@timeout(45)
-def get_available_shapes():
-    try:
-        os_name_version = request.args.get('os_name_version')
-        if not os_name_version:
-            return jsonify({"error": "缺少 os_name_version 参数"}), 400
-
-        os_name, os_version = os_name_version.split('-')
-        compute_client = g.oci_clients['compute']
-        tenancy_ocid = g.oci_config['tenancy']
-        
-        logging.info(f"Fetching all shapes for tenancy {tenancy_ocid}...")
-        all_shapes = oci.pagination.list_call_get_all_results(
-            compute_client.list_shapes,
-            compartment_id=tenancy_ocid
-        ).data
-        logging.info(f"Found {len(all_shapes)} total shapes.")
-
-        architecture_shapes = []
-        for shape in all_shapes:
-            if shape.shape.startswith('VM.') and hasattr(shape, 'processor_description') and shape.processor_description:
-                proc_desc = shape.processor_description.lower()
-                if 'ampere' in proc_desc or 'amd' in proc_desc:
-                    architecture_shapes.append(shape.shape)
-        
-        logging.info(f"Found {len(architecture_shapes)} ARM/AMD Virtual Machine shapes: {architecture_shapes}")
-
-        valid_shapes_for_os = []
-        for shape_name in architecture_shapes:
-            try:
-                images = compute_client.list_images(
-                    tenancy_ocid,
-                    operating_system=os_name,
-                    operating_system_version=os_version,
-                    shape=shape_name,
-                    limit=1
-                ).data
-                if images:
-                    valid_shapes_for_os.append(shape_name)
-            except ServiceError as se:
-                logging.warning(f"ServiceError when checking image compatibility for shape {shape_name}: {se.message}")
-                continue
-        
-        logging.info(f"Found {len(valid_shapes_for_os)} shapes compatible with {os_name_version}: {valid_shapes_for_os}")
-        
-        valid_shapes_for_os.sort(key=lambda s: ('E2.1.Micro' not in s and 'A1.Flex' not in s, s))
-
-        return jsonify(valid_shapes_for_os)
-
-    except TimeoutException:
-        return jsonify({"error": "获取可用实例规格超时。"}), 504
-    except Exception as e:
-        logging.error(f"Failed to get available shapes: {e}", exc_info=True)
-        return jsonify({"error": f"获取可用实例规格失败: {e}"}), 500
-
-@oci_bp.route('/api/update-instance', methods=['POST'])
-@login_required
-@oci_clients_required
-@timeout(10)
-def update_instance():
-    try:
-        data = request.json
-        action, instance_id = data.get('action'), data.get('instance_id')
-        if not action or not instance_id: return jsonify({"error": "缺少 action 或 instance_id"}), 400
-        task_name = f"{action} on instance {instance_id[-6:]}"
-        task_id = _create_task_entry('action', task_name)
-        _update_instance_details_task.delay(task_id, g.oci_config, data)
-        return jsonify({"message": f"'{action}' 请求已提交...", "task_id": task_id})
-    except (sqlite3.OperationalError, TimeoutException) as e:
-        if isinstance(e, TimeoutException) or "database is locked" in str(e):
-            return jsonify({"error": "请求超时或数据库繁忙，请稍后重-试。"}), 503
-        raise
-    except Exception as e:
-        return jsonify({"error": f"提交实例更新任务失败: {e}"}), 500
 
 @oci_bp.route('/api/network/resources')
 @login_required
