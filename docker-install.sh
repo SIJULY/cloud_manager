@@ -4,225 +4,181 @@
 # Cloud Manager Docker版一键安装脚本 (作者: 小龙女她爸)
 # ==============================================================================
 
-# --- 配置 ---
-INSTALL_DIR="/opt/cloud_manager"
-REPO_URL="https://github.com/SIJULY/cloud_manager.git"
+# 定义颜色
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # No Color
 
-# --- 辅助函数 ---
-print_info() { echo -e "\e[34m[信息]\e[0m $1"; }
-print_success() { echo -e "\e[32m[成功]\e[0m $1"; }
-print_warning() { echo -e "\e[33m[警告]\e[0m $1"; }
-print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
+APP_DIR="/opt/cloud_manager"
+ENV_FILE="$APP_DIR/.env"
 
-# --- 核心功能函数 ---
+echo -e "${GREEN}=== 正在启动 Cloud Manager 智能安装程序 ===${NC}"
 
-# 清理环境
-uninstall_panel() {
-    print_warning "您确定要彻底卸载 Cloud Manager Docker 版吗？"
-    read -p "此操作将停止并删除所有相关的容器、网络、存储卷以及项目文件。此过程不可逆！请输入 'yes' 确认: " confirmation
-    if [ "$confirmation" != "yes" ]; then print_info "卸载操作已取消。"; exit 0; fi
+# ------------------------------------------
+# 1. 环境检查与 Docker 安装
+# ------------------------------------------
+if ! command -v docker &> /dev/null; then
+    echo -e "${YELLOW}未检测到 Docker，正在自动安装...${NC}"
+    curl -fsSL https://get.docker.com | bash -s docker
+    systemctl enable --now docker
+else
+    echo -e "${GREEN}Docker 环境检查通过。${NC}"
+fi
+
+# ------------------------------------------
+# 2. 拉取/更新代码
+# ------------------------------------------
+if [ ! -d "$APP_DIR" ]; then
+    echo -e "${YELLOW}正在克隆仓库...${NC}"
+    git clone https://github.com/SIJULY/cloud_manager.git "$APP_DIR"
+    cd "$APP_DIR" || exit
+else
+    cd "$APP_DIR" || exit
+    echo -e "${YELLOW}正在拉取最新代码...${NC}"
     
-    print_info "开始卸载流程..."
-    if [ -d "${INSTALL_DIR}" ]; then
-        cd "${INSTALL_DIR}"
-        docker compose down -v --remove-orphans
-        cd ~
-        rm -rf "${INSTALL_DIR}"
-        print_success "项目文件和Docker资源已清理。"
+    # === 关键修正：清理旧脚本造成的污染 ===
+    # 如果 .gitignore 里有 docker-compose.yml，说明是旧版环境，清理掉
+    if grep -q "docker-compose.yml" .gitignore 2>/dev/null; then
+        sed -i "/docker-compose.yml/d" .gitignore
+    fi
+    # 强制重置代码，确保 docker-compose.yml 回归纯净
+    git fetch --all
+    git reset --hard origin/main
+    git pull
+fi
+
+# ------------------------------------------
+# 3. 智能模式识别
+# ------------------------------------------
+
+# 加载 .env 变量
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    source <(grep -v '^#' "$ENV_FILE" | sed 's/^export //')
+    set +a
+fi
+
+# 如果 .env 里没有 INSTALL_MODE，尝试根据旧环境猜测或询问
+if [ -z "$INSTALL_MODE" ]; then
+    echo -e "\n${YELLOW}>>> 部署模式配置 <<<${NC}"
+    
+    # 自动探测逻辑：如果当前没有 Caddyfile，或者用户之前的 .env 设置了 IP，则默认为 IP 模式
+    DEFAULT_CHOICE="1"
+    if [ -f "Caddyfile" ]; then
+        echo -e "检测到存在 Caddyfile，推荐使用域名模式。"
+        DEFAULT_CHOICE="1"
     else
-        print_warning "未找到安装目录，无需清理。"
+        echo -e "未检测到 Caddy 配置，推荐使用 IP 模式。"
+        DEFAULT_CHOICE="2"
     fi
-    print_success "Cloud Manager Docker 版已彻底卸载！"
-}
 
-# 准备文件和环境
-prepare_files() {
-    print_info "步骤 1: 检查并安装 Docker 环境..."
-    if ! command -v docker &> /dev/null; then print_warning "未检测到 Docker..."; curl -fsSL https://get.docker.com | bash; systemctl start docker; systemctl enable docker; fi
-    if ! docker compose version &> /dev/null; then print_warning "未检测到 Docker Compose 插件..."; apt-get update -y && apt-get install -y docker-compose-plugin; fi
-    print_success "Docker 环境检查通过。"
-
-    print_info "步骤 2: 下载项目文件..."
-    if [ -d "${INSTALL_DIR}" ]; then
-        print_error "检测到已存在安装目录 ${INSTALL_DIR}。如果您想重新安装，请先选择卸载。"
-    fi
-    git clone ${REPO_URL} ${INSTALL_DIR}
-    cd ${INSTALL_DIR}
-
-    print_info "步骤 3: 初始化文件并修正目录权限..."
-    touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
-    chmod -R 777 .
-    print_success "权限和文件初始化完成。"
-
-    print_info "步骤 4: 创建 .gitignore 以保护配置文件..."
-    # 这一步将确保 docker-compose.yml 和 .env 文件在未来更新时不会被覆盖
-    if ! grep -q "docker-compose.yml" .gitignore; then
-        echo "docker-compose.yml" >> .gitignore
-    fi
-    if ! grep -q ".env" .gitignore; then
-        echo ".env" >> .gitignore
-    fi
-    # 确保Git停止追踪这些文件
-    git rm --cached docker-compose.yml .env > /dev/null 2>&1 || true
-    print_success ".gitignore 配置完成。"
-
-
-    print_info "步骤 5: 检查并应用兼容性修复..."
-    if grep -q "version: " docker-compose.yml; then sed -i "/version: /d" docker-compose.yml; fi
-    if [ -f "Dockerfile" ]; then sed -i 's/python:3.8-buster/python:3.8-bullseye/g' Dockerfile; fi
-    print_success "兼容性修复完成。"
-}
-
-# 启动容器
-launch_docker() {
-    print_info "步骤 7: 启动所有服务 (可能需要构建镜像，请耐心等待)..."
-    if ! docker compose up -d --build; then
-        print_error "Docker Compose 启动失败！请检查上面的日志输出。安装已终止。"
-    fi
-    echo ""
-    print_success "Cloud Manager Docker 版已成功部署！"
-}
-
-# 安装逻辑 - 全新服务器
-install_clean_server() {
-    prepare_files
-    print_info "步骤 6: 配置面板 (全新服务器模式)..."
-    cp .env.example .env
-    read -p "请输入您的域名 (留空则自动使用服务器公网IP): " domain_name
-    if [ -z "$domain_name" ]; then ACCESS_ADDRESS=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip); if [ -z "$ACCESS_ADDRESS" ]; then print_error "无法自动获取公网IP地址。"; fi
-    else ACCESS_ADDRESS=$domain_name; fi
+    echo "1) 域名自动 HTTPS 模式 (安装 Caddy，占用 80/443)"
+    echo "2) IP/自定义端口模式 (不安装 Caddy，仅暴露 5000，适合自建 Nginx)"
     
-    read -p "请输入新的面板登录密码: " new_password
+    read -p "请输入选项 [1/2] (默认 $DEFAULT_CHOICE): " mode_choice
+    mode_choice=${mode_choice:-$DEFAULT_CHOICE}
     
-    CADDY_ADDRESS=$([[ "$ACCESS_ADDRESS" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && echo "http://${ACCESS_ADDRESS}" || echo "$ACCESS_ADDRESS")
-    sed -i "s|^DOMAIN_OR_IP=.*|DOMAIN_OR_IP=${CADDY_ADDRESS}|" .env
-    sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
-    print_success "配置已保存。"
-    
-    launch_docker
-    
-    echo "------------------------------------------------------------"
-    source .env
-    print_info "访问地址: ${DOMAIN_OR_IP}"
-    print_info "登录密码: 您设置的密码"
-    echo "------------------------------------------------------------"
-}
-
-# 安装逻辑 - 已有服务
-install_existing_server() {
-    prepare_files
-    print_info "步骤 6: 配置面板 (已有服务模式)..."
-    print_info "将禁用内置Caddy并暴露指定端口。"
-    
-    # 修改 docker-compose.yml 来禁用 caddy
-    START_LINE=$(grep -n '^  caddy:' docker-compose.yml | cut -d: -f1); END_LINE=$(grep -n '^volumes:' docker-compose.yml | cut -d: -f1)
-    if [ -n "$START_LINE" ] && [ -n "$END_LINE" ]; then
-        COMMENT_END_LINE=$((END_LINE - 1)); sed -i "${START_LINE},${COMMENT_END_LINE}s/^/#/" docker-compose.yml
-        sed -i -e '/^  caddy_data:/s/^/#/' -e '/^  caddy_config:/s/^/#/' docker-compose.yml
+    if [ "$mode_choice" == "2" ]; then
+        INSTALL_MODE="ip"
     else
-        print_error "无法在 docker-compose.yml 中定位 Caddy 服务块，自动化修改失败。"
+        INSTALL_MODE="domain"
     fi
-    
-    read -p "请输入新的面板登录密码: " new_password
-    
-    read -p "请输入要映射到主机的端口 [默认: 8000]: " host_port
-    host_port=${host_port:-8000}
 
-    # 修改 docker-compose.yml 来暴露用户指定的端口
-    sed -i "/^  web:/,/^  worker:/s/    restart: always/    restart: always\n    ports:\n      - \"${host_port}:5000\"/" docker-compose.yml
-    
-    cp .env.example .env
-    sed -i "s|^PANEL_PASSWORD=.*|PANEL_PASSWORD=${new_password}|" .env
-    print_success "配置已保存。"
-
-    launch_docker
-
-    SERVER_IP=$(curl -s http://ipv4.icanhazip.com || curl -s http://ipinfo.io/ip)
-    echo "------------------------------------------------------------"
-    print_info "核心服务已启动！"
-    print_info "您现在可以通过IP地址访问: http://${SERVER_IP}:${host_port}"
-    print_info "登陆密码为安装过程中您设置的密码"
-    
-    print_warning "如果您想使用域名访问，请手动将您的域名解析到此服务器IP，然后在您现有的Web服务器（Nginx, Caddy等）中添加以下反向代理配置："
-    echo "--- Caddy 配置示例 (请将 your_domain.com 和 ${host_port} 替换为您的配置) ---"
-    echo "your_domain.com {"
-    echo "    reverse_proxy localhost:${host_port}"
-    echo "}"
-    echo "------------------------------------------------------------"
-}
-
-# 更新逻辑
-update_panel() {
-    if [ ! -d "${INSTALL_DIR}" ]; then
-        print_error "未检测到安装目录，无法执行更新。请先安装。"
+    # 写入 .env 实现永久记忆
+    if [ ! -f "$ENV_FILE" ]; then touch "$ENV_FILE"; fi
+    if ! grep -q "INSTALL_MODE=" "$ENV_FILE"; then
+        echo "" >> "$ENV_FILE"
+        echo "# 部署模式记忆" >> "$ENV_FILE"
+        echo "INSTALL_MODE=$INSTALL_MODE" >> "$ENV_FILE"
     fi
-    cd "${INSTALL_DIR}"
+    echo -e "${GREEN}模式已保存: $INSTALL_MODE${NC}"
+fi
 
-    print_info "步骤 1: 正在从 Git 拉取最新代码（配置文件将被忽略）..."
-    
-    # 确保 .gitignore 存在并包含 docker-compose.yml 和 .env
-    if ! grep -q "docker-compose.yml" .gitignore 2>/dev/null; then
-        echo "docker-compose.yml" >> .gitignore
-    fi
-    if ! grep -q ".env" .gitignore 2>/dev/null; then
-        echo ".env" >> .gitignore
-    fi
-    
-    # 确保 Git 停止追踪这些文件
-    git rm --cached docker-compose.yml .env > /dev/null 2>&1 || true
+# ------------------------------------------
+# 4. 动态生成 Override 配置 (这是解决你问题的核心)
+# ------------------------------------------
+echo -e "${YELLOW}正在生成 Docker 配置...${NC}"
 
-    if ! git pull origin main; then
-        print_warning "Git 拉取失败。可能是网络问题或本地有无法自动合并的修改。"
-        print_warning "将尝试强制重置并再次拉取..."
-        git reset --hard origin/main
-        if ! git pull origin main; then
-            print_error "强制拉取仍然失败，请检查网络连接或手动解决Git问题。"
+if [ "$INSTALL_MODE" == "ip" ]; then
+    # === IP 模式 ===
+    cat > docker-compose.override.yml <<EOF
+version: '3.8'
+services:
+  web:
+    ports:
+      - "5000:5000"
+EOF
+    echo -e "${GREEN}已配置: Web 服务运行在 5000 端口，Caddy 已禁用。${NC}"
+
+else
+    # === 域名模式 ===
+    
+    # 确保 Caddyfile 存在
+    if [ ! -f "Caddyfile" ] || ! grep -q "reverse_proxy" "Caddyfile"; then
+        read -p "请输入您的域名 (例如 example.com): " USER_DOMAIN
+        if ! grep -q "DOMAIN_OR_IP=" "$ENV_FILE"; then
+            echo "DOMAIN_OR_IP=$USER_DOMAIN" >> "$ENV_FILE"
         fi
-    fi
-    print_success "代码更新完毕。"
-
-    print_info "步骤 2: 正在重新构建并启动服务..."
-    if ! docker compose up -d --build; then
-        print_error "Docker Compose 更新失败！请检查日志。"
-    fi
-    print_success "面板已成功更新！"
+        cat > Caddyfile <<EOF
+$USER_DOMAIN {
+    reverse_proxy web:5000
 }
+EOF
+    fi
 
+    cat > docker-compose.override.yml <<EOF
+version: '3.8'
+services:
+  web:
+    expose:
+      - "5000"
+  caddy:
+    image: caddy:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      - DOMAIN_OR_IP=\${DOMAIN_OR_IP}
+    depends_on:
+      - web
+EOF
+    echo -e "${GREEN}已配置: Caddy 反代模式 (80/443)。${NC}"
+fi
 
-# --- 脚本主入口 ---
-if [ "$(id -u)" -ne 0 ]; then print_error "此脚本必须以root用户身份运行。"; fi
-clear
-print_info "欢迎使用 Cloud Manager Docker 版管理脚本 (作者: 小龙女她爸)"
-echo "=========================================================="
-echo "请选择要执行的操作:"
-echo "  1) 在【已有服务】的服务器上安装 (IP:端口登陆) [默认]"
-echo "  2) 在【全新服务器】上域名模式安装 (将占用80/443端口)"
-echo "  3) 更新现有面板"
-echo "  4) 彻底卸载面板"
-echo "  5) 退出脚本"
-echo "=========================================================="
-read -p "请输入选项数字 [1]: " choice
-choice=${choice:-1}
+# ------------------------------------------
+# 5. 初始化密码 (仅首次)
+# ------------------------------------------
+if [ ! -f "$ENV_FILE" ] || ! grep -q "PANEL_PASSWORD" "$ENV_FILE"; then
+    echo -e "\n${YELLOW}>>> 初始化设置 <<<${NC}"
+    read -p "请设置管理员登录密码: " ADMIN_PWD
+    echo "PANEL_PASSWORD=$ADMIN_PWD" >> "$ENV_FILE"
+fi
 
-case $choice in
-    1)
-        install_existing_server
-        ;;
-    2)
-        install_clean_server
-        ;;
-    3)
-        update_panel
-        ;;
-    4)
-        uninstall_panel
-        ;;
-    5)
-        print_info "操作已取消，退出脚本。"
-        exit 0
-        ;;
-    *)
-        print_error "无效的选项。"
-        ;;
-esac
+# ------------------------------------------
+# 6. 启动服务
+# ------------------------------------------
+echo -e "${YELLOW}正在构建并启动容器...${NC}"
 
+# 清理可能的旧容器和孤儿容器 (这会清理掉旧脚本产生的残留)
+docker compose down --remove-orphans
+
+if docker compose up -d --build; then
+    echo -e "\n${GREEN}=======================================${NC}"
+    echo -e "${GREEN}   安装/更新成功！服务已启动。${NC}"
+    if [ "$INSTALL_MODE" == "ip" ]; then
+        PUBLIC_IP=$(curl -s ifconfig.me)
+        echo -e "访问地址: http://$PUBLIC_IP:5000"
+        echo -e "注意: 您当前使用的是 IP 模式，请配置 Nginx 反代或直接访问。"
+    else
+        echo -e "访问地址: https://(您的域名)"
+    fi
+    echo -e "${GREEN}=======================================${NC}"
+else
+    echo -e "${RED}启动失败，请检查 Docker 日志。${NC}"
+fi
