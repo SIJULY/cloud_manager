@@ -357,11 +357,25 @@
                             <input type="number" class="form-control" id="instanceMemory" value="24" min="1" max="24">
                         </div>
                     </div>
+                    
+                    <div class="mb-3">
+                        <label class="form-label">默认开机脚本</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-light"><i class="bi bi-terminal"></i></span>
+                            <input type="text" class="form-control" id="defaultStartupScriptInput" readonly>
+                            <button class="btn btn-outline-secondary" type="button" id="editDefaultScriptBtn" title="点击编辑默认脚本">
+                                <i class="bi bi-pencil-square"></i> 编辑
+                            </button>
+                        </div>
+                        <div class="form-text text-muted" style="font-size: 0.8rem;">
+                            该脚本将始终首先执行。点击“编辑”可修改并自动保存。
+                        </div>
+                    </div>
+
                     <div class="mb-3">
                         <label for="startupScript" class="form-label">开机脚本 (可选)</label>
-                        <textarea class="form-control" id="startupScript" rows="3" spellcheck="false" 
-                                  placeholder="在此输入您自定义的开机脚本（可选）"></textarea>
-                        <div class="form-text">实例启动时将自动执行此脚本。常用依赖（如curl, git等）会自动安装，无需在此填写。</div>
+                        <textarea class="form-control" id="startupScript" rows="4" spellcheck="false" 
+                                  placeholder="在此粘贴您的脚本（例如监控探针等）。&#10;它将在默认脚本之后执行。"></textarea>
                     </div>
                     
                     <div id="snatchModeOptions">
@@ -765,9 +779,33 @@
                         </div>
                     </div>
                 </div>
+                
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h6><i class="bi bi-diagram-2-fill"></i> X-UI Manager 对接配置</h6>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="xuiManagerUrl" class="form-label">管理面板地址     （项目地址：https://github.com/SIJULY/xui_manager）</label>
+                            <input type="text" class="form-control" id="xuiManagerUrl" placeholder="例如: http://1.2.3.4:8080">
+                            <div class="form-text">X-UI Manager 面板的访问地址 </div>
+                        </div>
+                        <div class="mb-3">
+                            <label for="xuiManagerSecret" class="form-label">通讯密钥 (Secret Key)</label>
+                            <input type="password" class="form-control" id="xuiManagerSecret" placeholder="输入 X-UI Manager Pro管理面板首页获取的 XUI_SECRET_KEY">
+                        </div>
+                        <div class="d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary btn-sm" id="saveXuiConfigBtn">
+                                <span class="spinner-border spinner-border-sm d-none" role="status" aria-hidden="true"></span>
+                                保存对接配置
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
-                        <h6><i class="bi bi-key-fill"></i> TG Bot 助手 API 密钥</h6>
+                        <h6><i class="bi bi-key-fill"></i> TG Bot 助手 API 密钥     （项目地址：https://github.com/SIJULY/tgbot）   </h6>
                     </div>
                     <div class="card-body">
                         <p class="text-muted small">这是您的 TG Bot 控制面板所需的 API 密钥。请妥善保管，不要泄露。程序首次启动时会自动生成。</p>
