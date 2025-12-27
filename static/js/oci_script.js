@@ -304,10 +304,23 @@ fi
     });
 
     submitLaunchInstanceBtn.addEventListener('click', () => {
+        // --- 定义核心提交函数 ---
         const proceedWithLaunch = async () => {
+            // 1. 立即锁定按钮，防止重复点击
+            const originalBtnText = submitLaunchInstanceBtn.innerHTML;
+            submitLaunchInstanceBtn.disabled = true;
+            submitLaunchInstanceBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 提交中...';
+
+            // --- 定义恢复按钮的辅助函数 ---
+            const resetButton = () => {
+                submitLaunchInstanceBtn.disabled = false;
+                submitLaunchInstanceBtn.innerHTML = originalBtnText;
+            };
+
             const shape = launchInstanceShapeSelect.value;
             if (!shape) {
                 addLog('请选择一个有效的实例规格。', 'error');
+                resetButton(); // 校验失败，恢复按钮
                 return;
             }
 
@@ -321,33 +334,29 @@ fi
                 customSshKey = launchCustomSshKey.value.trim();
                 if (!customSshKey) {
                     addLog('选择了自定义 SSH 公钥但内容为空！', 'error');
+                    resetButton(); // 校验失败，恢复按钮
                     return;
                 }
             }
 
-            // --- ✨✨✨ 修改：合并两个脚本框的内容 ✨✨✨
+            // 合并脚本
             const defaultScriptVal = document.getElementById('defaultStartupScriptInput').value.trim();
             const extraScriptVal = document.getElementById('startupScript').value.trim();
-            
-            // 如果两个都有，中间加换行；如果只有一个，取那一个
             let finalStartupScript = defaultScriptVal;
             if (extraScriptVal) {
                 finalStartupScript = defaultScriptVal + "\n" + extraScriptVal;
             }
-            // ------------------------------------------
 
             const details = {
                 display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
                 instance_count: parseInt(instanceCountInput.value, 10),
                 instance_password: passwordVal,
                 enable_password_auth: isPasswordEnabled, 
-                custom_ssh_key: customSshKey, // 发送自定义 Key
+                custom_ssh_key: customSshKey, 
                 os_name_version: document.getElementById('instanceOS').value,
                 shape: shape,
                 boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
-                
-                startup_script: finalStartupScript, // 使用合并后的脚本
-                
+                startup_script: finalStartupScript,
                 min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
                 max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90,
                 auto_bind_domain: autoBindDomainCheck.checked
@@ -358,8 +367,16 @@ fi
                 details.memory_in_gbs = parseInt(document.getElementById('instanceMemory').value, 10);
             }
             
-            if (details.min_delay >= details.max_delay) return addLog('最短重试间隔必须小于最长重试间隔', 'error');
-            if (!details.display_name_prefix) return addLog('实例名称/前缀不能为空', 'error');
+            if (details.min_delay >= details.max_delay) {
+                addLog('最短重试间隔必须小于最长重试间隔', 'error');
+                resetButton();
+                return;
+            }
+            if (!details.display_name_prefix) {
+                addLog('实例名称/前缀不能为空', 'error');
+                resetButton();
+                return;
+            }
     
             let logMessage = `正在提交抢占实例 [${details.display_name_prefix}] 的任务...`;
             if (details.auto_bind_domain) {
@@ -374,14 +391,21 @@ fi
                     body: JSON.stringify(details)
                 });
                 addLog(response.message, 'success');
-                launchInstanceModal.hide();
+                launchInstanceModal.hide(); // 成功后关闭弹窗
+                
+                // 稍微延迟一点再恢复按钮（防止弹窗关闭动画期间被误触），虽然弹窗关了也点不到了
+                setTimeout(resetButton, 500); 
                 
                 if (response.task_ids && Array.isArray(response.task_ids)) {
                     response.task_ids.forEach(pollTaskStatus);
                 }
-            } catch (error) {}
+            } catch (error) {
+                // 失败时，必须恢复按钮，否则用户无法重试
+                resetButton(); 
+            }
         };
 
+        // --- 以下是配额检查逻辑 ---
         const shape = launchInstanceShapeSelect.value;
         const requestedCount = parseInt(instanceCountInput.value, 10);
         const requestedBootVolumeSize = parseInt(document.getElementById('bootVolumeSize').value, 10);
@@ -401,6 +425,7 @@ fi
             confirmActionModalBody.innerHTML = `您当前已使用 <strong>${currentTotalBootVolumeSize} GB</strong> 磁盘，本次请求将导致总量达到 <strong>${currentTotalBootVolumeSize + newRequestedTotalSize} GB</strong>，超出 200 GB 的免费额度。这可能会导致您的账户产生额外费用。<br><br>确定要继续吗？`;
             confirmActionModalConfirmBtn.onclick = () => {
                 confirmActionModal.hide();
+                // 额度警告确认后，继续执行
                 proceedWithLaunch();
             };
             confirmActionModal.show();
@@ -415,6 +440,7 @@ fi
             }
         }
         
+        // 没有配额问题，直接执行
         proceedWithLaunch();
     });
 
