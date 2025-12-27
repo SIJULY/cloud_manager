@@ -4,10 +4,7 @@
 
 本项目由 **小龙女她爸** & **雨后大佬** 共同开发，旨在简化云资源的管理流程。
 
-特别感谢**Y探长**开发者**yohannfan**，本项目OCI网络设置借鉴其项目设置，项目地址：
-```bash
-https://github.com/Yohann0617/oci-helper
-```
+
 
 ---
 
@@ -100,5 +97,8 @@ https://github.com/SIJULY/tgbot
 ---
 
 ## ❤️ 致谢
-
+特别感谢**Y探长**开发者**yohannfan**，本项目OCI网络设置借鉴其项目设置，项目地址：
+```bash
+https://github.com/Yohann0617/oci-helper
+```
  **所有拥有共享精神的开发者**
