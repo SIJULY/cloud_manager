@@ -26,6 +26,7 @@ DATABASE = 'oci_tasks.db'
 TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
 DEFAULT_KEY_FILE = "default_key.json" 
+XUI_CONFIG_FILE = "xui_settings.json"
 
 # --- Timeout Handling ---
 class TimeoutException(Exception):
@@ -287,6 +288,21 @@ def save_cloudflare_config(config):
         logging.info(f"Cloudflare config saved to {CLOUDFLARE_CONFIG_FILE}")
     except Exception as e:
         logging.error(f"Failed to save Cloudflare config: {e}")
+
+def load_xui_config():
+    if not os.path.exists(XUI_CONFIG_FILE): return {}
+    try:
+        with open(XUI_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except: return {}
+
+def save_xui_config(config):
+    try:
+        with open(XUI_CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4)
+        logging.info(f"X-UI config saved to {XUI_CONFIG_FILE}")
+    except Exception as e:
+        logging.error(f"Failed to save X-UI config: {e}")
 
 def _update_cloudflare_dns(subdomain, ip_address, record_type='A'):
     cf_config = load_cloudflare_config()
@@ -640,6 +656,21 @@ def cloudflare_config_handler():
         save_cloudflare_config(config)
         return jsonify({"success": True, "message": "Cloudflare 设置已成功保存"})
 
+# ✨✨✨ 新增：X-UI 配置 API (无需修改) ✨✨✨
+@oci_bp.route('/api/xui-config', methods=['GET', 'POST'])
+@login_required
+def xui_config_handler():
+    if request.method == 'GET':
+        return jsonify(load_xui_config())
+    elif request.method == 'POST':
+        data = request.json
+        url = data.get('manager_url', '').strip()
+        secret = data.get('manager_secret', '').strip()
+        # 允许空值 (用于清空配置)
+        config = {'manager_url': url, 'manager_secret': secret}
+        save_xui_config(config)
+        return jsonify({"success": True, "message": "X-UI 对接配置已保存"})
+# --------------------------------
 
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
@@ -650,13 +681,16 @@ def manage_profiles():
     if request.method == "GET":
         profile_order = all_data.get("profile_order", [])
         
-        now = datetime.datetime.now(timezone.utc)
-        
         ordered_keys = [p for p in profile_order if p in profiles]
-        missing_keys = sorted(
-            [p for p in profiles if p not in profile_order],
-            key=lambda name: "".join(lazy_pinyin(name)).lower()
-        )
+        missing_keys = [p for p in profiles if p not in profile_order]
+        
+        try:
+            missing_keys.sort(key=lambda name: "".join(lazy_pinyin(name)).lower())
+        except NameError:
+            missing_keys.sort(key=lambda name: name.lower())
+        except Exception as e:
+            logging.warning(f"Sort failed: {e}")
+            missing_keys.sort()
         
         final_order_keys = ordered_keys + missing_keys
         
@@ -664,24 +698,25 @@ def manage_profiles():
             all_data["profile_order"] = final_order_keys
             save_profiles(all_data)
             
-        # 构造返回给前端的详细对象列表
+        now = datetime.datetime.now(timezone.utc)
         response_list = []
+
         for alias in final_order_keys:
             p_data = profiles.get(alias, {})
-            item = {"alias": alias}
+            item = p_data.copy()
+            item["alias"] = alias
             
-            # --- ✨ MODIFICATION: 如果本地有日期，直接计算，无需API ---
-            if 'registration_date' in p_data:
-                item['registration_date'] = p_data['registration_date']
+            if 'registration_date' in p_data and p_data['registration_date']:
                 try:
-                    # 假定日期格式为 YYYY-MM-DD，解析为 aware datetime
-                    # 这里要注意，strptime 得到的是 naive time，需要 replace tzinfo
                     reg_date = datetime.datetime.strptime(p_data['registration_date'], '%Y-%m-%d').replace(tzinfo=timezone.utc)
                     delta = now - reg_date
                     item['days_elapsed'] = delta.days
+                except ValueError:
+                    logging.warning(f"Invalid date format for {alias}: {p_data['registration_date']}")
+                    item['days_elapsed'] = 0
                 except Exception as e:
-                    logging.warning(f"Error calculating days for {alias}: {e}")
-                    pass
+                    logging.error(f"Error calculating date for {alias}: {e}")
+
             response_list.append(item)
             
         return jsonify(response_list)
@@ -718,7 +753,6 @@ def manage_profiles():
                  
         save_profiles(all_data)
         
-        # 添加新账号后，尝试获取 Tenancy 日期 (因为是新号，肯定没有日期)
         try:
             threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
         except Exception:
@@ -888,8 +922,6 @@ def oci_session_route():
                 g.pop('api_selected_alias', None)
                 return jsonify({"error": f"连接验证失败: {error}"}), 400
             
-            # --- ✨ MODIFICATION: 检查本地是否已有 registration_date ---
-            # 只有当本地没有记录时，才启动线程去查询 API
             if 'registration_date' not in profile_config:
                 logging.info(f"No registration date found locally for {alias}, fetching from API in background...")
                 threading.Thread(target=_internal_fetch_and_save_tenancy_date, args=(alias,)).start()
@@ -932,7 +964,7 @@ def oci_session_route():
 @oci_bp.route('/api/instances', defaults={'alias': None})
 @oci_bp.route('/api/<alias>/instances')
 @login_required
-@timeout(45) # 增加超时时间，因为查询多个IP需要更多API调用
+@timeout(45)
 def get_instances(alias):
     try:
         if alias is None:
@@ -970,7 +1002,6 @@ def get_instances(alias):
             }
             try:
                 if instance.lifecycle_state not in ['TERMINATED', 'TERMINATING']:
-                    # 获取网卡信息
                     vnic_attachments = oci.pagination.list_call_get_all_results(compute_client.list_vnic_attachments, compartment_id=compartment_id, instance_id=instance.id).data
                     if vnic_attachments:
                         vnic_id = vnic_attachments[0].vnic_id
@@ -978,46 +1009,35 @@ def get_instances(alias):
                         
                         vnic = vnet_client.get_vnic(vnic_id).data
                         
-                        # --- ✨✨✨ 获取所有 IPv4 (包括辅助IP) ✨✨✨ ---
                         ipv4_display_list = []
                         
-                        # 1. 获取网卡上所有的私有IP对象
                         private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
                         
-                        # 排序：主IP排在最前面
                         private_ips.sort(key=lambda x: not x.is_primary)
 
                         for pip in private_ips:
                             pub_ip_str = None
                             if pip.is_primary:
-                                # 主IP直接从VNIC对象拿，节省一次API调用
                                 pub_ip_str = vnic.public_ip
                             else:
-                                # 辅助IP需要单独查询对应的公网IP
                                 try:
                                     pub_ip_obj = vnet_client.get_public_ip_by_private_ip_id(
                                         GetPublicIpByPrivateIpIdDetails(private_ip_id=pip.id)
                                     ).data
                                     pub_ip_str = pub_ip_obj.ip_address
                                 except Exception:
-                                    # 并不是所有私有IP都有公网IP，忽略404等错误
                                     pass
                             
                             if pub_ip_str:
                                 ipv4_display_list.append(pub_ip_str)
                         
-                        # 用换行符拼接所有找到的IP
                         if ipv4_display_list:
                             data['public_ip'] = "<br>".join(ipv4_display_list)
-                        # -----------------------------------------------
 
-                        # 获取 IPv6
                         ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
                         if ipv6s: 
-                            # 同样支持显示多个IPv6
                             data['ipv6_address'] = "<br>".join([ip.ip_address for ip in ipv6s])
 
-                    # 获取引导卷大小
                     boot_vol_attachments = oci.pagination.list_call_get_all_results(compute_client.list_boot_volume_attachments, instance.availability_domain, compartment_id, instance_id=instance.id).data
                     if boot_vol_attachments:
                         boot_vol = bs_client.get_boot_volume(boot_vol_attachments[0].boot_volume_id).data
@@ -1094,9 +1114,7 @@ def get_instance_details(instance_id):
             boot_vol_size = int(boot_volume.size_in_gbs)
             vpus = int(boot_volume.vpus_per_gb)
 
-        # --- Fetch IPv4 List for Edit Modal ---
         ip_list = []
-        # --- ✨ New: Fetch IPv6 List ---
         ipv6_list = []
         
         try:
@@ -1104,7 +1122,6 @@ def get_instance_details(instance_id):
             if vnic_attachments:
                 vnic_id = vnic_attachments[0].vnic_id
                 
-                # 1. Fetch Private IPs (IPv4)
                 private_ips = oci.pagination.list_call_get_all_results(vnet_client.list_private_ips, vnic_id=vnic_id).data
                 for pip in private_ips:
                     pub_ip_val = "无"
@@ -1128,7 +1145,6 @@ def get_instance_details(instance_id):
                         'id': pip.id
                     })
 
-                # 2. ✨ Fetch IPv6s ✨
                 ipv6s = oci.pagination.list_call_get_all_results(vnet_client.list_ipv6s, vnic_id=vnic_id).data
                 for ip in ipv6s:
                     ipv6_list.append({
@@ -1148,7 +1164,7 @@ def get_instance_details(instance_id):
             "boot_volume_size_in_gbs": boot_vol_size, 
             "vpus_per_gb": vpus,
             "ips": ip_list,
-            "ipv6s": ipv6_list # ✨ Return IPv6 list
+            "ipv6s": ipv6_list
         })
     except TimeoutException:
         return jsonify({"error": "获取实例详情超时，请稍后重试。"}), 504
@@ -1166,7 +1182,6 @@ def get_available_os_versions():
         
         logging.info("Fetching available Ubuntu versions...")
         
-        # 获取所有 Canonical Ubuntu 镜像
         images = oci.pagination.list_call_get_all_results(
             compute_client.list_images,
             compartment_id=tenancy_ocid,
@@ -1175,23 +1190,15 @@ def get_available_os_versions():
             sort_order="DESC"
         ).data
 
-        # 使用 set 去重
         versions = set()
         for img in images:
             v = img.operating_system_version
-            # 【关键修改】使用正则严格匹配 "数字.数字" 的格式
-            # 这会过滤掉 "24.04 Minimal", "22.04 aarch64" 等带后缀的版本
-            # 只保留纯净的 "24.04", "22.04", "20.04" 等
             if v and re.match(r'^\d+\.\d+$', v):
                 versions.add(v)
         
-        # 排序版本号 (降序，最新的在前面)
         sorted_versions = sorted(list(versions), reverse=True)
-        
-        # 取前两个最新的版本
         latest_versions = sorted_versions[:2]
         
-        # 构造成前端需要的格式
         result = [f"Canonical Ubuntu-{v}" for v in latest_versions]
         
         return jsonify(result)
@@ -1304,7 +1311,6 @@ def add_secondary_ip():
         network_client = clients['vnet']
         config = profile_config
 
-        # 1. 获取实例的主 VNIC (网卡)
         vnic_attachments = oci.pagination.list_call_get_all_results(
             compute_client.list_vnic_attachments,
             compartment_id=config['tenancy'],
@@ -1314,10 +1320,8 @@ def add_secondary_ip():
         if not vnic_attachments:
             return jsonify({'error': '找不到实例的网卡信息'}), 404
             
-        # 通常取第一个附件就是主网卡
         vnic_id = vnic_attachments[0].vnic_id
 
-        # 2. 分配一个新的辅助私有 IP (Secondary Private IP)
         private_ip_details = CreatePrivateIpDetails(
             vnic_id=vnic_id,
             display_name="Auto-Panel-Secondary"
@@ -1325,7 +1329,6 @@ def add_secondary_ip():
         private_ip_response = network_client.create_private_ip(private_ip_details)
         new_private_ip = private_ip_response.data
         
-        # 3. 申请一个保留公网 IP (Reserved Public IP) 并绑定到刚才的私有 IP 上
         public_ip_details = CreatePublicIpDetails(
             compartment_id=config['tenancy'],
             lifetime='RESERVED',
@@ -1336,10 +1339,8 @@ def add_secondary_ip():
         public_ip_response = network_client.create_public_ip(public_ip_details)
         new_public_ip = public_ip_response.data
 
-        # 4. 生成配置命令 (Ubuntu ONLY for cleanest output)
         ip_addr = new_private_ip.ip_address
         
-        # 使用 \\n 进行转义，确保在 JSON -> Python -> Shell 传递过程中保持换行符
         yaml_content = (
             "network:\\\\n"
             "  version: 2\\\\n"
@@ -1399,7 +1400,6 @@ def delete_secondary_ip():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# --- ✨ New Route: Delete IPv6 ---
 @oci_bp.route('/api/instance/delete-ipv6', methods=['POST'])
 @login_required
 @oci_clients_required
@@ -1771,17 +1771,13 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
         if error: raise Exception(error)
         compute_client, identity_client, vnet_client = clients['compute'], clients['identity'], clients['vnet']
         
-        # --- ✨ MODIFICATION: 处理自定义 SSH Key 逻辑 ---
         tenancy_ocid = profile_config.get('tenancy')
         
-        # 1. 尝试使用本次任务自定义的 Key
         ssh_key = details.get('custom_ssh_key')
         
-        # 2. 如果没有自定义 Key，尝试使用账号默认 Key
         if not ssh_key:
             ssh_key = profile_config.get('default_ssh_public_key')
             
-        # 3. 最终检查：必须有 Key (即使开启了密码登录，OCI 通常也需要 SSH Key 进行初始化或调试)
         if not ssh_key:
              raise Exception("未提供 SSH 公钥 (既无自定义公钥，账号也无默认公钥)")
 
@@ -1811,8 +1807,38 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             else:
                 instance_password = generate_oci_password()
 
-        user_script = details.get('startup_script', '')
-        user_data_encoded = get_user_data(instance_password, user_script, enable_password_auth)
+        # ✨✨✨ 修改开始：注入动态环境变量到脚本 ✨✨✨
+        # 1. 读取 Cloudflare 配置获取主域名
+        cf_config = load_cloudflare_config()
+        cf_domain = cf_config.get('domain', '')
+        
+        # 2. 读取 X-UI 对接配置 (新增自动补全逻辑)
+        xui_conf = load_xui_config()
+        raw_url = xui_conf.get('manager_url', '').strip().rstrip('/')
+        manager_secret = xui_conf.get('manager_secret', '')
+
+        # 自动补全 API 路径
+        if raw_url and not raw_url.endswith('/api/auto_register_node'):
+             manager_url = f"{raw_url}/api/auto_register_node"
+        else:
+             manager_url = raw_url
+
+        # 3. 准备环境变量注入脚本
+        is_domain_bound = 'true' if auto_bind_domain else 'false'
+        
+        env_injection = f"""
+export MAIN_DOMAIN="{cf_domain}"
+export IS_DOMAIN_BOUND="{is_domain_bound}"
+export MANAGER_URL="{manager_url}"
+export AUTO_REG_SECRET="{manager_secret}"
+"""
+        
+        # 4. 拼接脚本
+        original_script = details.get('startup_script', '')
+        final_startup_script = env_injection + "\n" + original_script
+
+        user_data_encoded = get_user_data(instance_password, final_startup_script, enable_password_auth)
+        # ✨✨✨ 修改结束 ✨✨✨
         
         plugins_config_list = [
             oci.core.models.InstanceAgentPluginConfigDetails(
