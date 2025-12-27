@@ -101,18 +101,26 @@ document.addEventListener('DOMContentLoaded', function() {
     const confirmActionModalTerminateOptions = document.getElementById('confirmActionModalTerminateOptions');
     const confirmDeleteVolumeCheck = document.getElementById('confirmDeleteVolumeCheck');
     const confirmActionModalConfirmBtn = document.getElementById('confirmActionModalConfirmBtn');
+    
+    // TG Config Elements
     const tgBotTokenInput = document.getElementById('tgBotToken');
     const tgChatIdInput = document.getElementById('tgChatId');
     const saveTgConfigBtn = document.getElementById('saveTgConfigBtn');
     const getApiKeyBtn = document.getElementById('getApiKeyBtn');
     const apiKeyInput = document.getElementById('apiKeyInput');
     
+    // Cloudflare Config Elements
     const cloudflareApiTokenInput = document.getElementById('cloudflareApiToken');
     const cloudflareZoneIdInput = document.getElementById('cloudflareZoneId');
     const cloudflareDomainInput = document.getElementById('cloudflareDomain');
     const saveCloudflareConfigBtn = document.getElementById('saveCloudflareConfigBtn');
     const autoBindDomainCheck = document.getElementById('autoBindDomainCheck');
 
+    // ✨✨✨ 新增：X-UI 配置元素 (对应 oci.html 修改) ✨✨✨
+    const xuiManagerUrlInput = document.getElementById('xuiManagerUrl');
+    const xuiManagerSecretInput = document.getElementById('xuiManagerSecret');
+    const saveXuiConfigBtn = document.getElementById('saveXuiConfigBtn');
+    // --------------------------------------------------------
 
     const instanceActionButtons = {
         start: document.getElementById('startBtn'),
@@ -182,6 +190,115 @@ document.addEventListener('DOMContentLoaded', function() {
         customSshKeyContainer.classList.add('d-none');
         launchCustomSshKey.value = '';
 
+        // --- ✨✨✨ 修改：默认脚本逻辑 (支持记忆 + X-UI自动对接) ✨✨✨ ---
+        
+        // 1. 定义你的默认脚本 (包含自动对接 X-UI 逻辑)
+        // 注意：${VAR} 需要转义为 \${VAR} 以便在 JS 模板字符串中保持原样
+        const HARDCODED_DEFAULT = `#!/bin/bash
+if [ "$EUID" -ne 0 ]; then sudo bash "$0" "$@"; exit; fi
+
+# BBR
+if ! grep -q "net.core.default_qdisc=cake" /etc/sysctl.conf; then
+    echo "net.core.default_qdisc=cake" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p >/dev/null 2>&1
+fi
+
+# Firewall
+iptables -F; iptables -P INPUT ACCEPT; iptables -P FORWARD ACCEPT; iptables -P OUTPUT ACCEPT
+
+# Install X-UI
+XUI_USER="sijuly"
+XUI_PASS='050148Sq$'
+XUI_PORT="54321"
+printf "y\\n\${XUI_USER}\\n\${XUI_PASS}\\n\${XUI_PORT}\\n" | bash <(curl -4 -Ls https://raw.githubusercontent.com/vaxilu/x-ui/master/install.sh)
+
+# Auto Register Logic (Wait for X-UI to start)
+sleep 5
+MY_IP=$(curl -s4m8 4.ipw.cn)
+MY_HOST=$(hostname)
+
+# Default Fallbacks (Variables injected by Python Backend override these)
+: \${MAIN_DOMAIN:="810625.xyz"}
+: \${AUTO_REG_SECRET:="sijuly_secret_key_2025"}
+
+if [ "$IS_DOMAIN_BOUND" == "true" ]; then
+    REPORT_ADDR="\${MY_HOST}.\${MAIN_DOMAIN}"
+    ALIAS_NAME="Auto-Domain-\${MY_HOST}"
+else
+    REPORT_ADDR="\${MY_IP}"
+    ALIAS_NAME="Auto-IP-\${MY_IP}"
+fi
+
+# MANAGER_URL is injected by backend via export
+: \${MANAGER_URL:="https://xui-manager.sijuly.nyc.mn/api/auto_register_node"}
+
+if [ -n "$MANAGER_URL" ]; then
+  curl -X POST "$MANAGER_URL" \\
+    -H "Content-Type: application/json" \\
+    -d '{
+      "secret": "'"$AUTO_REG_SECRET"'",
+      "ip": "'"$REPORT_ADDR"'",
+      "port": "'"$XUI_PORT"'",
+      "username": "'"$XUI_USER"'",
+      "password": "'"$XUI_PASS"'",
+      "alias": "'"$ALIAS_NAME"'"
+    }'
+fi
+`;
+        const defaultScriptInput = document.getElementById('defaultStartupScriptInput');
+        const editBtn = document.getElementById('editDefaultScriptBtn');
+        const extraScriptInput = document.getElementById('startupScript');
+
+        // 2. 优先从浏览器缓存读取用户上次修改过的默认脚本，如果没有则用初始值
+        const savedDefault = localStorage.getItem('oci_default_startup_script');
+        if (defaultScriptInput) {
+            defaultScriptInput.value = savedDefault || HARDCODED_DEFAULT;
+            defaultScriptInput.readOnly = true; // 重置为只读
+            editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
+            editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
+            
+            // 确保按钮样式初始状态正确
+            editBtn.classList.add('btn-outline-secondary');
+            editBtn.classList.remove('btn-outline-success');
+        }
+        
+        // 3. 清空“额外脚本”框（每次打开都为空，避免上次的残留）
+        if (extraScriptInput) {
+            extraScriptInput.value = '';
+        }
+
+        // 4. 绑定“编辑/保存”按钮事件
+        if (editBtn) {
+            editBtn.onclick = () => {
+                const isReadOnly = defaultScriptInput.readOnly;
+                if (isReadOnly) {
+                    // 进入编辑模式
+                    defaultScriptInput.readOnly = false;
+                    defaultScriptInput.focus();
+                    editBtn.innerHTML = '<i class="bi bi-check-lg"></i> 保存';
+                    editBtn.classList.replace('btn-outline-secondary', 'btn-outline-success');
+                } else {
+                    // 保存并锁定
+                    defaultScriptInput.readOnly = true;
+                    editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
+                    editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
+                    
+                    // 特殊逻辑：如果用户清空了，恢复默认模板
+                    if (!defaultScriptInput.value.trim()) {
+                        if (confirm("脚本为空，是否恢复为默认的 X-UI 自动对接脚本？")) {
+                            defaultScriptInput.value = HARDCODED_DEFAULT;
+                        }
+                    }
+
+                    // 写入本地缓存，下次打开还是这个
+                    localStorage.setItem('oci_default_startup_script', defaultScriptInput.value.trim());
+                    addLog('默认开机脚本已更新并保存至本地。', 'success');
+                }
+            };
+        }
+        // ----------------------------------------------------
+
         // 加载操作系统列表
         loadAndDisplayOS();
     });
@@ -208,6 +325,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             }
 
+            // --- ✨✨✨ 修改：合并两个脚本框的内容 ✨✨✨
+            const defaultScriptVal = document.getElementById('defaultStartupScriptInput').value.trim();
+            const extraScriptVal = document.getElementById('startupScript').value.trim();
+            
+            // 如果两个都有，中间加换行；如果只有一个，取那一个
+            let finalStartupScript = defaultScriptVal;
+            if (extraScriptVal) {
+                finalStartupScript = defaultScriptVal + "\n" + extraScriptVal;
+            }
+            // ------------------------------------------
+
             const details = {
                 display_name_prefix: document.getElementById('instanceNamePrefix').value.trim(),
                 instance_count: parseInt(instanceCountInput.value, 10),
@@ -217,7 +345,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 os_name_version: document.getElementById('instanceOS').value,
                 shape: shape,
                 boot_volume_size: parseInt(document.getElementById('bootVolumeSize').value, 10),
-                startup_script: document.getElementById('startupScript').value.trim(),
+                
+                startup_script: finalStartupScript, // 使用合并后的脚本
+                
                 min_delay: parseInt(document.getElementById('minDelay').value, 10) || 30,
                 max_delay: parseInt(document.getElementById('maxDelay').value, 10) || 90,
                 auto_bind_domain: autoBindDomainCheck.checked
@@ -793,6 +923,41 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
+    // ✨✨✨ 新增：加载 X-UI 配置函数 ✨✨✨
+    async function loadXuiConfig() {
+        try {
+            const config = await apiRequest('/oci/api/xui-config');
+            xuiManagerUrlInput.value = config.manager_url || '';
+            xuiManagerSecretInput.value = config.manager_secret || '';
+        } catch (error) {
+            addLog('加载 X-UI 配置失败，请检查后端。', 'warning');
+        }
+    }
+
+    // ✨✨✨ 新增：保存 X-UI 配置事件 ✨✨✨
+    saveXuiConfigBtn.addEventListener('click', async () => {
+        const url = xuiManagerUrlInput.value.trim();
+        const secret = xuiManagerSecretInput.value.trim();
+        
+        const spinner = saveXuiConfigBtn.querySelector('.spinner-border');
+        saveXuiConfigBtn.disabled = true;
+        spinner.classList.remove('d-none');
+        
+        try {
+            const response = await apiRequest('/oci/api/xui-config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ manager_url: url, manager_secret: secret })
+            });
+            addLog(response.message, 'success');
+        } catch (e) {
+            alert(e.message);
+        } finally {
+            saveXuiConfigBtn.disabled = false;
+            spinner.classList.add('d-none');
+        }
+    });
+    // ------------------------------------------
 
     getApiKeyBtn.addEventListener('click', async () => {
         addLog('正在获取API密钥...');
@@ -1877,4 +2042,5 @@ document.addEventListener('DOMContentLoaded', function() {
     checkSession();
     loadTgConfig();
     loadCloudflareConfig();
+    loadXuiConfig(); // ✨ 初始化加载 X-UI 配置
 });
