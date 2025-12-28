@@ -190,80 +190,33 @@ document.addEventListener('DOMContentLoaded', function() {
         customSshKeyContainer.classList.add('d-none');
         launchCustomSshKey.value = '';
 
-        // --- ✨✨✨ 修改：默认脚本逻辑 (支持记忆 + X-UI自动对接) ✨✨✨ ---
+        // --- ✨✨✨ 修改开始：初始默认为空，完全由用户自定义 ✨✨✨ ---
         
-        // 1. 定义你的默认脚本 (包含自动对接 X-UI 逻辑)
-        // 注意：${VAR} 需要转义为 \${VAR} 以便在 JS 模板字符串中保持原样
-        const HARDCODED_DEFAULT = `#!/bin/bash
-if [ "$EUID" -ne 0 ]; then sudo bash "$0" "$@"; exit; fi
+        // 1. 将默认硬编码值设置为空字符串
+        // 这样如果没有本地缓存记录，输入框显示就是空白的
+        const HARDCODED_DEFAULT = "";
 
-# BBR
-if ! grep -q "net.core.default_qdisc=cake" /etc/sysctl.conf; then
-    echo "net.core.default_qdisc=cake" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p >/dev/null 2>&1
-fi
-
-# Firewall
-iptables -F; iptables -P INPUT ACCEPT; iptables -P FORWARD ACCEPT; iptables -P OUTPUT ACCEPT
-
-# Install X-UI
-XUI_USER="sijuly"
-XUI_PASS='050148Sq$'
-XUI_PORT="54321"
-printf "y\\n\${XUI_USER}\\n\${XUI_PASS}\\n\${XUI_PORT}\\n" | bash <(curl -4 -Ls https://raw.githubusercontent.com/vaxilu/x-ui/master/install.sh)
-
-# Auto Register Logic (Wait for X-UI to start)
-sleep 5
-MY_IP=$(curl -s4m8 4.ipw.cn)
-MY_HOST=$(hostname)
-
-# Default Fallbacks (Variables injected by Python Backend override these)
-: \${MAIN_DOMAIN:="810625.xyz"}
-: \${AUTO_REG_SECRET:="sijuly_secret_key_2025"}
-
-if [ "$IS_DOMAIN_BOUND" == "true" ]; then
-    REPORT_ADDR="\${MY_HOST}.\${MAIN_DOMAIN}"
-    ALIAS_NAME="Auto-Domain-\${MY_HOST}"
-else
-    REPORT_ADDR="\${MY_IP}"
-    ALIAS_NAME="Auto-IP-\${MY_IP}"
-fi
-
-# MANAGER_URL is injected by backend via export
-: \${MANAGER_URL:="https://xui-manager.sijuly.nyc.mn/api/auto_register_node"}
-
-if [ -n "$MANAGER_URL" ]; then
-  curl -X POST "$MANAGER_URL" \\
-    -H "Content-Type: application/json" \\
-    -d '{
-      "secret": "'"$AUTO_REG_SECRET"'",
-      "ip": "'"$REPORT_ADDR"'",
-      "port": "'"$XUI_PORT"'",
-      "username": "'"$XUI_USER"'",
-      "password": "'"$XUI_PASS"'",
-      "alias": "'"$ALIAS_NAME"'"
-    }'
-fi
-`;
         const defaultScriptInput = document.getElementById('defaultStartupScriptInput');
         const editBtn = document.getElementById('editDefaultScriptBtn');
         const extraScriptInput = document.getElementById('startupScript');
 
-        // 2. 优先从浏览器缓存读取用户上次修改过的默认脚本，如果没有则用初始值
+        // 2. 尝试从浏览器缓存读取用户之前保存过的脚本
         const savedDefault = localStorage.getItem('oci_default_startup_script');
+        
         if (defaultScriptInput) {
+            // 逻辑：如果有缓存就显示缓存的，没有缓存就显示上面的 HARDCODED_DEFAULT (即空白)
             defaultScriptInput.value = savedDefault || HARDCODED_DEFAULT;
-            defaultScriptInput.readOnly = true; // 重置为只读
-            editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
-            editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
+            defaultScriptInput.readOnly = true; // 默认锁定
             
-            // 确保按钮样式初始状态正确
-            editBtn.classList.add('btn-outline-secondary');
-            editBtn.classList.remove('btn-outline-success');
+            // 初始化按钮状态
+            if (editBtn) {
+                editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
+                editBtn.classList.remove('btn-outline-success');
+                editBtn.classList.add('btn-outline-secondary');
+            }
         }
         
-        // 3. 清空“额外脚本”框（每次打开都为空，避免上次的残留）
+        // 3. 每次打开弹窗都清空“额外脚本”框（保持整洁）
         if (extraScriptInput) {
             extraScriptInput.value = '';
         }
@@ -272,37 +225,41 @@ fi
         if (editBtn) {
             editBtn.onclick = () => {
                 const isReadOnly = defaultScriptInput.readOnly;
+                
                 if (isReadOnly) {
-                    // 进入编辑模式
+                    // --- 动作：解锁进入编辑模式 ---
                     defaultScriptInput.readOnly = false;
                     defaultScriptInput.focus();
                     editBtn.innerHTML = '<i class="bi bi-check-lg"></i> 保存';
                     editBtn.classList.replace('btn-outline-secondary', 'btn-outline-success');
                 } else {
-                    // 保存并锁定
+                    // --- 动作：保存更改 ---
+                    const currentVal = defaultScriptInput.value.trim();
+                    
+                    // 将您输入的内容直接保存到浏览器缓存
+                    // 无论内容是什么（包括空的），都直接保存
+                    localStorage.setItem('oci_default_startup_script', currentVal);
+
+                    // 恢复只读状态
                     defaultScriptInput.readOnly = true;
                     editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
                     editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
                     
-                    // 特殊逻辑：如果用户清空了，恢复默认模板
-                    if (!defaultScriptInput.value.trim()) {
-                        if (confirm("脚本为空，是否恢复为默认的 X-UI 自动对接脚本？")) {
-                            defaultScriptInput.value = HARDCODED_DEFAULT;
-                        }
+                    // 日志反馈
+                    if (currentVal) {
+                        addLog('默认开机脚本已更新并保存至本地。', 'success');
+                    } else {
+                        addLog('默认开机脚本已清空并保存。', 'warning');
                     }
-
-                    // 写入本地缓存，下次打开还是这个
-                    localStorage.setItem('oci_default_startup_script', defaultScriptInput.value.trim());
-                    addLog('默认开机脚本已更新并保存至本地。', 'success');
                 }
             };
         }
-        // ----------------------------------------------------
+        // --- ✨✨✨ 修改结束 ✨✨✨ ---
 
         // 加载操作系统列表
         loadAndDisplayOS();
     });
-
+    
     submitLaunchInstanceBtn.addEventListener('click', () => {
         // --- 定义核心提交函数 ---
         const proceedWithLaunch = async () => {
