@@ -27,6 +27,8 @@ TG_CONFIG_FILE = "tg_settings.json"
 CLOUDFLARE_CONFIG_FILE = "cloudflare_settings.json"
 DEFAULT_KEY_FILE = "default_key.json" 
 XUI_CONFIG_FILE = "xui_settings.json"
+# ✨✨✨ 新增：默认开机脚本保存路径 ✨✨✨
+DEFAULT_SCRIPT_FILE = "default_startup_script.sh"
 
 # --- Timeout Handling ---
 class TimeoutException(Exception):
@@ -656,7 +658,6 @@ def cloudflare_config_handler():
         save_cloudflare_config(config)
         return jsonify({"success": True, "message": "Cloudflare 设置已成功保存"})
 
-# ✨✨✨ 新增：X-UI 配置 API (无需修改) ✨✨✨
 @oci_bp.route('/api/xui-config', methods=['GET', 'POST'])
 @login_required
 def xui_config_handler():
@@ -670,7 +671,33 @@ def xui_config_handler():
         config = {'manager_url': url, 'manager_secret': secret}
         save_xui_config(config)
         return jsonify({"success": True, "message": "X-UI 对接配置已保存"})
-# --------------------------------
+
+# ✨✨✨ 新增：管理服务器端默认开机脚本的 API ✨✨✨
+@oci_bp.route('/api/default-script', methods=['GET', 'POST'])
+@login_required
+def default_script_handler():
+    if request.method == 'GET':
+        try:
+            if os.path.exists(DEFAULT_SCRIPT_FILE):
+                with open(DEFAULT_SCRIPT_FILE, 'r', encoding='utf-8') as f:
+                    return jsonify({'script': f.read()})
+            return jsonify({'script': ''})
+        except Exception as e:
+            logging.error(f"Error reading default script: {e}")
+            return jsonify({'script': ''})
+
+    elif request.method == 'POST':
+        data = request.json
+        script_content = data.get('script', '')
+        # 允许保存空内容，相当于清空
+        try:
+            with open(DEFAULT_SCRIPT_FILE, 'w', encoding='utf-8') as f:
+                f.write(script_content)
+            return jsonify({"success": True, "message": "服务器端默认开机脚本已保存"})
+        except Exception as e:
+            logging.error(f"Error saving default script: {e}")
+            return jsonify({"error": f"保存失败: {e}"}), 500
+# ----------------------------------------------------
 
 @oci_bp.route("/api/profiles", methods=["GET", "POST"])
 @login_required
@@ -1556,6 +1583,21 @@ def launch_instance(alias, endpoint):
             return jsonify({"error": error}), 500
 
         data = request.json
+        
+        # ✨✨✨ 修改开始：如果前端未提供脚本，尝试从服务器文件读取 ✨✨✨
+        user_script = data.get('startup_script', '').strip()
+        if not user_script:
+            if os.path.exists(DEFAULT_SCRIPT_FILE):
+                try:
+                    with open(DEFAULT_SCRIPT_FILE, 'r', encoding='utf-8') as f:
+                        server_default_script = f.read().strip()
+                        if server_default_script:
+                            logging.info("Using server-side default startup script.")
+                            data['startup_script'] = server_default_script
+                except Exception as e:
+                    logging.error(f"Failed to read server-side default script: {e}")
+        # ✨✨✨ 修改结束 ✨✨✨
+
         data.setdefault('os_name_version', 'Canonical Ubuntu-22.04')
 
         display_name = data.get('display_name_prefix', 'N/A')
