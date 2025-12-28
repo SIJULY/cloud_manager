@@ -14,3 +14,6 @@ requests
 pypinyin
 python-telegram-bot
 httpx
+pyotp
+qrcode
+pillow
