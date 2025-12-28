@@ -180,7 +180,8 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    launchInstanceModalEl.addEventListener('show.bs.modal', () => {
+    // ✨✨✨ 修改核心：弹窗打开时，从服务器加载默认脚本 ✨✨✨
+    launchInstanceModalEl.addEventListener('show.bs.modal', async () => {
         if (enablePasswordLoginCheck) {
             enablePasswordLoginCheck.checked = false; 
             enablePasswordLoginCheck.dispatchEvent(new Event('change'));
@@ -190,71 +191,76 @@ document.addEventListener('DOMContentLoaded', function() {
         customSshKeyContainer.classList.add('d-none');
         launchCustomSshKey.value = '';
 
-        // --- ✨✨✨ 修改开始：初始默认为空，完全由用户自定义 ✨✨✨ ---
-        
-        // 1. 将默认硬编码值设置为空字符串
-        // 这样如果没有本地缓存记录，输入框显示就是空白的
-        const HARDCODED_DEFAULT = "";
-
         const defaultScriptInput = document.getElementById('defaultStartupScriptInput');
         const editBtn = document.getElementById('editDefaultScriptBtn');
         const extraScriptInput = document.getElementById('startupScript');
 
-        // 2. 尝试从浏览器缓存读取用户之前保存过的脚本
-        const savedDefault = localStorage.getItem('oci_default_startup_script');
-        
+        // 1. 初始化输入框状态：加载中
         if (defaultScriptInput) {
-            // 逻辑：如果有缓存就显示缓存的，没有缓存就显示上面的 HARDCODED_DEFAULT (即空白)
-            defaultScriptInput.value = savedDefault || HARDCODED_DEFAULT;
-            defaultScriptInput.readOnly = true; // 默认锁定
+            defaultScriptInput.readOnly = true; 
+            defaultScriptInput.value = "正在从服务器同步默认脚本..."; 
             
-            // 初始化按钮状态
             if (editBtn) {
                 editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
                 editBtn.classList.remove('btn-outline-success');
                 editBtn.classList.add('btn-outline-secondary');
             }
+
+            try {
+                // ✨ 调用后端 GET 接口读取文件
+                const response = await apiRequest('/oci/api/default-script');
+                defaultScriptInput.value = response.script || ""; 
+            } catch (error) {
+                console.error("加载默认脚本失败", error);
+                defaultScriptInput.value = ""; // 加载失败则置空
+            }
         }
         
-        // 3. 每次打开弹窗都清空“额外脚本”框（保持整洁）
+        // 2. 清空额外脚本框
         if (extraScriptInput) {
             extraScriptInput.value = '';
         }
 
-        // 4. 绑定“编辑/保存”按钮事件
+        // 3. 绑定保存按钮事件：保存到服务器
         if (editBtn) {
-            editBtn.onclick = () => {
+            editBtn.onclick = async () => {
                 const isReadOnly = defaultScriptInput.readOnly;
                 
                 if (isReadOnly) {
-                    // --- 动作：解锁进入编辑模式 ---
+                    // --- 解锁编辑 ---
                     defaultScriptInput.readOnly = false;
                     defaultScriptInput.focus();
                     editBtn.innerHTML = '<i class="bi bi-check-lg"></i> 保存';
                     editBtn.classList.replace('btn-outline-secondary', 'btn-outline-success');
                 } else {
-                    // --- 动作：保存更改 ---
+                    // --- 执行保存 ---
                     const currentVal = defaultScriptInput.value.trim();
                     
-                    // 将您输入的内容直接保存到浏览器缓存
-                    // 无论内容是什么（包括空的），都直接保存
-                    localStorage.setItem('oci_default_startup_script', currentVal);
+                    // 临时禁用按钮防止重复点击
+                    editBtn.disabled = true;
+                    editBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 保存中...';
 
-                    // 恢复只读状态
-                    defaultScriptInput.readOnly = true;
-                    editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
-                    editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
-                    
-                    // 日志反馈
-                    if (currentVal) {
-                        addLog('默认开机脚本已更新并保存至本地。', 'success');
-                    } else {
-                        addLog('默认开机脚本已清空并保存。', 'warning');
+                    try {
+                        // ✨ 调用后端 POST 接口写入文件
+                        await apiRequest('/oci/api/default-script', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ script: currentVal })
+                        });
+                        
+                        addLog('默认开机脚本已成功保存至服务器文件！', 'success');
+                    } catch (error) {
+                        addLog('保存脚本失败: ' + error.message, 'error');
+                    } finally {
+                        // 恢复界面状态
+                        editBtn.disabled = false;
+                        defaultScriptInput.readOnly = true;
+                        editBtn.innerHTML = '<i class="bi bi-pencil-square"></i> 编辑';
+                        editBtn.classList.replace('btn-outline-success', 'btn-outline-secondary');
                     }
                 }
             };
         }
-        // --- ✨✨✨ 修改结束 ✨✨✨ ---
 
         // 加载操作系统列表
         loadAndDisplayOS();
