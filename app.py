@@ -101,7 +101,7 @@ def save_mfa_secret(secret):
     with open(MFA_FILE, 'w') as f:
         json.dump({'secret': secret}, f)
 
-# --- Shared Routes (修改后的登录逻辑) ---
+# --- Routes ---
 
 @app.route('/setup-mfa', methods=['GET', 'POST'])
 def setup_mfa():
@@ -129,12 +129,12 @@ def setup_mfa():
     secret = pyotp.random_base32()
     session['temp_mfa_secret'] = secret
     
-    # 生成二维码
+    # 生成二维码 (已修复 pillow 兼容性)
     totp = pyotp.TOTP(secret)
     uri = totp.provisioning_uri(name="CloudManagerAdmin", issuer_name="CloudManager")
     img = qrcode.make(uri)
     buffered = io.BytesIO()
-    img.save(buffered)
+    img.save(buffered) # 不指定 format，由 pillow 自动处理
     img_str = base64.b64encode(buffered.getvalue()).decode()
     session['temp_mfa_qr'] = img_str
     
@@ -147,32 +147,34 @@ def login():
         mfa_code = request.form.get('mfa_code')
         
         if password == PASSWORD:
-            # 1. 密码正确
+            # 1. 密码正确，检查是否配置了 MFA
             secret = get_mfa_secret()
             
             if secret:
-                # 2. 已配置 MFA，必须校验验证码
+                # 2. 已配置 MFA，校验验证码
                 if not mfa_code:
-                    # 如果用户只输了密码没输验证码，提示他
-                    return render_template('login.html', error='请先在下方输入二次验证码')
+                    return render_template('login.html', error='请输入二次验证码', mfa_enabled=True)
                 
                 totp = pyotp.TOTP(secret)
                 if totp.verify(mfa_code):
-                    # 验证通过，授予登录权限
-                    session.clear() # <--- 关键：先清除旧会话残留
+                    session.clear() # 清除旧会话
                     session['user_logged_in'] = True
                     return redirect(url_for('index'))
                 else:
-                    return render_template('login.html', error='二次验证码错误')
+                    return render_template('login.html', error='二次验证码错误', mfa_enabled=True)
             else:
-                # 3. 未配置 MFA，强制跳转到设置页面
-                session.clear() # <--- 关键：清除可能存在的旧登录状态
-                session['pre_mfa_auth'] = True # 标记为"密码验证通过，待绑定MFA"
+                # 3. 未配置 MFA，跳转到设置页面
+                session.clear()
+                session['pre_mfa_auth'] = True
                 return redirect(url_for('setup_mfa'))
         else:
-            return render_template('login.html', error='密码错误')
+            # 密码错误时，也要保持 MFA 输入框的状态（如果已配置）
+            is_mfa = get_mfa_secret() is not None
+            return render_template('login.html', error='密码错误', mfa_enabled=is_mfa)
             
-    return render_template('login.html')
+    # GET 请求：进入页面时检查 MFA 状态，决定显示哪种输入框
+    is_mfa = get_mfa_secret() is not None
+    return render_template('login.html', mfa_enabled=is_mfa)
 
 @app.route('/logout')
 def logout():
