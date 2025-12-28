@@ -25,7 +25,7 @@ services:
     build: .
     restart: always
     # 你原来的并发配置
-    command: celery -A app.celery worker --pool=threads --concurrency=20 --loglevel=info
+    command: celery -A app.celery worker --pool=threads --concurrency=100 --loglevel=info
     volumes:
       - .:/app
     environment:
