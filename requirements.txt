@@ -17,3 +17,4 @@ httpx
 pyotp
 qrcode
 pillow
+PySocks
