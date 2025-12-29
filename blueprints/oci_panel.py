@@ -398,9 +398,11 @@ def get_oci_clients(profile_config, validate=True):
     try:
         config_for_sdk = profile_config.copy()
         
+        # 注意：这里我们只保留日志，不再试图往 config 里塞 proxy 字段，因为塞了也没用
+        proxy_url = None
         if 'proxy' in profile_config and profile_config['proxy']:
-            config_for_sdk['proxy'] = profile_config['proxy']
-            logging.info(f"Using proxy: {profile_config['proxy']} for OCI client.")
+            proxy_url = profile_config['proxy']
+            logging.info(f"Using proxy: {proxy_url} for OCI client.")
 
         if 'key_content' in profile_config:
             key_file_path = f"/tmp/{uuid.uuid4()}.pem"
@@ -412,12 +414,26 @@ def get_oci_clients(profile_config, validate=True):
         if validate:
             oci.config.validate_config(config_for_sdk)
             
-        return {
+        # 1. 先创建客户端对象
+        clients = {
             "identity": oci.identity.IdentityClient(config_for_sdk),
             "compute": oci.core.ComputeClient(config_for_sdk),
             "vnet": oci.core.VirtualNetworkClient(config_for_sdk),
             "bs": oci.core.BlockstorageClient(config_for_sdk)
-        }, None
+        }
+
+        # 2. ✨✨✨ 修复核心：如果存在代理配置，强制注入到底层 session 中 ✨✨✨
+        if proxy_url:
+            proxies = {
+                'http': proxy_url,
+                'https': proxy_url
+            }
+            for client_name, client_obj in clients.items():
+                # OCI 客户端都有一个 base_client 属性，里面维护着 requests session
+                if hasattr(client_obj, 'base_client') and hasattr(client_obj.base_client, 'session'):
+                    client_obj.base_client.session.proxies = proxies
+
+        return clients, None
     except Exception as e:
         return None, f"创建OCI客户端失败: {e}"
     finally:
