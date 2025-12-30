@@ -17,12 +17,30 @@ from datetime import timedelta
 app = Flask(__name__)
 
 # --- 会话过期设置 ---
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=2)
+# ✨ 修改点 1：设置为 3650 天 (约 10 年)，实现“IP不变永不掉线”
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=3650)
 
 @app.before_request
 def make_session_permanent():
-    """让会话在每次请求后都重置计时器 (滑动窗口)"""
+    """每次请求检查 IP 是否一致，一致则自动续期"""
     session.permanent = True
+
+    # ✨ 修改点 2：IP 安全检查门神
+    # 获取当前请求的真实 IP (兼容 Caddy/Docker 反向代理)
+    if request.headers.getlist("X-Forwarded-For"):
+        current_ip = request.headers.getlist("X-Forwarded-For")[0]
+    else:
+        current_ip = request.remote_addr
+
+    # 检查逻辑：如果已登录，但 IP 变了 -> 踢下线
+    if 'user_logged_in' in session:
+        recorded_ip = session.get('login_ip')
+        
+        # 如果 Session 里存了 IP，但和现在的 IP 不一样
+        if recorded_ip and recorded_ip != current_ip:
+            session.clear() # 销毁凭证
+            print(f"⚠️ [安全警报] 会话劫持拦截！原IP: {recorded_ip}, 现IP: {current_ip}")
+            return redirect(url_for('login'))
 
 app.secret_key = os.getenv('SECRET_KEY', 'a_very_secret_key_for_the_3in1_panel')
 PASSWORD = os.getenv("PANEL_PASSWORD", "You22kme#12345")
@@ -119,6 +137,14 @@ def setup_mfa():
             # 验证成功，保存密钥并正式登录
             save_mfa_secret(secret)
             session['user_logged_in'] = True
+            
+            # ✨ 修改点 3：设置 MFA 时也要记录 IP (防止首次设置即被劫持)
+            if request.headers.getlist("X-Forwarded-For"):
+                user_ip = request.headers.getlist("X-Forwarded-For")[0]
+            else:
+                user_ip = request.remote_addr
+            session['login_ip'] = user_ip
+            
             session.pop('pre_mfa_auth', None)
             session.pop('temp_mfa_secret', None)
             return redirect(url_for('index'))
@@ -159,6 +185,16 @@ def login():
                 if totp.verify(mfa_code):
                     session.clear() # 清除旧会话
                     session['user_logged_in'] = True
+                    
+                    # ✨ 修改点 3：记录登录时的 IP
+                    if request.headers.getlist("X-Forwarded-For"):
+                        user_ip = request.headers.getlist("X-Forwarded-For")[0]
+                    else:
+                        user_ip = request.remote_addr
+                    
+                    session['login_ip'] = user_ip
+                    # ---------------------------
+
                     return redirect(url_for('index'))
                 else:
                     return render_template('login.html', error='二次验证码错误', mfa_enabled=True)
