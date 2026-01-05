@@ -259,6 +259,57 @@ def _internal_fetch_and_save_tenancy_date(alias):
         logging.error(f"Failed to fetch/save tenancy age for {alias}: {e}")
         return False, str(e)
 
+
+def _auto_open_firewall(vnet_client, subnet_id, task_id=None):
+    """
+    检查指定子网的安全列表，如果没有允许所有流量的规则，则自动添加。
+    """
+    try:
+        subnet = vnet_client.get_subnet(subnet_id).data
+        # 遍历该子网关联的所有安全列表（通常只有一个默认的）
+        for sl_id in subnet.security_list_ids:
+            sl = vnet_client.get_security_list(sl_id).data
+            
+            # 检查是否已存在“允许所有”入站规则 (Source: 0.0.0.0/0, Protocol: all)
+            ingress_exists = any(r.source == "0.0.0.0/0" and r.protocol == "all" for r in sl.ingress_security_rules)
+            
+            # 检查是否已存在“允许所有”出站规则 (Destination: 0.0.0.0/0, Protocol: all)
+            egress_exists = any(r.destination == "0.0.0.0/0" and r.protocol == "all" for r in sl.egress_security_rules)
+
+            if ingress_exists and egress_exists:
+                logging.info(f"安全列表 {sl.display_name} 已包含允许所有规则，无需修改。")
+                continue 
+
+            # 准备更新列表
+            new_ingress_rules = list(sl.ingress_security_rules)
+            if not ingress_exists:
+                if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在自动添加防火墙入站规则...', task_id))
+                new_ingress_rules.append(IngressSecurityRule(
+                    source="0.0.0.0/0", protocol="all", is_stateless=False, source_type="CIDR_BLOCK"
+                ))
+            
+            new_egress_rules = list(sl.egress_security_rules)
+            if not egress_exists:
+                if task_id: _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在自动添加防火墙出站规则...', task_id))
+                new_egress_rules.append(EgressSecurityRule(
+                    destination="0.0.0.0/0", protocol="all", is_stateless=False, destination_type="CIDR_BLOCK"
+                ))
+
+            # 提交更新
+            vnet_client.update_security_list(
+                sl_id, 
+                UpdateSecurityListDetails(
+                    ingress_security_rules=new_ingress_rules, 
+                    egress_security_rules=new_egress_rules
+                )
+            )
+            logging.info(f"已自动更新安全列表 {sl.display_name} 的防火墙规则。")
+            
+        return "✅ 防火墙已自动开放 (入站/出站)"
+    except Exception as e:
+        logging.error(f"自动开放防火墙失败: {e}")
+        return f"⚠️ 防火墙自动开放失败: {str(e)[:50]}"
+
 def load_tg_config():
     if not os.path.exists(TG_CONFIG_FILE): return {}
     try:
@@ -1765,6 +1816,25 @@ def _instance_action_task(task_id, profile_config, action, instance_id, data):
             
             _enable_ipv6_networking(task_id, vnet_client, vnic_id)
             
+            # --- ✨✨✨ 修改开始：检测并删除已有 IPv6 以实现“更换”逻辑 ✨✨✨ ---
+            _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('正在检查现有 IPv6 地址...', task_id))
+            existing_ipv6s = vnet_client.list_ipv6s(vnic_id=vnic_id).data
+            
+            if existing_ipv6s:
+                ipv6_to_remove = [ip.id for ip in existing_ipv6s]
+                _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', (f'检测到 {len(ipv6_to_remove)} 个旧 IPv6，正在删除以执行更换...', task_id))
+                logging.info(f"Replacing IPv6 for instance {instance_name}: Deleting {len(ipv6_to_remove)} existing addresses.")
+                
+                for ipv6_id in ipv6_to_remove:
+                    try:
+                        vnet_client.delete_ipv6(ipv6_id)
+                    except Exception as e:
+                        logging.warning(f"删除旧 IPv6 {ipv6_id} 失败: {e}")
+                
+                # 稍微等待删除生效，避免并发冲突
+                time.sleep(5)
+            # --- ✨✨✨ 修改结束 ✨✨✨ ---
+            
             _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('网络配置完成，正在为实例分配IPv6地址...', task_id))
 
             new_ipv6 = vnet_client.create_ipv6(CreateIpv6Details(vnic_id=vnic_id)).data
@@ -1865,23 +1935,20 @@ def _snatch_instance_task(task_id, profile_config, alias, details, run_id, auto_
             else:
                 instance_password = generate_oci_password()
 
-        # ✨✨✨ 修改开始：注入动态环境变量到脚本 ✨✨✨
-        # 1. 读取 Cloudflare 配置获取主域名
+        # 读取 Cloudflare 配置获取主域名
         cf_config = load_cloudflare_config()
         cf_domain = cf_config.get('domain', '')
         
-        # 2. 读取 X-UI 对接配置 (新增自动补全逻辑)
+        # 读取 X-UI 对接配置
         xui_conf = load_xui_config()
         raw_url = xui_conf.get('manager_url', '').strip().rstrip('/')
         manager_secret = xui_conf.get('manager_secret', '')
 
-        # 自动补全 API 路径
         if raw_url and not raw_url.endswith('/api/auto_register_node'):
              manager_url = f"{raw_url}/api/auto_register_node"
         else:
              manager_url = raw_url
 
-        # 3. 准备环境变量注入脚本
         is_domain_bound = 'true' if auto_bind_domain else 'false'
         
         env_injection = f"""
@@ -1891,12 +1958,10 @@ export MANAGER_URL="{manager_url}"
 export AUTO_REG_SECRET="{manager_secret}"
 """
         
-        # 4. 拼接脚本
         original_script = details.get('startup_script', '')
         final_startup_script = env_injection + "\n" + original_script
 
         user_data_encoded = get_user_data(instance_password, final_startup_script, enable_password_auth)
-        # ✨✨✨ 修改结束 ✨✨✨
         
         plugins_config_list = [
             oci.core.models.InstanceAgentPluginConfigDetails(
@@ -1983,9 +2048,24 @@ export AUTO_REG_SECRET="{manager_secret}"
                     public_ip = vnic.public_ip or "无"
             except Exception as ip_e:
                 public_ip = "获取失败"
+
+            # ------------------------------------------------------------------
+            # 新增：自动开放防火墙逻辑
+            # ------------------------------------------------------------------
+            firewall_msg = ""
+            try:
+                # subnet_id 在任务开始时已获取
+                firewall_msg = _auto_open_firewall(vnet_client, subnet_id, task_id)
+            except Exception as fw_e:
+                logging.error(f"Task {task_id} firewall auto-open error: {fw_e}")
+                firewall_msg = f"⚠️ 防火墙自动开放异常: {str(fw_e)[:30]}"
+            # ------------------------------------------------------------------
             
             db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu"
             
+            if firewall_msg:
+                db_msg += f"\n- {firewall_msg}"
+
             if enable_password_auth and instance_password:
                 db_msg += f"\n- 密码：{instance_password}"
             else:
@@ -2018,6 +2098,9 @@ export AUTO_REG_SECRET="{manager_secret}"
                 result_for_tg += f"\n- 密码: {instance_password}"
             else:
                 result_for_tg += "\n- 登录方式: 仅 SSH 密钥"
+
+            if firewall_msg:
+                 result_for_tg += f"\n- {firewall_msg}"
 
             if dns_update_msg:
                 result_for_tg += f"\n{dns_update_msg}"
