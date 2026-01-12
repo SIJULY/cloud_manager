@@ -17,11 +17,10 @@ print_error() { echo -e "\e[31m[错误]\e[0m $1"; exit 1; }
 
 # --- 核心逻辑函数 ---
 
-# 1. 生成 Docker 配置文件 (核心修复逻辑)
-# 不再使用 sed 修改原文件，而是生成 override 文件
+# 1. 生成 Docker 配置文件
 generate_docker_config() {
     local mode=$1
-    local port=${2:-5000} # 默认5000，如果有传入则使用传入值
+    local port=${2:-5000} 
 
     print_info "正在生成 Docker 配置 (模式: $mode)..."
 
@@ -36,9 +35,7 @@ services:
 EOF
     else
         # === 域名模式 ===
-        # 确保 Caddyfile 存在
         if [ ! -f "Caddyfile" ] || ! grep -q "reverse_proxy" "Caddyfile"; then
-             # 如果 .env 有域名就用，没有就问
              if grep -q "DOMAIN_OR_IP=" "$ENV_FILE"; then
                  DOMAIN=$(grep "DOMAIN_OR_IP=" "$ENV_FILE" | cut -d= -f2)
              else
@@ -77,12 +74,23 @@ EOF
     fi
 }
 
-# 2. 环境检查
+# 2. 环境检查 (修复重点：增加了错误检测)
 prepare_environment() {
+    # 检测是否安装 Docker
     if ! command -v docker &> /dev/null; then 
-        print_warning "未检测到 Docker，正在安装..."; 
-        curl -fsSL https://get.docker.com | bash; 
+        print_warning "未检测到 Docker，正在准备安装..."
+        
+        # 尝试安装 Docker
+        curl -fsSL https://get.docker.com | bash
+        
+        # --- [新增] 校验安装结果 ---
+        if ! command -v docker &> /dev/null; then
+            echo "----------------------------------------------------"
+            print_error "Docker 安装失败！\n可能原因：系统后台正在进行更新(apt被占用)。\n解决方法：\n1. 请等待几分钟后重试。\n2. 或者运行 'rm /var/lib/apt/lists/lock' 强制解锁(需谨慎)。\n3. 手动运行 'apt install docker.io' 查看具体错误。"
+        fi
+
         systemctl enable --now docker
+        print_success "Docker 安装成功。"
     fi
     
     if [ ! -d "${INSTALL_DIR}" ]; then
@@ -94,15 +102,14 @@ prepare_environment() {
     touch azure_keys.json oci_profiles.json tg_settings.json key.txt azure_tasks.db oci_tasks.db
     chmod -R 777 .
 
-    # 清理旧版逻辑留下的痕迹 (关键步骤)
-    # 如果 .gitignore 包含 docker-compose.yml，说明是旧版，删掉这条规则
+    # 清理旧版逻辑
     if grep -q "docker-compose.yml" .gitignore 2>/dev/null; then
         sed -i "/docker-compose.yml/d" .gitignore
         git rm --cached docker-compose.yml > /dev/null 2>&1 || true
     fi
 }
 
-# 3. 安装逻辑 (IP模式 - 对应原来的 已有服务模式)
+# 3. 安装逻辑 (IP模式)
 install_ip_mode() {
     prepare_environment
     print_info "步骤: 配置 IP+端口 模式..."
@@ -111,28 +118,29 @@ install_ip_mode() {
     read -p "请输入要映射的主机端口 [默认: 5000]: " host_port
     host_port=${host_port:-5000}
 
-    # 写入 .env
     cp .env.example .env 2>/dev/null || touch .env
-    # 清理旧配置
     sed -i "/PANEL_PASSWORD=/d" .env
     sed -i "/INSTALL_MODE=/d" .env
     
     echo "PANEL_PASSWORD=${new_password}" >> .env
-    echo "INSTALL_MODE=ip" >> .env  # 关键：记忆模式
-    echo "HOST_PORT=${host_port}" >> .env # 记忆端口
+    echo "INSTALL_MODE=ip" >> .env
+    echo "HOST_PORT=${host_port}" >> .env
 
-    # 生成配置
     generate_docker_config "ip" "$host_port"
 
     print_info "正在启动..."
     docker compose down --remove-orphans
-    docker compose up -d --build
     
-    SERVER_IP=$(curl -s ifconfig.me)
-    print_success "安装完成！访问地址: http://${SERVER_IP}:${host_port}"
+    # --- [新增] 启动结果校验 ---
+    if docker compose up -d --build; then
+        SERVER_IP=$(curl -s ifconfig.me)
+        print_success "安装完成！访问地址: http://${SERVER_IP}:${host_port}"
+    else
+        print_error "启动失败！请检查上方报错信息 (通常是端口冲突或配置错误)。"
+    fi
 }
 
-# 4. 安装逻辑 (域名模式 - 对应原来的 全新服务器模式)
+# 4. 安装逻辑 (域名模式)
 install_domain_mode() {
     prepare_environment
     print_info "步骤: 配置 域名+Caddy 模式..."
@@ -147,19 +155,22 @@ install_domain_mode() {
 
     echo "PANEL_PASSWORD=${new_password}" >> .env
     echo "DOMAIN_OR_IP=${domain_name}" >> .env
-    echo "INSTALL_MODE=domain" >> .env # 关键：记忆模式
+    echo "INSTALL_MODE=domain" >> .env
 
-    # 生成配置
     generate_docker_config "domain"
 
     print_info "正在启动..."
     docker compose down --remove-orphans
-    docker compose up -d --build
     
-    print_success "安装完成！访问地址: https://${domain_name}"
+    # --- [新增] 启动结果校验 ---
+    if docker compose up -d --build; then
+         print_success "安装完成！访问地址: https://${domain_name}"
+    else
+         print_error "启动失败！请检查上方报错信息。"
+    fi
 }
 
-# 5. 更新逻辑 (智能识别)
+# 5. 更新逻辑
 update_panel() {
     if [ ! -d "${INSTALL_DIR}" ]; then
         print_error "未找到安装目录，请先安装。"
@@ -167,29 +178,22 @@ update_panel() {
     cd "${INSTALL_DIR}"
 
     print_info "正在拉取最新代码..."
-    # 强制重置代码，保证 docker-compose.yml 是纯净的
     git fetch --all
     git reset --hard origin/main
     git pull
 
-    # 读取 .env 配置
     if [ -f ".env" ]; then
         source .env
     fi
 
-    # 智能判断模式
     if [ "$INSTALL_MODE" == "ip" ]; then
         print_info "检测到当前为: IP+端口模式"
-        # 如果 .env 里没存端口，默认 5000
         PORT=${HOST_PORT:-5000}
         generate_docker_config "ip" "$PORT"
-        
     elif [ "$INSTALL_MODE" == "domain" ]; then
         print_info "检测到当前为: 域名模式"
         generate_docker_config "domain"
-        
     else
-        # 救命逻辑：如果老用户 .env 里没有 INSTALL_MODE
         print_warning "未检测到历史模式配置 (可能是旧版首次更新)。"
         if [ -f "Caddyfile" ]; then
              print_info "发现 Caddyfile，自动识别为 [域名模式]。"
@@ -198,7 +202,6 @@ update_panel() {
         else
              print_info "未发现 Caddyfile，自动识别为 [IP模式]。"
              echo "INSTALL_MODE=ip" >> .env
-             # 尝试猜测之前的端口，猜不到就用 5000
              echo "HOST_PORT=5000" >> .env
              generate_docker_config "ip" "5000"
         fi
@@ -227,7 +230,6 @@ uninstall_panel() {
         print_info "取消卸载。"
     fi
 }
-
 
 # --- 菜单主入口 ---
 if [ "$(id -u)" -ne 0 ]; then print_error "请使用 root 运行。"; fi
