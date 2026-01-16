@@ -589,6 +589,8 @@ def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
     vnic = vnet_client.get_vnic(vnic_id).data
     subnet = vnet_client.get_subnet(vnic.subnet_id).data
     vcn = vnet_client.get_vcn(subnet.vcn_id).data
+    
+    # --- 1. 检查并开启 VCN IPv6 ---
     if not vcn.ipv6_cidr_blocks:
         _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(2/5) 正在为VCN开启IPv6...', task_id))
         details = AddVcnIpv6CidrDetails(is_oracle_gua_allocation_enabled=True)
@@ -596,34 +598,73 @@ def _enable_ipv6_networking(task_id, vnet_client, vnic_id):
         oci.wait_until(vnet_client, vnet_client.get_vcn(vcn.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
         vcn = vnet_client.get_vcn(vcn.id).data
         logging.info(f"VCN {vcn.id} 已成功开启IPv6，地址段: {vcn.ipv6_cidr_blocks}")
+    
+    # --- 2. 检查并分配 Subnet IPv6 ---
     if not subnet.ipv6_cidr_block:
         _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(3/5) 正在为子网分配IPv6地址段...', task_id))
         vcn_ipv6_cidr = vcn.ipv6_cidr_blocks[0]
+        # 通常将 /56 的 VCN CIDR 分割给子网使用，这里简单替换为 /64
         subnet_ipv6_cidr = vcn_ipv6_cidr.replace('/56', '/64')
         details = UpdateSubnetDetails(ipv6_cidr_block=subnet_ipv6_cidr)
         vnet_client.update_subnet(subnet.id, details)
         oci.wait_until(vnet_client, vnet_client.get_subnet(subnet.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=300)
         logging.info(f"Subnet {subnet.id} 已成功分配IPv6地址段: {subnet_ipv6_cidr}")
+
+    # --- 3. 更新路由表 (Route Table) ---
     _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(4/5) 正在更新路由表以支持IPv6...', task_id))
     route_table = vnet_client.get_route_table(vcn.default_route_table_id).data
     igws = vnet_client.list_internet_gateways(compartment_id=vcn.compartment_id, vcn_id=vcn.id).data
     if not igws:
         raise Exception("未找到互联网网关，无法为IPv6添加路由规则。")
     igw_id = igws[0].id
-    ipv6_rule_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
-    if not ipv6_rule_exists:
+    
+    ipv6_route_exists = any(rule.destination == '::/0' for rule in route_table.route_rules)
+    if not ipv6_route_exists:
         new_rules = list(route_table.route_rules)
         new_rules.append(RouteRule(destination='::/0', network_entity_id=igw_id))
         vnet_client.update_route_table(route_table.id, UpdateRouteTableDetails(route_rules=new_rules))
         logging.info(f"已为路由表 {route_table.id} 添加IPv6默认路由。")
-    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(5/5) 正在更新安全规则以支持IPv6...', task_id))
+
+    # --- 4. 更新安全列表 (Security List) - 包含入站和出站 ---
+    _db_execute_celery('UPDATE tasks SET result=? WHERE id=?', ('(5/5) 正在更新安全规则(入站/出站)以支持IPv6...', task_id))
     security_list = vnet_client.get_security_list(vcn.default_security_list_id).data
-    egress_ipv6_rule_exists = any(rule.destination == '::/0' for rule in security_list.egress_security_rules)
-    if not egress_ipv6_rule_exists:
-        new_egress_rules = list(security_list.egress_security_rules)
-        new_egress_rules.append(EgressSecurityRule(destination='::/0', protocol='all'))
-        vnet_client.update_security_list(security_list.id, UpdateSecurityListDetails(egress_security_rules=new_egress_rules))
-        logging.info(f"已为安全列表 {security_list.id} 添加出站IPv6规则。")
+    
+    current_egress = list(security_list.egress_security_rules)
+    current_ingress = list(security_list.ingress_security_rules)
+    has_changes = False
+
+    # 4.1 检查出站 (Egress) ::/0
+    if not any(rule.destination == '::/0' for rule in current_egress):
+        current_egress.append(EgressSecurityRule(
+            destination='::/0', 
+            protocol='all', 
+            is_stateless=False,
+            destination_type='CIDR_BLOCK'
+        ))
+        has_changes = True
+        logging.info("准备添加 IPv6 出站规则")
+
+    # 4.2 检查入站 (Ingress) ::/0  <-- 这里是你缺失的部分
+    if not any(rule.source == '::/0' for rule in current_ingress):
+        current_ingress.append(IngressSecurityRule(
+            source='::/0', 
+            protocol='all', 
+            is_stateless=False, 
+            source_type='CIDR_BLOCK'
+        ))
+        has_changes = True
+        logging.info("准备添加 IPv6 入站规则")
+
+    # 4.3 提交更新
+    if has_changes:
+        update_details = UpdateSecurityListDetails(
+            egress_security_rules=current_egress,
+            ingress_security_rules=current_ingress
+        )
+        vnet_client.update_security_list(security_list.id, update_details)
+        logging.info(f"已成功为安全列表 {security_list.id} 更新 IPv6 规则。")
+    else:
+        logging.info("IPv6 安全规则已存在，无需更新。")
 
 # --- Decorators ---
 def login_required(f):
