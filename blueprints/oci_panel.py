@@ -540,7 +540,14 @@ def _ensure_subnet_in_profile(task_id, alias, vnet_client, tenancy_ocid):
     return subnet.id
 
 def get_user_data(password=None, startup_script=None, enable_password_auth=False):
+    # ✨✨✨ 修改核心：在开机第一步就强制修复网络路由，专治甲骨文下载卡死 ✨✨✨
     default_script = """
+echo "=== [Network Fix] Forcing IPv4 for GitHub to prevent Oracle IPv6 hang ==="
+echo "140.82.113.3 github.com" >> /etc/hosts
+echo "185.199.108.133 raw.githubusercontent.com" >> /etc/hosts
+echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4
+alias wget='wget -4'
+
 echo "Waiting for apt lock to be released..."
 while fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || fuser /var/lib/dpkg/lock >/dev/null 2>&1 ; do
    echo "Another apt/dpkg process is running. Waiting 10 seconds..."
@@ -557,23 +564,30 @@ done
     
     script_parts = ["#cloud-config"]
 
+    # 设置 root 密码
     if enable_password_auth and password:
         script_parts.extend([
             "chpasswd:",
             "  expire: False",
             "  list:",
-            f"    - ubuntu:{password}"
+            f"    - root:{password}"
         ])
 
     script_parts.append("runcmd:")
     
+    # 开启 root SSH 登录权限
     if enable_password_auth:
         script_parts.append("  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication yes/' /etc/ssh/sshd_config\"")
+        script_parts.append("  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin yes/' /etc/ssh/sshd_config\"")
     else:
         script_parts.append("  - \"sed -i -e '/^#*PasswordAuthentication/s/^.*$/PasswordAuthentication no/' /etc/ssh/sshd_config\"")
+        script_parts.append("  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin yes/' /etc/ssh/sshd_config\"")
 
     script_parts.append("  - 'rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf'")
-    script_parts.append("  - \"sed -i -e '/^#*PermitRootLogin/s/^.*$/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config\"")
+    
+    # 复制公钥给 root，确保密钥模式下 root 也能直接登录
+    script_parts.append("  - 'mkdir -p /root/.ssh && cp /home/ubuntu/.ssh/authorized_keys /root/.ssh/authorized_keys && chown root:root /root/.ssh/authorized_keys'")
+
     script_parts.append(f"  - [ bash, -c, {json.dumps(default_script)} ]")
 
     if startup_script and startup_script.strip():
@@ -2102,7 +2116,7 @@ export AUTO_REG_SECRET="{manager_secret}"
                 firewall_msg = f"⚠️ 防火墙自动开放异常: {str(fw_e)[:30]}"
             # ------------------------------------------------------------------
             
-            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：ubuntu"
+            db_msg = f"🎉 抢占成功 (第 {status_data['attempt_count']} 次尝试)!\n- 实例名: {instance.display_name}\n- 可用区: {current_ad_name}\n- 公网IP: {public_ip}\n- 登陆用户名：root"
             
             if firewall_msg:
                 db_msg += f"\n- {firewall_msg}"
@@ -2133,7 +2147,7 @@ export AUTO_REG_SECRET="{manager_secret}"
                              f"- 实例名: {instance.display_name}\n"
                              f"- 可用区: {current_ad_name}\n"
                              f"- 公网IP: {public_ip}\n"
-                             f"- 登陆用户名: ubuntu")
+                             f"- 登陆用户名: root")
             
             if enable_password_auth and instance_password:
                 result_for_tg += f"\n- 密码: {instance_password}"
