@@ -18,12 +18,14 @@
 </head>
 <body class="text-center">
     <main class="form-signin">
-        <form method="post">
+        <form method="post" id="loginForm">
             <h1 class="mb-4">Cloud Manager 管理面板</h1>
             
             <div class="mb-3">
                 <input type="password" class="form-control form-control-lg" id="password" name="password" placeholder="请输入密码" required>
             </div>
+
+            <input type="hidden" name="device_id" id="deviceIdInput">
 
             {% if mfa_enabled %}
                 <div class="mb-4">
@@ -53,5 +55,27 @@
             <p class="mt-4 mb-0 text-muted small">&copy; Powered by 小龙女她爸</p>
         </form>
     </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // 1. 尝试从 LocalStorage 获取设备指纹
+            let deviceId = localStorage.getItem('fp_device_id');
+
+            // 2. 如果没有，则生成一个全新的 UUID 作为这台设备的永久指纹
+            if (!deviceId) {
+                deviceId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                    var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                    return v.toString(16);
+                });
+                localStorage.setItem('fp_device_id', deviceId);
+            }
+
+            // 3. 将指纹写入 Cookie (有效期10年)，这样后端的中间件(before_request)才能自动读取到
+            document.cookie = "fp_device_id=" + deviceId + "; path=/; max-age=315360000";
+
+            // 4. 将指纹填入表单的隐藏字段，以便 POST 提交时 Python 能收到
+            document.getElementById('deviceIdInput').value = deviceId;
+        });
+    </script>
 </body>
 </html>
