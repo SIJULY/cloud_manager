@@ -581,13 +581,13 @@ document.addEventListener('DOMContentLoaded', function() {
     async function refreshInstances() {
         addLog('正在刷新实例列表...');
         refreshInstancesBtn.disabled = true;
-        instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div> 正在加载...</td></tr>`;
+        instanceList.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-5"><div class="spinner-border spinner-border-sm"></div> 正在加载...</td></tr>`;
         try {
             const instances = await apiRequest('/oci/api/instances');
             currentInstances = instances; 
             instanceList.innerHTML = '';
             if (instances.length === 0) {
-                 instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">未找到任何实例</td></tr>`;
+                 instanceList.innerHTML = `<tr><td colspan="5" class="text-center text-muted py-5">未找到任何实例</td></tr>`;
             } else {
                 instances.forEach(inst => {
                     const tr = document.createElement('tr');
@@ -608,7 +608,7 @@ document.addEventListener('DOMContentLoaded', function() {
             addLog('实例列表刷新成功!', 'success');
         } catch (error) {
             currentInstances = [];
-            instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-danger py-5">加载实例列表失败</td></tr>`;
+            instanceList.innerHTML = `<tr><td colspan="5" class="text-center text-danger py-5">加载实例列表失败</td></tr>`;
         } finally {
             refreshInstancesBtn.disabled = false;
         }
@@ -659,7 +659,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
 
         if (!enabled) {
-            instanceList.innerHTML = `<tr><td colspan="6" class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
+            instanceList.innerHTML = `<tr><td  class="text-center text-muted py-5">请先连接一个账号并刷新列表</td></tr>`;
             Object.values(instanceActionButtons).forEach(btn => btn.disabled = true);
         }
     }
@@ -1428,15 +1428,21 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     Object.entries(instanceActionButtons).forEach(([key, button]) => {
-        // --- ✨✨✨ 修改：排除 addIp，防止触发通用逻辑 ✨✨✨
-        if (key !== 'editInstance' && key !== 'addIp') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
+        // 排除 editInstance，其他按钮统一绑定通用操作
+        if (key !== 'editInstance') button.addEventListener('click', () => performInstanceAction(key.toLowerCase()));
     });
     
     async function performInstanceAction(action) {
         if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
+        
         let message = `确定要对实例 "${selectedInstance.display_name}" 执行 "${action}" 操作吗?`;
         let title = `请确认: ${action}`;
-        if (action === 'terminate') {
+        
+        // --- 针对 addIp 的特殊处理 ---
+        if (action === 'addip') {
+            title = '确认附加 IP';
+            message = `确定要为实例 "${selectedInstance.display_name}" 增加一个公网 IP 吗？\n\n注意：\n1. 这将自动申请一个辅助私有IP和公网IP。\n2. 申请后您需要在 VPS 内部执行一条命令才能生效。`;
+        } else if (action === 'terminate') {
             title = `!!! 警告: 终止实例 !!!`;
             message = `此操作无法撤销，确定要终止实例 "${selectedInstance.display_name}" 吗?`;
             confirmActionModalTerminateOptions.classList.remove('d-none');
@@ -1444,13 +1450,34 @@ document.addEventListener('DOMContentLoaded', function() {
         } else {
             confirmActionModalTerminateOptions.classList.add('d-none');
         }
+        
         if (action === 'changeip') message = `确定更换实例 "${selectedInstance.display_name}" 的公网 IP (IPV4) 吗？\n将尝试删除旧临时IP并创建新临时IP。如果已配置Cloudflare，将自动更新DNS解析。`;
         if (action === 'assignipv6') message = `确定要为实例 "${selectedInstance.display_name}" 分配/更换一个 IPV6 地址吗？如果已配置Cloudflare，将自动更新DNS解析。`;
         
         confirmActionModalLabel.textContent = title;
         confirmActionModalBody.innerHTML = message.replace(/\n/g, '<br>');
+        
         confirmActionModalConfirmBtn.onclick = async () => {
             confirmActionModal.hide(); 
+            
+            // --- 针对 addIp 的特殊后端调用 ---
+            if (action === 'addip') {
+                addLog(`正在为实例 ${selectedInstance.display_name} 申请附加 IP...`);
+                try {
+                    const response = await apiRequest('/oci/api/instance/add-secondary-ip', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ instance_id: selectedInstance.id })
+                    });
+                    addLog(`IP 附加成功! 新公网IP: ${response.public_ip}`, 'success');
+                    alert(`✅ IP 附加成功！\n\n公网 IP: ${response.public_ip}\n内网 IP: ${response.private_ip}\n\n⚠️ 请务必登录 VPS 执行以下命令以启用新 IP:\n\n${response.cmd_hint}`);
+                    addLog(`📋 请在 VPS 执行: ${response.cmd_hint}`, 'info');
+                    setTimeout(refreshInstances, 2000);
+                } catch (e) {}
+                return;
+            }
+
+            // --- 通用操作后端调用 ---
             const payload = {
                 action,
                 instance_id: selectedInstance.id,
@@ -1517,8 +1544,8 @@ document.addEventListener('DOMContentLoaded', function() {
     instanceActionButtons.editInstance.addEventListener('click', async () => {
         if (!selectedInstance) return addLog('请先选择一个实例', 'warning');
         
-        editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv4...</td></tr>';
-        editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv6...</td></tr>';
+        editInstanceIpList.innerHTML = '<tr><td colspan="5" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv4...</td></tr>';
+        editInstanceIpv6List.innerHTML = '<tr><td colspan="3" class="text-center text-muted small py-2"><div class="spinner-border spinner-border-sm"></div> 正在加载 IPv6...</td></tr>';
         
         try {
             addLog(`正在获取实例 ${selectedInstance.display_name} 的详细信息...`);
@@ -1534,7 +1561,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 editMemory.value = details.memory_in_gbs;
             }
 
-            // --- 渲染 IPv4 列表 ---
+            // --- 渲染 IPv4 列表 (已修改支持批量删除) ---
             editInstanceIpList.innerHTML = ''; 
             if (details.ips && details.ips.length > 0) {
                 details.ips.forEach(ip => {
@@ -1547,8 +1574,14 @@ document.addEventListener('DOMContentLoaded', function() {
                         '<span class="badge bg-primary">主IP</span>' : 
                         '<span class="badge bg-secondary">辅助</span>';
 
+                    // ✨✨✨ 新增：复选框 (主IP不可选) ✨✨✨
+                    const checkboxHtml = isPrimary ? 
+                        '<input type="checkbox" class="form-check-input" disabled>' : 
+                        `<input type="checkbox" class="form-check-input ipv4-select" data-id="${ip.id}" data-addr="${ip.private_ip}">`;
+
                     const row = `
                         <tr>
+                            <td>${checkboxHtml}</td>
                             <td>${ip.private_ip}</td>
                             <td>${ip.public_ip || '<span class="text-muted">-</span>'}</td>
                             <td class="text-center">${typeBadge}</td>
@@ -1558,21 +1591,26 @@ document.addEventListener('DOMContentLoaded', function() {
                     editInstanceIpList.insertAdjacentHTML('beforeend', row);
                 });
 
+                // 绑定单个删除按钮事件
                 document.querySelectorAll('.delete-ip-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         deleteSecondaryIp(this.dataset.ipId, this.dataset.ipAddr);
                     });
                 });
             } else {
-                editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-muted">未找到 IP 信息</td></tr>';
+                editInstanceIpList.innerHTML = '<tr><td colspan="5" class="text-center text-muted">未找到 IP 信息</td></tr>';
             }
 
-            // --- 渲染 IPv6 列表 ---
+            // --- 渲染 IPv6 列表 (已修改支持批量删除) ---
             editInstanceIpv6List.innerHTML = '';
             if (details.ipv6s && details.ipv6s.length > 0) {
                 details.ipv6s.forEach(ip => {
+                    // ✨✨✨ 新增：复选框 ✨✨✨
+                    const checkboxHtml = `<input type="checkbox" class="form-check-input ipv6-select" data-id="${ip.id}" data-addr="${ip.ip_address}">`;
+                    
                     const row = `
                         <tr>
+                            <td>${checkboxHtml}</td>
                             <td>${ip.ip_address}</td>
                             <td class="text-end">
                                 <button class="btn btn-sm btn-outline-danger delete-ipv6-btn" data-ipv6-id="${ip.id}" data-ipv6-addr="${ip.ip_address}" title="删除此 IPv6"><i class="bi bi-trash"></i></button>
@@ -1582,19 +1620,27 @@ document.addEventListener('DOMContentLoaded', function() {
                     editInstanceIpv6List.insertAdjacentHTML('beforeend', row);
                 });
 
+                // 绑定单个删除按钮事件
                 document.querySelectorAll('.delete-ipv6-btn').forEach(btn => {
                     btn.addEventListener('click', function() {
                         deleteIpv6(this.dataset.ipv6Id, this.dataset.ipv6Addr);
                     });
                 });
             } else {
-                editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-muted">未找到 IPv6 信息</td></tr>';
+                editInstanceIpv6List.innerHTML = '<tr><td colspan="3" class="text-center text-muted">未找到 IPv6 信息</td></tr>';
             }
+            
+            // ✨✨✨ 每次打开时重置全选框状态 ✨✨✨
+            const selectAllIpv4 = document.getElementById('selectAllIpv4');
+            const selectAllIpv6 = document.getElementById('selectAllIpv6');
+            if(selectAllIpv4) selectAllIpv4.checked = false;
+            if(selectAllIpv6) selectAllIpv6.checked = false;
 
             editInstanceModal.show();
         } catch(error) {
-            editInstanceIpList.innerHTML = '<tr><td colspan="4" class="text-center text-danger">加载失败</td></tr>';
-            editInstanceIpv6List.innerHTML = '<tr><td colspan="2" class="text-center text-danger">加载失败</td></tr>';
+            console.error(error);
+            editInstanceIpList.innerHTML = '<tr><td colspan="5" class="text-center text-danger">加载失败</td></tr>';
+            editInstanceIpv6List.innerHTML = '<tr><td colspan="3" class="text-center text-danger">加载失败</td></tr>';
         }
     });
 
@@ -1703,7 +1749,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderRules(type, rules) {
         const tableBody = type === 'ingress' ? ingressRulesTable : egressRulesTable;
         tableBody.innerHTML = !rules || rules.length === 0 
-            ? `<tr><td colspan="6" class="text-center text-muted">没有规则</td></tr>`
+            ? `<tr><td colspan="5" class="text-center text-muted">没有规则</td></tr>`
             : rules.map(rule => createRuleRow(type, rule).outerHTML).join('');
         tableBody.querySelectorAll('.remove-rule-btn').forEach(btn => btn.onclick = () => btn.closest('tr').remove());
     }
@@ -1715,28 +1761,18 @@ document.addEventListener('DOMContentLoaded', function() {
         const protocol = rule.protocol || '6';
         const protocolOptions = {'all': '所有', '1': 'ICMP', '6': 'TCP', '17': 'UDP'};
         const portRange = (options) => ({ min: options?.min || '', max: options?.max || '' });
+        
+        // 渲染时只读取目标端口
         const destPorts = portRange(rule.tcp_options ? rule.tcp_options.destination_port_range : (rule.udp_options ? rule.udp_options.destination_port_range : null));
-        const srcPorts = portRange(rule.tcp_options ? rule.tcp_options.source_port_range : (rule.udp_options ? rule.udp_options.source_port_range : null));
+        
         tr.innerHTML = `
             <td><input class="form-check-input" type="checkbox" data-key="is_stateless" ${rule.is_stateless ? 'checked' : ''}></td>
             <td><input type="text" class="form-control form-control-sm" data-key="${type === 'ingress' ? 'source' : 'destination'}" value="${sourceOrDest}"></td>
             <td><select class="form-select form-select-sm" data-key="protocol">${Object.entries(protocolOptions).map(([k, v]) => `<option value="${k}" ${protocol == k ? 'selected' : ''}>${v}</option>`).join('')}</select></td>
-            <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="src_port_min" value="${srcPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="src_port_max" value="${srcPorts.max}"></div></td>
             <td><div class="input-group input-group-sm"><input type="number" class="form-control" placeholder="Min" data-key="dest_port_min" value="${destPorts.min}"><input type="number" class="form-control" placeholder="Max" data-key="dest_port_max" value="${destPorts.max}"></div></td>
             <td><button class="btn btn-sm btn-danger remove-rule-btn"><i class="bi bi-trash"></i></button></td>`;
         return tr;
     }
-    
-    addIngressRuleBtn.addEventListener('click', () => {
-        const placeholderRow = ingressRulesTable.querySelector('td[colspan="6"]');
-        if (placeholderRow) placeholderRow.parentElement.remove();
-        ingressRulesTable.appendChild(createRuleRow('ingress'));
-    });
-    addEgressRuleBtn.addEventListener('click', () => {
-        const placeholderRow = egressRulesTable.querySelector('td[colspan="6"]');
-        if (placeholderRow) placeholderRow.parentElement.remove();
-        egressRulesTable.appendChild(createRuleRow('egress'));
-    });
 
     openFirewallBtn.addEventListener('click', () => {
         let ingressAdded = false;
@@ -1746,12 +1782,8 @@ document.addEventListener('DOMContentLoaded', function() {
         const ingressExists = currentIngressRules.some(rule => rule.protocol === 'all' && rule.source === '0.0.0.0/0');
 
         if (!ingressExists) {
-            const allowAllIngressRule = {
-                source: '0.0.0.0/0',
-                protocol: 'all',
-                is_stateless: false
-            };
-            const ingressPlaceholder = ingressRulesTable.querySelector('td[colspan="6"]');
+            const allowAllIngressRule = { source: '0.0.0.0/0', protocol: 'all', is_stateless: false };
+            const ingressPlaceholder = ingressRulesTable.querySelector('td[colspan="5"]');
             if (ingressPlaceholder) ingressPlaceholder.parentElement.remove();
             ingressRulesTable.appendChild(createRuleRow('ingress', allowAllIngressRule));
             ingressAdded = true;
@@ -1761,52 +1793,17 @@ document.addEventListener('DOMContentLoaded', function() {
         const egressExists = currentEgressRules.some(rule => rule.protocol === 'all' && rule.destination === '0.0.0.0/0');
 
         if (!egressExists) {
-            const allowAllEgressRule = {
-                destination: '0.0.0.0/0',
-                protocol: 'all',
-                is_stateless: false
-            };
-            const egressPlaceholder = egressRulesTable.querySelector('td[colspan="6"]');
+            const allowAllEgressRule = { destination: '0.0.0.0/0', protocol: 'all', is_stateless: false };
+            const egressPlaceholder = egressRulesTable.querySelector('td[colspan="5"]');
             if (egressPlaceholder) egressPlaceholder.parentElement.remove();
             egressRulesTable.appendChild(createRuleRow('egress', allowAllEgressRule));
             egressAdded = true;
         }
 
         if (ingressAdded || egressAdded) {
-            let message = '已添加 "允许所有" 的';
-            if (ingressAdded && egressAdded) {
-                message += '出入站规则';
-            } else if (ingressAdded) {
-                message += '入站规则';
-            } else {
-                message += '出站规则';
-            }
-            message += '，请点击 "保存更改" 以生效。';
-            addLog(message, 'warning');
+            addLog(`已添加 "允许所有" 的${(ingressAdded && egressAdded) ? '出入站规则' : (ingressAdded ? '入站规则' : '出站规则')}，请点击 "保存更改" 以生效。`, 'warning');
         } else {
             addLog('无需操作，允许所有的出入站规则均已存在。', 'info');
-        }
-    });
-
-    saveNetworkRulesBtn.addEventListener('click', async () => {
-        const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
-        saveNetworkRulesBtn.disabled = true;
-        spinner.classList.remove('d-none');
-        try {
-            const rules = {
-                ingress_security_rules: collectRulesFromTable(ingressRulesTable, 'ingress'),
-                egress_security_rules: collectRulesFromTable(egressRulesTable, 'egress')
-            };
-            await apiRequest('/oci/api/network/update-security-rules', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' }, 
-                body: JSON.stringify({ security_list_id: currentSecurityList.id, rules }) 
-            });
-            addLog('网络规则保存成功', 'success');
-            networkSettingsModal.hide();
-        } finally {
-            saveNetworkRulesBtn.disabled = false;
-            spinner.classList.add('d-none');
         }
     });
 
@@ -1817,13 +1814,17 @@ document.addEventListener('DOMContentLoaded', function() {
             rule[`${type === 'ingress' ? 'source' : 'destination'}_type`] = 'CIDR_BLOCK';
             
             if (['6', '17'].includes(rule.protocol)) {
-                const dest_min = parseInt(tr.querySelector('[data-key="dest_port_min"]').value, 10);
-                const dest_max = parseInt(tr.querySelector('[data-key="dest_port_max"]').value, 10);
-                const src_min = parseInt(tr.querySelector('[data-key="src_port_min"]').value, 10);
-                const src_max = parseInt(tr.querySelector('[data-key="src_port_max"]').value, 10);
+                let dest_min = parseInt(tr.querySelector('[data-key="dest_port_min"]').value, 10);
+                let dest_max = parseInt(tr.querySelector('[data-key="dest_port_max"]').value, 10);
+                
+                // 自动补齐逻辑
+                if (!isNaN(dest_min) && isNaN(dest_max)) dest_max = dest_min;
+                if (isNaN(dest_min) && !isNaN(dest_max)) dest_min = dest_max;
+
                 const options = {};
-                if (!isNaN(dest_min) && !isNaN(dest_max)) options.destination_port_range = { min: dest_min, max: dest_max };
-                if (!isNaN(src_min) && !isNaN(src_max)) options.source_port_range = { min: src_min, max: src_max };
+                if (!isNaN(dest_min) && !isNaN(dest_max)) {
+                    options.destination_port_range = { min: dest_min, max: dest_max };
+                }
                 
                 if (rule.protocol === '6') rule.tcp_options = options;
                 else rule.udp_options = options;
@@ -1832,6 +1833,53 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+    saveNetworkRulesBtn.addEventListener('click', async () => {
+        const slId = securityListSelect.value;
+        if (!slId) return addLog('请先选择一个安全列表', 'warning');
+
+        // 调用刚才修改好的收集函数
+        const ingressRules = collectRulesFromTable(ingressRulesTable, 'ingress');
+        const egressRules = collectRulesFromTable(egressRulesTable, 'egress');
+
+        saveNetworkRulesBtn.disabled = true;
+        const spinner = saveNetworkRulesBtn.querySelector('.spinner-border');
+        if(spinner) spinner.classList.remove('d-none');
+
+        try {
+            const response = await apiRequest('/oci/api/network/update-security-rules', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    security_list_id: slId,
+                    rules: {
+                        ingress_security_rules: ingressRules,
+                        egress_security_rules: egressRules
+                    }
+                })
+            });
+            addLog(response.message, 'success');
+            networkSettingsModal.hide(); // 保存成功后关闭弹窗
+        } catch (error) {
+            // apiRequest 已经处理了报错日志，这里不需要额外 addLog
+        } finally {
+            saveNetworkRulesBtn.disabled = false;
+            if(spinner) spinner.classList.add('d-none');
+        }
+    });
+
+    addIngressRuleBtn.addEventListener('click', () => {
+        const placeholder = ingressRulesTable.querySelector('td[colspan="5"]');
+        if (placeholder) placeholder.parentElement.remove(); // 移除"没有规则"的占位提示
+        ingressRulesTable.appendChild(createRuleRow('ingress', { protocol: '6', is_stateless: false }));
+    });
+
+    addEgressRuleBtn.addEventListener('click', () => {
+        const placeholder = egressRulesTable.querySelector('td[colspan="5"]');
+        if (placeholder) placeholder.parentElement.remove(); // 移除"没有规则"的占位提示
+        egressRulesTable.appendChild(createRuleRow('egress', { protocol: '6', is_stateless: false }));
+    });
+
+    
     // --- Initial Load ---
     
     async function saveGlobalSshKey() {
@@ -1982,6 +2030,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+
     // --- ✨✨✨ 新增：一键附加 IP 功能 ✨✨✨
     if (instanceActionButtons.addIp) {
         instanceActionButtons.addIp.addEventListener('click', async () => {
@@ -2027,9 +2076,95 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
+// --- ✨✨✨ 新增：批量删除逻辑 (带安全检查) ✨✨✨ ---
+
+    // 辅助函数：安全添加事件监听
+    function safeAddListener(id, event, handler) {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener(event, handler);
+        } else {
+            console.warn(`[Script Warning] 找不到元素 ID: ${id}，相关功能可能无法使用。请检查 HTML 文件是否更新。`);
+        }
+    }
+
+    // 全选功能 IPv4
+    safeAddListener('selectAllIpv4', 'change', function() {
+        document.querySelectorAll('.ipv4-select').forEach(chk => {
+            if (!chk.disabled) chk.checked = this.checked;
+        });
+    });
+
+    // 全选功能 IPv6
+    safeAddListener('selectAllIpv6', 'change', function() {
+        document.querySelectorAll('.ipv6-select').forEach(chk => chk.checked = this.checked);
+    });
+
+    // 批量删除 IPv4
+    safeAddListener('batchDeleteIpBtn', 'click', async () => {
+        const checkedBoxes = document.querySelectorAll('.ipv4-select:checked');
+        if (checkedBoxes.length === 0) return addLog('请先选择要删除的 IP', 'warning');
+
+        if (!confirm(`确定要删除选中的 ${checkedBoxes.length} 个 IPv4 辅助 IP 吗？\n操作将立即生效。`)) return;
+
+        addLog(`开始批量删除 ${checkedBoxes.length} 个 IPv4...`);
+        let successCount = 0;
+
+        for (const chk of checkedBoxes) {
+            const id = chk.dataset.id;
+            const addr = chk.dataset.addr;
+            try {
+                await apiRequest('/oci/api/instance/delete-secondary-ip', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ private_ip_id: id })
+                });
+                successCount++;
+            } catch (error) {
+                addLog(`删除 IP ${addr} 失败: ${error.message}`, 'error');
+            }
+        }
+
+        addLog(`批量删除完成，成功: ${successCount}/${checkedBoxes.length}`, 'success');
+        editInstanceModal.hide();
+        setTimeout(refreshInstances, 1500);
+    });
+
+    // 批量删除 IPv6
+    safeAddListener('batchDeleteIpv6Btn', 'click', async () => {
+        const checkedBoxes = document.querySelectorAll('.ipv6-select:checked');
+        if (checkedBoxes.length === 0) return addLog('请先选择要删除的 IPv6', 'warning');
+
+        if (!confirm(`确定要删除选中的 ${checkedBoxes.length} 个 IPv6 地址吗？\n操作将立即生效。`)) return;
+
+        addLog(`开始批量删除 ${checkedBoxes.length} 个 IPv6...`);
+        let successCount = 0;
+
+        for (const chk of checkedBoxes) {
+            const id = chk.dataset.id;
+            const addr = chk.dataset.addr;
+            try {
+                await apiRequest('/oci/api/instance/delete-ipv6', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ipv6_id: id })
+                });
+                successCount++;
+            } catch (error) {
+                addLog(`删除 IPv6 ${addr} 失败: ${error.message}`, 'error');
+            }
+        }
+
+        addLog(`批量删除完成，成功: ${successCount}/${checkedBoxes.length}`, 'success');
+        editInstanceModal.hide();
+        setTimeout(refreshInstances, 1500);
+    });
+
+    // --- 初始化加载 ---
+    console.log("JS Loaded, initializing..."); // 调试日志
     loadProfiles();
     checkSession();
     loadTgConfig();
     loadCloudflareConfig();
-    loadXuiConfig(); // ✨ 初始化加载 X-UI 配置
-});
+    loadXuiConfig(); 
+}); // <--- 确保这是文件的最后一行，闭合 DOMContentLoaded
