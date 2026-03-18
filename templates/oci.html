@@ -505,41 +505,57 @@
                 <hr>
                 
                 <div class="mb-3">
-                    <label class="form-label">网络 IP 管理 (IPv4)</label>
-                    <div class="table-responsive border rounded p-2" style="max-height: 200px; overflow-y: auto; background-color: #fff;">
-                        <table class="table table-sm table-borderless mb-0 align-middle">
-                            <thead>
-                                <tr class="text-muted" style="font-size: 0.85rem; border-bottom: 1px solid #dee2e6;">
-                                    <th>内网 IP</th>
-                                    <th>公网 IP</th>
-                                    <th class="text-center" style="width: 60px;">类型</th>
-                                    <th class="text-end" style="width: 60px;">操作</th>
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <label class="form-label mb-0 fw-bold">网络 IP 管理 (IPv4)</label>
+                        <button class="btn btn-sm btn-outline-danger px-2" id="batchDeleteIpBtn" style="font-size: 0.75rem;">
+                            <i class="bi bi-trash"></i> 批量删除
+                        </button>
+                    </div>
+                    <div class="table-responsive border rounded" style="max-height: 200px; overflow-y: auto; background-color: #fff;">
+                        <table class="table table-sm table-hover mb-0 align-middle w-100">
+                            <thead class="table-light sticky-top" style="z-index: 1;">
+                                <tr>
+                                    <th class="text-center" style="width: 40px; background-color: #f8f9fa;">
+                                        <input type="checkbox" id="selectAllIpv4" class="form-check-input" style="cursor: pointer;">
+                                    </th>
+                                    <th style="background-color: #f8f9fa;">内网 IP</th>
+                                    <th style="background-color: #f8f9fa;">公网 IP</th>
+                                    <th class="text-center" style="width: 80px; background-color: #f8f9fa;">类型</th>
+                                    <th class="text-center" style="width: 60px; background-color: #f8f9fa;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="editInstanceIpList">
-                                <tr><td colspan="4" class="text-center text-muted small py-2">正在加载 IPv4 信息...</td></tr>
+                                <tr><td colspan="5" class="text-center text-muted small py-3">正在加载 IPv4 信息...</td></tr>
                             </tbody>
                         </table>
                     </div>
-                    <div class="form-text">提示: 主 IP 无法删除。删除辅助 IP 将立即生效。</div>
+                    <div class="form-text mt-1"><i class="bi bi-info-circle"></i> 提示: 主 IP 无法删除。删除辅助 IP 将立即生效。</div>
                 </div>
 
-                <div class="mb-3 mt-3">
-                    <label class="form-label">网络 IP 管理 (IPv6)</label>
-                    <div class="table-responsive border rounded p-2" style="max-height: 150px; overflow-y: auto; background-color: #fff;">
-                        <table class="table table-sm table-borderless mb-0 align-middle">
-                            <thead>
-                                <tr class="text-muted" style="font-size: 0.85rem; border-bottom: 1px solid #dee2e6;">
-                                    <th>IPv6 地址</th>
-                                    <th class="text-end" style="width: 60px;">操作</th>
+                <div class="mb-3 mt-4">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <label class="form-label mb-0 fw-bold">网络 IP 管理 (IPv6)</label>
+                        <button class="btn btn-sm btn-outline-danger px-2" id="batchDeleteIpv6Btn" style="font-size: 0.75rem;">
+                            <i class="bi bi-trash"></i> 批量删除
+                        </button>
+                    </div>
+                    <div class="table-responsive border rounded" style="max-height: 150px; overflow-y: auto; background-color: #fff;">
+                        <table class="table table-sm table-hover mb-0 align-middle w-100">
+                            <thead class="table-light sticky-top" style="z-index: 1;">
+                                <tr>
+                                    <th class="text-center" style="width: 40px; background-color: #f8f9fa;">
+                                        <input type="checkbox" id="selectAllIpv6" class="form-check-input" style="cursor: pointer;">
+                                    </th>
+                                    <th style="background-color: #f8f9fa;">IPv6 地址</th>
+                                    <th class="text-center" style="width: 60px; background-color: #f8f9fa;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="editInstanceIpv6List">
-                                <tr><td colspan="2" class="text-center text-muted small py-2">正在加载 IPv6 信息...</td></tr>
+                                <tr><td colspan="3" class="text-center text-muted small py-3">正在加载 IPv6 信息...</td></tr>
                             </tbody>
                         </table>
                     </div>
-                    <div class="form-text">提示: 删除 IPv6 地址将立即生效。</div>
+                    <div class="form-text mt-1"><i class="bi bi-info-circle"></i> 提示: 删除 IPv6 地址将立即生效。</div>
                 </div>
                 
                 <hr>
@@ -589,7 +605,6 @@
         </div>
     </div>
 </div>
-
 <div class="modal fade" id="networkSettingsModal" tabindex="-1" aria-labelledby="networkSettingsModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered modal-xl">
         <div class="modal-content">
@@ -625,7 +640,7 @@
                             <table class="table table-bordered">
                                 <thead>
                                     <tr>
-                                        <th>状态</th><th>源地址</th><th>协议</th><th>源端口</th><th>目标端口</th><th>操作</th>
+                                        <th>状态</th><th>源地址</th><th>协议</th><th>目标端口</th><th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="ingressRulesTable">
@@ -639,7 +654,7 @@
                              <table class="table table-bordered">
                                 <thead>
                                     <tr>
-                                        <th>状态</th><th>目标地址</th><th>协议</th><th>源端口</th><th>目标端口</th><th>操作</th>
+                                        <th>状态</th><th>目标地址</th><th>协议</th><th>目标端口</th><th>操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="egressRulesTable">
