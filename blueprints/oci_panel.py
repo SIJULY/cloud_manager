@@ -1675,7 +1675,47 @@ def update_security_rules():
         security_list_id, rules = data.get('security_list_id'), data.get('rules')
         if not security_list_id or not rules: return jsonify({"error": "缺少 security_list_id 或 rules"}), 400
         vnet_client = g.oci_clients['vnet']
-        update_details = UpdateSecurityListDetails(ingress_security_rules=rules.get('ingress_security_rules', []), egress_security_rules=rules.get('egress_security_rules', []))
+
+        def parse_port_range(pr_dict):
+            if not pr_dict: return None
+            return oci.core.models.PortRange(min=pr_dict.get('min'), max=pr_dict.get('max'))
+
+        def parse_options(opt_dict, opt_class):
+            if not opt_dict: return None
+            return opt_class(
+                destination_port_range=parse_port_range(opt_dict.get('destination_port_range')),
+                source_port_range=parse_port_range(opt_dict.get('source_port_range'))
+            )
+
+        ingress_rules = []
+        for r in rules.get('ingress_security_rules', []):
+            rule = IngressSecurityRule(
+                is_stateless=r.get('is_stateless', False),
+                protocol=r.get('protocol'),
+                source=r.get('source'),
+                source_type=r.get('source_type', 'CIDR_BLOCK'),
+                tcp_options=parse_options(r.get('tcp_options'), oci.core.models.TcpOptions),
+                udp_options=parse_options(r.get('udp_options'), oci.core.models.UdpOptions)
+            )
+            ingress_rules.append(rule)
+
+        egress_rules = []
+        for r in rules.get('egress_security_rules', []):
+            rule = EgressSecurityRule(
+                is_stateless=r.get('is_stateless', False),
+                protocol=r.get('protocol'),
+                destination=r.get('destination'),
+                destination_type=r.get('destination_type', 'CIDR_BLOCK'),
+                tcp_options=parse_options(r.get('tcp_options'), oci.core.models.TcpOptions),
+                udp_options=parse_options(r.get('udp_options'), oci.core.models.UdpOptions)
+            )
+            egress_rules.append(rule)
+
+        update_details = UpdateSecurityListDetails(
+            ingress_security_rules=ingress_rules,
+            egress_security_rules=egress_rules
+        )
+
         vnet_client.update_security_list(security_list_id, update_details)
         return jsonify({"success": True, "message": "安全规则已成功更新！"})
     except TimeoutException:
